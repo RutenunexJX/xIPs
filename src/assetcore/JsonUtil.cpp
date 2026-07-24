@@ -2,8 +2,6 @@
 
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QSet>
-
 #include <algorithm>
 
 namespace xips::json {
@@ -103,28 +101,6 @@ QString normalizeSearchText(const QString &value)
         }
     }
     return result.trimmed();
-}
-
-QStringList trigrams(const QString &value)
-{
-    const QString normalized = normalizeSearchText(value);
-    if (normalized.isEmpty()) {
-        return {};
-    }
-
-    QSet<QString> unique;
-    const QString padded = QStringLiteral("  ") + normalized + QStringLiteral("  ");
-    if (padded.size() <= 3) {
-        unique.insert(padded);
-    } else {
-        for (qsizetype index = 0; index + 3 <= padded.size(); ++index) {
-            unique.insert(padded.mid(index, 3));
-        }
-    }
-
-    QStringList result(unique.begin(), unique.end());
-    std::sort(result.begin(), result.end());
-    return result;
 }
 
 } // namespace xips::json

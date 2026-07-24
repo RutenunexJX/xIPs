@@ -1,4 +1,5 @@
 #include "app/MainWindow.h"
+#include "integration/IntegrationService.h"
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -9,38 +10,27 @@
 #include <QStandardPaths>
 #include <QTextStream>
 
+#include <optional>
+
 namespace {
 
 QString defaultLibraryPath()
 {
     QSettings settings;
-    const QString saved = settings.value(QStringLiteral("library/primary")).toString();
+    QString saved = settings.value(QStringLiteral("library/root")).toString();
+    if (saved.isEmpty()) {
+        saved = settings.value(QStringLiteral("library/primary")).toString();
+    }
     if (QFileInfo(saved).isDir()) {
         return QFileInfo(saved).absoluteFilePath();
     }
-
     const QString environment = qEnvironmentVariable("XIPS_LIBRARY");
     if (QFileInfo(environment).isDir()) {
         return QFileInfo(environment).absoluteFilePath();
     }
-
-    const QString currentExample = QDir::current().absoluteFilePath(QStringLiteral("examples/library"));
-    if (QFileInfo(currentExample).isDir()) {
-        return currentExample;
-    }
-
-    QDir applicationDir(QCoreApplication::applicationDirPath());
-    const QStringList candidates{
-        applicationDir.absoluteFilePath(QStringLiteral("../../examples/library")),
-        applicationDir.absoluteFilePath(QStringLiteral("../../../examples/library")),
-        applicationDir.absoluteFilePath(QStringLiteral("../share/xips/examples/library")),
-    };
-    for (const QString &candidate : candidates) {
-        if (QFileInfo(candidate).isDir()) {
-            return QFileInfo(candidate).absoluteFilePath();
-        }
-    }
-    return QDir::currentPath();
+    const QString documents = QStandardPaths::writableLocation(
+        QStandardPaths::DocumentsLocation);
+    return QDir(documents).absoluteFilePath(QStringLiteral("xIPs Library"));
 }
 
 } // namespace
@@ -55,55 +45,82 @@ int main(int argc, char *argv[])
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
-        QStringLiteral("FPGA reusable asset library manager"));
+        QStringLiteral("Personal FPGA IP asset library"));
     parser.addHelpOption();
     parser.addVersionOption();
     const QCommandLineOption libraryOption(
         {QStringLiteral("l"), QStringLiteral("library")},
-        QStringLiteral("Managed asset library root."),
+        QStringLiteral("IP library directory."),
         QStringLiteral("directory"));
-    const QCommandLineOption externalOption(
-        QStringLiteral("external"),
-        QStringLiteral("Register an external library root without copying it. May be repeated."),
-        QStringLiteral("directory"));
+    const QCommandLineOption assetOption(
+        QStringLiteral("open-asset"),
+        QStringLiteral("Open an IP by stable ID."),
+        QStringLiteral("id"));
+    const QCommandLineOption searchOption(
+        QStringLiteral("search"),
+        QStringLiteral("Open the library with a search query."),
+        QStringLiteral("query"));
     parser.addOption(libraryOption);
-    parser.addOption(externalOption);
+    parser.addOption(assetOption);
+    parser.addOption(searchOption);
+    parser.addPositionalArgument(
+        QStringLiteral("uri"),
+        QStringLiteral("Optional xips://asset/... or xips://search?... URI."),
+        QStringLiteral("[uri]"));
     if (!parser.parse(application.arguments())) {
-        QTextStream error(stderr);
-        error << parser.errorText() << u'\n';
-        error.flush();
+        QTextStream(stderr) << parser.errorText() << u'\n';
         return 2;
     }
     if (parser.isSet(QStringLiteral("help"))) {
-        QTextStream output(stdout);
-        output << parser.helpText();
-        output.flush();
+        QTextStream(stdout) << parser.helpText();
         return 0;
     }
     if (parser.isSet(QStringLiteral("version"))) {
-        QTextStream output(stdout);
-        output << QCoreApplication::applicationName() << u' '
-               << QCoreApplication::applicationVersion() << u'\n';
-        output.flush();
+        QTextStream(stdout) << QCoreApplication::applicationName() << u' '
+                            << QCoreApplication::applicationVersion() << u'\n';
         return 0;
     }
 
-    QSettings settings;
-    const QString primary = parser.isSet(libraryOption)
+    std::optional<xips::ActivationRequest> activation;
+    if (parser.isSet(assetOption) && parser.isSet(searchOption)) {
+        QTextStream(stderr) << "--open-asset and --search cannot be combined\n";
+        return 2;
+    }
+    if (parser.isSet(assetOption)) {
+        activation = xips::ActivationRequest{
+            .action = xips::ActivationAction::OpenAsset,
+            .value = parser.value(assetOption),
+        };
+    } else if (parser.isSet(searchOption)) {
+        activation = xips::ActivationRequest{
+            .action = xips::ActivationAction::Search,
+            .value = parser.value(searchOption),
+        };
+    }
+    const QStringList positional = parser.positionalArguments();
+    if (positional.size() > 1 || (!positional.isEmpty() && activation)) {
+        QTextStream(stderr) << "Specify only one activation request\n";
+        return 2;
+    }
+    if (!positional.isEmpty()) {
+        activation = xips::IntegrationService::parseUri(QUrl(positional.first()));
+        if (!activation) {
+            QTextStream(stderr) << "Invalid xIPs URI\n";
+            return 2;
+        }
+    }
+
+    const QString library = parser.isSet(libraryOption)
                                 ? QFileInfo(parser.value(libraryOption)).absoluteFilePath()
                                 : defaultLibraryPath();
-    QStringList external = parser.values(externalOption);
-    if (external.isEmpty()) {
-        external = settings.value(QStringLiteral("library/external")).toStringList();
+    if (!QDir().mkpath(library)) {
+        QTextStream(stderr) << "Cannot create IP library: " << library << u'\n';
+        return 3;
     }
-    for (QString &path : external) {
-        path = QFileInfo(path).absoluteFilePath();
-    }
-
-    const QString dataPath = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    const QString indexPath = QDir(dataPath).absoluteFilePath(QStringLiteral("index.sqlite"));
-
-    xips::MainWindow window(primary, external, indexPath);
+    xips::MainWindow window(library);
     window.show();
+    if (activation) {
+        window.applyActivation(*activation);
+    }
     return application.exec();
 }

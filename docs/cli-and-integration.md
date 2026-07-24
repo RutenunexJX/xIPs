@@ -1,135 +1,74 @@
-# CLI and cross-application integration
+# CLI 与唤起协议
 
-`xips-cli` is a stable process/file boundary for automation and ZeroSlack
-integration. It does not read another application's database.
+集成层只提供资产定位，不执行导入、脚本、测试或其他应用的业务。ZeroSlack 后续可以调用该边界，也可以直接复用非 Widgets 核心库实现一个 IP 选择器。
 
-Every non-help command writes one JSON object to standard output:
+## JSON envelope
+
+除 `--help` 和 `--version` 外，`xips-cli` 每次输出一个 JSON 对象：
 
 ```json
 {
   "schemaVersion": 1,
-  "command": "catalog",
   "ok": true,
-  "data": {},
-  "errors": []
+  "action": "resolve",
+  "data": {}
 }
 ```
 
-Exit code `0` means success, `2` means invalid CLI usage, `3` means a blocked
-plan/catalog conflict, and `4` means execution or I/O failed. Use `--pretty` for
-indented output. Paths in JSON are resolved absolute paths unless the underlying
-manifest/lockfile contract specifies relative paths.
+失败时 `ok` 为 `false`，并包含 `error`。退出码：
 
-`--help` and `--version` are plain-text exceptions to the JSON envelope and
-exit immediately. The desktop executable implements the same non-interactive
-startup paths without opening its main window, which permits silent deployment
-checks.
+- `0`：成功
+- `2`：参数或协议错误
+- `3`：资产库读取错误
+- `4`：IP 或指定版本不存在
 
-## Catalog and ZeroSlack open URI
+## list
 
 ```powershell
-.\build\src\xips-cli.exe catalog `
-  --library .\examples\library --pretty
-
-.\build\src\xips-cli.exe open-uri `
-  --library .\examples\library --asset reset_gen
+xips-cli --action list --library E:\Nutstore\xIPs
+xips-cli --action list --library E:\Nutstore\xIPs --query uart
 ```
 
-`open-uri` returns a versioned `zeroslack://open?...` URI containing asset ID,
-manifest, source, top, language, and content hash. The CLI prints but does not
-launch the URI. The desktop **Integration > Open selected asset in ZeroSlack**
-action launches it through the operating-system URI handler.
+返回匹配 IP 的 ID、名称、当前版本、标签、路径、内容哈希、文件数和 `xips://` 链接。`XIPS_LIBRARY` 可替代 `--library`。
 
-## Register a module supplied by ZeroSlack
+## resolve
 
 ```powershell
-.\build\src\xips-cli.exe register-module `
-  --asset-root C:\work\rtl\counter `
-  --source C:\work\rtl\counter\counter.sv `
-  --source C:\work\rtl\counter\counter_pkg.sv `
-  --id counter --name Counter --top counter
+xips-cli --action resolve `
+  --library E:\Nutstore\xIPs `
+  --asset uart_ip
+
+xips-cli --action resolve `
+  --library E:\Nutstore\xIPs `
+  --asset uart_ip `
+  --asset-version 1.0.0
 ```
 
-This returns the proposed `.xips.json` without writing. Repeat with `--execute`
-to create the manifest atomically. The asset root and sources must already
-exist; sources are never moved or copied. A source inside the root is recorded
-relatively. `--source` is repeatable. Use repeated `--include-dir`, `--define`, and
-`--dependency id@constraint` options as needed. Prefix a dependency with `?` to
-mark it optional. Supplying catalog roots also enables duplicate-ID rejection.
-Execution revalidates the manifest path, asset root, top, and every source, and
-rejects link-backed or stale plans before writing.
+未指定 `--asset-version` 时返回工作副本路径；指定后返回不可变快照路径与对应哈希。该动作只读文件，不更新“最近使用”状态。
 
-The desktop **File > Register SystemVerilog source in place** workflow accepts
-one source file or a directory/Git checkout. It excludes Git/xIPs/build trees,
-passes discovered `.sv/.v` files and `.svh/.vh` include directories to Slang,
-then asks the user to select a reported top. Slang instance and package-import
-facts are shown as dependency-unit candidates; uniquely matching catalog asset
-IDs are suggestions that the user can edit or remove before reviewing the
-manifest. No same-name source or unit is merged automatically. If the directory
-is outside registered roots, it is added as an external root after the manifest
-has been written. No source is copied or moved.
+## URI
 
-## Create a managed Module
+稳定 URI 只有三种动作：
+
+```text
+xips://show
+xips://asset/<stable-id>
+xips://search?q=<query>
+```
+
+生成或解析 URI：
 
 ```powershell
-.\build\src\xips-cli.exe create-managed `
-  --library C:\fpga\assets `
-  --id counter --name Counter --top counter `
-  --seed empty
+xips-cli --action link --asset uart_ip
+xips-cli --action link --query "axi fifo"
+xips-cli --action parse-uri --uri xips://asset/uart_ip
 ```
 
-`--seed` accepts `empty`, `source`, or `directory`. Source mode uses `--source`;
-directory mode uses `--existing-directory`. The preview reports every generated
-or copied file. `--execute` builds the asset below a private staging directory,
-writes the manifest safely, and publishes the completed asset directory with
-one rename. Cancellation or failure removes the staging tree. Git, xIPs,
-build/cache, and generated-tool directories are excluded from directory seeds.
-Symbolic links and Windows junctions are not traversed. Execution revalidates
-that every destination remains confined to the managed library and that each
-manifest source is present in the previewed file plan.
-The desktop workflow additionally offers the currently selected Module as a
-directory seed.
-
-## Import into a project
+桌面程序接受相同 URI，也接受等价参数：
 
 ```powershell
-.\build\src\xips-cli.exe import `
-  --library .\examples\library `
-  --asset reset_gen `
-  --target C:\work\project `
-  --mode vendor `
-  --target-tool vivado=2022.2 `
-  --target-tool slang=6.0.0
+xips.exe --open-asset uart_ip
+xips.exe --search "axi fifo"
 ```
 
-Without `--execute`, `import` returns dependency order, issues, asset upgrades,
-all file actions, and the proposed output document without mutation. Add
-`--execute` to perform the already described Reference write or confirmed
-Vendor transaction. Multiple `--asset` options are accepted.
-`--target-tool name=version` is repeatable and enables semantic-version checks
-against every tool constraint in the resolved dependency closure. If target
-versions are omitted while assets declare tools, the plan contains an explicit
-“compatibility unverified” warning.
-
-The desktop **File > Inspect or repair Reference configuration** action reads a
-project's `.xips/references.json`, shows valid, missing, hash-mismatched, and
-repairable states, and can atomically rewrite paths by matching registered
-asset ID and expected content hash. A repair is rejected if the configuration
-changes after inspection.
-
-## Code Block handoff
-
-```powershell
-.\build\src\xips-cli.exe code-block `
-  --library .\examples\library `
-  --asset always_ff_reset `
-  --handoff C:\work\handoff\always_ff_reset.json
-```
-
-The response contains the ordered slot payload and a
-`zeroslack://insert-code-block?...` URI. No file is written until `--execute` is
-present. The handoff is written with safe replacement and contains protocol
-version, operation, ID, version/hash, template, scope, ordered slots, required
-symbols, example input/output, and workspace-override policy. The URI carries
-only identity and the handoff path, avoiding oversized template data in the
-URI.
+当前版本不写 Windows 注册表、不注册 `xips://` handler，也不将请求转发到已有进程。后续实现全局唤起时，应继续使用 `ActivationRequest` 的 `schemaVersion: 1` JSON，而不是扩展资产模型或读取 ZeroSlack 数据库。

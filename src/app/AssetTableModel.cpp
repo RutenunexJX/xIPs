@@ -1,7 +1,5 @@
 #include "app/AssetTableModel.h"
 
-#include <QFileInfo>
-
 namespace xips {
 
 AssetTableModel::AssetTableModel(QObject *parent)
@@ -25,70 +23,50 @@ QVariant AssetTableModel::data(const QModelIndex &index, const int role) const
         return {};
     }
     const SearchHit &hit = m_hits.at(index.row());
-    const AssetRecord &record = hit.asset;
-
+    const AssetRecord &asset = hit.asset;
     if (role == Qt::ToolTipRole) {
-        QString tooltip = QStringLiteral("%1\nID: %2\n%3")
-                              .arg(record.manifest.description,
-                                   record.manifest.id,
-                                   record.manifestPath);
+        QString text = QStringLiteral("%1\nID: %2\n%3")
+                           .arg(asset.manifest.description,
+                                asset.manifest.id,
+                                asset.assetRoot);
         if (!hit.matchedFields.isEmpty()) {
-            tooltip += QStringLiteral("\nMatched: %1").arg(hit.matchedFields.join(QStringLiteral(", ")));
+            text += QStringLiteral("\nMatched: %1")
+                        .arg(hit.matchedFields.join(QStringLiteral(", ")));
         }
-        return tooltip;
+        return text;
     }
     if (role == Qt::UserRole) {
         switch (index.column()) {
         case NameColumn:
-            return record.manifest.name.toCaseFolded();
-        case TypeColumn:
-            return assetTypeToString(record.manifest.type);
+            return asset.manifest.name.toCaseFolded();
         case VersionColumn:
-            return record.manifest.version;
-        case TopColumn:
-            return record.manifest.top;
-        case LanguageColumn:
-            return record.manifest.language;
-        case TestColumn:
-            return record.testStatus;
-        case DiagnosticsColumn:
-            return record.diagnosticsStatus;
+            return asset.manifest.version.toCaseFolded();
+        case TagsColumn:
+            return asset.manifest.tags.join(u' ').toCaseFolded();
+        case FilesColumn:
+            return static_cast<qlonglong>(asset.fileCount);
         case ModifiedColumn:
-            return record.modifiedStatus;
-        case RepositoryColumn:
-            return record.sourceRepository;
-        case LastUsedColumn:
-            return record.lastUsed;
+            return asset.lastModified;
         }
     }
     if (role != Qt::DisplayRole) {
         return {};
     }
-
     switch (index.column()) {
     case NameColumn:
-        return record.manifest.name;
-    case TypeColumn:
-        return assetTypeToString(record.manifest.type);
+        return asset.manifest.name;
     case VersionColumn:
-        return record.manifest.version.isEmpty() ? QStringLiteral("working")
-                                                 : record.manifest.version;
-    case TopColumn:
-        return record.manifest.top;
-    case LanguageColumn:
-        return record.manifest.language;
-    case TestColumn:
-        return record.testStatus;
-    case DiagnosticsColumn:
-        return record.diagnosticsStatus;
+        return asset.manifest.version.isEmpty() ? QStringLiteral("working")
+                                                : asset.manifest.version;
+    case TagsColumn:
+        return asset.manifest.tags.join(QStringLiteral(", "));
+    case FilesColumn:
+        return static_cast<qlonglong>(asset.fileCount);
     case ModifiedColumn:
-        return record.modifiedStatus;
-    case RepositoryColumn:
-        return QFileInfo(record.sourceRepository).fileName();
-    case LastUsedColumn:
-        return record.lastUsed.isValid()
-                   ? record.lastUsed.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))
-                   : QStringLiteral("—");
+        return asset.lastModified.isValid()
+                   ? asset.lastModified.toLocalTime().toString(
+                         QStringLiteral("yyyy-MM-dd HH:mm"))
+                   : QStringLiteral("-");
     }
     return {};
 }
@@ -101,18 +79,14 @@ QVariant AssetTableModel::headerData(const int section,
         return QAbstractTableModel::headerData(section, orientation, role);
     }
     static const QStringList headers{
-        QStringLiteral("Name"),
-        QStringLiteral("Type"),
+        QStringLiteral("IP"),
         QStringLiteral("Version"),
-        QStringLiteral("Top"),
-        QStringLiteral("Language"),
-        QStringLiteral("Test"),
-        QStringLiteral("Diagnostics"),
+        QStringLiteral("Tags"),
+        QStringLiteral("Files"),
         QStringLiteral("Modified"),
-        QStringLiteral("Repository"),
-        QStringLiteral("Last used"),
     };
-    return section >= 0 && section < headers.size() ? headers.at(section) : QVariant();
+    return section >= 0 && section < headers.size() ? headers.at(section)
+                                                    : QVariant();
 }
 
 void AssetTableModel::setHits(QList<SearchHit> hits)
@@ -120,22 +94,6 @@ void AssetTableModel::setHits(QList<SearchHit> hits)
     beginResetModel();
     m_hits = std::move(hits);
     endResetModel();
-}
-
-void AssetTableModel::setLastUsed(const QString &assetId,
-                                  const QDateTime &when)
-{
-    for (qsizetype row = 0; row < m_hits.size(); ++row) {
-        if (m_hits.at(row).asset.manifest.id != assetId) {
-            continue;
-        }
-        m_hits[row].asset.lastUsed = when;
-        const QModelIndex changed =
-            index(static_cast<int>(row), LastUsedColumn);
-        emit dataChanged(changed,
-                         changed,
-                         {Qt::DisplayRole, Qt::UserRole});
-    }
 }
 
 const AssetRecord *AssetTableModel::recordAt(const int row) const
@@ -155,109 +113,27 @@ AssetFilterProxyModel::AssetFilterProxyModel(QObject *parent)
     setDynamicSortFilter(true);
 }
 
-void AssetFilterProxyModel::clearAssetFilter()
-{
-    beginFilterChange();
-    m_type = AssetType::Unknown;
-    m_tag.clear();
-    m_project.clear();
-    m_status.clear();
-    m_favoritesOnly = false;
-    endFilterChange();
-}
-
-void AssetFilterProxyModel::setTypeFilter(const AssetType type)
-{
-    beginFilterChange();
-    m_type = type;
-    m_tag.clear();
-    m_project.clear();
-    m_status.clear();
-    m_favoritesOnly = false;
-    endFilterChange();
-}
-
 void AssetFilterProxyModel::setTagFilter(const QString &tag)
 {
     beginFilterChange();
-    m_type = AssetType::Unknown;
     m_tag = tag;
-    m_project.clear();
-    m_status.clear();
-    m_favoritesOnly = false;
     endFilterChange();
 }
 
-void AssetFilterProxyModel::setProjectFilter(const QString &project)
-{
-    beginFilterChange();
-    m_type = AssetType::Unknown;
-    m_tag.clear();
-    m_project = project;
-    m_status.clear();
-    m_favoritesOnly = false;
-    endFilterChange();
-}
-
-void AssetFilterProxyModel::setStatusFilter(const QString &status)
-{
-    beginFilterChange();
-    m_type = AssetType::Unknown;
-    m_tag.clear();
-    m_project.clear();
-    m_status = status;
-    m_favoritesOnly = false;
-    endFilterChange();
-}
-
-void AssetFilterProxyModel::setFavoritesOnly(const bool enabled)
-{
-    beginFilterChange();
-    m_type = AssetType::Unknown;
-    m_tag.clear();
-    m_project.clear();
-    m_status.clear();
-    m_favoritesOnly = enabled;
-    endFilterChange();
-}
-
-bool AssetFilterProxyModel::filterAcceptsRow(const int sourceRow,
-                                             const QModelIndex &sourceParent) const
+bool AssetFilterProxyModel::filterAcceptsRow(
+    const int sourceRow,
+    const QModelIndex &sourceParent) const
 {
     const auto *model = qobject_cast<const AssetTableModel *>(sourceModel());
     if (!model) {
         return true;
     }
-    const AssetRecord *record = model->recordAt(sourceRow);
-    if (!record) {
+    const AssetRecord *asset = model->recordAt(sourceRow);
+    if (!asset) {
         return false;
     }
-    if (m_type != AssetType::Unknown && record->manifest.type != m_type) {
-        return false;
-    }
-    if (!m_tag.isEmpty() && !record->manifest.tags.contains(m_tag, Qt::CaseInsensitive)) {
-        return false;
-    }
-    if (!m_project.isEmpty()
-        && record->manifest.rawObject.value(QStringLiteral("project")).toString()
-               != m_project) {
-        return false;
-    }
-    if (m_favoritesOnly
-        && !record->manifest.rawObject.value(QStringLiteral("favorite")).toBool(false)) {
-        return false;
-    }
-    if (m_status == QStringLiteral("modified")
-        && record->modifiedStatus != QStringLiteral("modified")) {
-        return false;
-    }
-    if (m_status == QStringLiteral("diagnostics")
-        && record->diagnosticsStatus != QStringLiteral("error")
-        && record->diagnosticsStatus != QStringLiteral("manifest-error")) {
-        return false;
-    }
-    if (m_status == QStringLiteral("test-failed")
-        && record->testStatus != QStringLiteral("failed")) {
+    if (!m_tag.isEmpty()
+        && !asset->manifest.tags.contains(m_tag, Qt::CaseInsensitive)) {
         return false;
     }
     return QSortFilterProxyModel::filterAcceptsRow(sourceRow, sourceParent);

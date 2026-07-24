@@ -1,142 +1,50 @@
-# xIPs implementation plan
+# xIPs lean implementation plan
 
-## Phase 1 — Asset library foundation
+## 1. 产品收缩
 
-Status: complete and verified.
+状态：完成。
 
-- Domain model for Code Block, Module, IP, dependencies, slots, diagnostics,
-  semantic results, and indexed asset records.
-- Manifest schema validation and in-memory v0-to-v1 migration.
-- Unknown JSON fields retained during safe `QSaveFile` replacement.
-- Recursive manifest discovery for managed and external roots without source
-  movement or copying.
-- Duplicate-ID and missing-file diagnostics.
-- Deterministic content hashing and relocatable relative paths.
-- Rebuildable SQLite cache with explicit indexes, generation publication guards,
-  selective indexed fuzzy search, last-used activity timestamps, and per-asset
-  incremental update/remove operations.
-- Non-blocking library rebuild, sortable/filterable asset table, Inspector,
-  multi-source preview selection, binary-artifact preview protection, and
-  detail panels.
-- Debounced manifest/source/include-tree monitoring refreshes only affected
-  assets and preserves unchanged asset generations.
-- Example Code Block, package/module, and opaque Vivado IP assets.
-- Automated phase-1 tests, including a 2,000-asset cached-search case.
+- 用户可见资产统一为 IP。
+- 删除 Slang、依赖求解、Reference/Vendor、Git、差异、测试运行器和 Code Block 交付功能。
+- 删除 SQLite；资产库刷新直接读取 manifest 和文件，搜索使用内存目录。
+- 主界面从十列表格、三栏过滤器和五个详情页缩减为五列表格及 Files/Versions 两个详情页。
 
-Evidence: Qt 6.10.2/MinGW Release build succeeded; CTest `phase1` passed all 10
-functional cases on 2026-07-24.
+## 2. 资产与版本流程
 
-## Phase 2 — Slang semantic analysis
+状态：完成。
 
-Status: complete and verified.
+- 将已有目录复制到受管资产库，排除 Git、构建和 FPGA 工具缓存。
+- 新资产统一生成 `type: ip` 的最小 `.xips.json`。
+- 编辑名称、当前版本、说明和标签；稳定 ID 不允许修改。
+- 对整个工作副本生成不可变版本快照，保存时间和 SHA-256 内容哈希。
+- 工作副本或指定快照通过同目录暂存后导出，禁止覆盖已有目标。
 
-- Invokes Slang as the sole SystemVerilog semantic authority.
-- Parses Slang AST/CST/dependency/diagnostic JSON without source regex scanning.
-- Extracts units, parameters, ports, dimensions, imports, instances, includes,
-  defines, diagnostics, dependencies, and top candidates.
-- Preserves cached semantics for unchanged content, marks changed content stale,
-  and publishes only when asset ID, hash, and generation still match.
-- Reports missing Slang explicitly; no heuristic fallback exists.
+## 3. 同步与兼容
 
-Evidence: the real process boundary is exercised by a dedicated fixture
-executable, and CTest `phase1` plus `phase2` cover 14 cases. Console output is
-drained and bounded to prevent an analysis process from blocking on output. The
-local machine has no real Slang installation, so an end-to-end run against
-upstream Slang remains environment-dependent.
+状态：完成。
 
-## Phase 3 — Reference and Vendor import
+- 资产及 `.xips/versions` 可由坚果云按普通文件同步。
+- 不生成需要同步的 SQLite 数据库。
+- 旧 `module`、`code-block` 类型和未知 manifest 字段仍能读取；编辑后类型归一为 IP。
+- 无效 manifest、重复 ID、路径越界和缺失声明文件在扫描结果中报告。
 
-Status: complete and verified.
+## 4. 集成边界
 
-- Deterministic dependency closure, optional/missing/cycle/duplicate/version/tool
-  conflict checks, and dependency-first topological ordering.
-- Relocatable Reference configuration with explicit source/include/define
-  metadata, non-destructive repeated-import merging, extension preservation,
-  and ID/content-hash repair after source relocation.
-- Previewed Vendor add/overwrite/conflict/skip plan, file ownership hashes,
-  plan-to-copy hash checks, transaction journaling/recovery, rollback, and a
-  deterministic lockfile.
-- Cancellable Vendor execution at file boundaries and symbolic-link rejection
-  for planning, execution, and transaction recovery.
-- Strict Reference/Vendor metadata validation rejects invalid JSON/schema,
-  duplicate ownership, path traversal, link/junction escapes, and changes
-  between planning and execution.
-- Desktop plan preview and explicit confirmation; planning and file copying are
-  dispatched outside the UI thread. Reference state can be inspected and
-  atomically repaired by ID/content hash, with publication rejected if the
-  inspected configuration changed before repair.
+状态：完成基础边界。
 
-Evidence: CTest `phase1` through `phase3` cover 25 functional cases, including
-deterministic closure/lockfiles, conflict protection,
-rollback injection, Reference merge/repair, concurrent metadata changes,
-malicious lockfile paths, and workspace isolation.
+- `xips://asset/<id>`、`xips://search?q=...`。
+- 桌面参数 `--open-asset` 与 `--search`。
+- 只读 CLI：list、resolve、link、parse-uri。
+- 未实现 Windows 协议注册、单实例 IPC 和 ZeroSlack 嵌入控件；这些属于后续适配层。
 
-## Phase 4 — Versions, differences, and tests
+## 5. 验收
 
-Status: complete and verified.
+状态：完成。
 
-- Bounded, cancellable Git commit/tag/branch/status queries with time and output
-  limits; no history scan.
-- File/manifest/Slang-semantic/dependency differences computed outside the UI
-  thread.
-- Structured, explicitly confirmed QProcess test execution with streaming
-  bounded logs, cancellation, provenance, SQLite caching, and hash/generation
-  stale-result protection.
-- Vendor upgrade preview with asset changes, owned-file removal, conflict
-  protection, and transactional rollback.
-
-Evidence: CTest `phase1` through `phase4` cover 32 functional cases. Phase-4
-cases use a real temporary Git repository
-and process fixture and verify all four diff categories, cancellation,
-provenance, stale publication rejection, and upgrade-before-mutation behavior.
-
-## Phase 5 — Cross-application interfaces
-
-Status: complete and verified.
-
-- Stable, schema-versioned CLI JSON envelopes and documented exit codes.
-- Non-interactive desktop/CLI help and version startup paths suitable for
-  automation and deployment loader checks.
-- Preview-by-default module registration and Reference/Vendor import; all writes
-  require `--execute`.
-- Previewed, staged managed-Module creation from an empty template, selected
-  Module, source file, or existing directory, with failure/cancellation cleanup.
-- Desktop file/directory/Git-checkout registration uses Slang for top and
-  dependency-unit discovery, requires user confirmation, and leaves sources in
-  place.
-- Versioned `zeroslack://open` and `zeroslack://insert-code-block` outbound URIs.
-- Atomic Code Block handoff with ordered slot metadata and example input/output.
-- Duplicate-ID prevention and explicit target-tool version checking.
-- Execution-time validation confines managed creation and in-place
-  registration to their previewed destinations, rejects link-backed roots or
-  sources, and blocks forged or stale plans before publication.
-- Desktop actions for opening assets and sending Code Blocks through the same
-  file/URI contracts, without cross-application database access.
-
-Evidence: CTest `phase1` through `phase5` cover 44 core functional cases.
-Phase-5 tests execute the built CLI as a child
-process and verify JSON contracts, preview/write separation, module registration
-without source copying, managed publication/rollback/cancellation, project
-imports, target-tool conflicts, URIs, and Code Block handoff.
-
-## Final verification
-
-Status: complete and verified.
-
-- A clean Release configuration in `build-usable` compiled all 92 build steps
-  with Qt 6.10.2, MinGW 13.1.0, CMake 3.30.5, and Ninja 1.12.1.
-- CTest passed 6/6 suites in 7.36 seconds: phase counts are 10, 4, 11, 7, and
-  12, plus 3 offscreen GUI cases, for 47 functional cases total. The Debug
-  build passed the same suites in 7.53 seconds with Qt assertions enabled.
-- GUI smoke coverage verifies the first-screen asset library, relevance-ordered
-  selective search, short-file preview, binary-file handling, multi-source
-  switching, and per-asset include-file refresh without changing an unaffected
-  asset generation.
-- CMake installation plus `windeployqt` produced
-  `build-usable/install/bin/xips.exe` and `xips-cli.exe` with examples and
-  documentation. Both deployed executables returned exit code 0 with the Qt
-  development directories removed from `PATH`; the deployed CLI also cataloged
-  all four installed example assets, and the offscreen GUI harness passed with
-  the installed Qt runtime/plugin directory selected.
-- Formats, behavior, source inventory, known limitations, and follow-up scope
-  are documented. No remote push was performed.
+- Debug 全新构建通过；`core` 与 Qt offscreen `gui_smoke` 均通过。
+- 严格警告构建使用 `-Wall -Wextra -Wpedantic -Wconversion -Wshadow`，无新增警告，两套测试再次通过。
+- 全新 Release 构建完成 43 个步骤；CTest 2/2 通过，共 10 个功能用例，耗时 0.65 秒。
+- 离屏首屏截图由测试进程生成，首屏、搜索、文件选择、版本列表和二进制保护断言均通过。
+- `cmake --install` 与 `windeployqt` 生成 `build-lean-release/install`。
+- 在 PATH 中移除 Qt/MinGW 开发目录后，部署版 `xips.exe --version` 和 `xips-cli.exe --version` 均返回 0.2.0；CLI 成功列出 3 个安装示例并生成 `xips://asset/reset_gen`。
+- `git diff --check` 通过；旧功能实现、旧测试和旧行为文档已从源码中删除。

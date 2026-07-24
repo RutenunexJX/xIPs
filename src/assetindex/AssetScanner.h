@@ -3,8 +3,8 @@
 #include "assetcore/Asset.h"
 #include "manifest/ManifestService.h"
 
-#include <QList>
 #include <QString>
+#include <QStringList>
 
 #include <atomic>
 
@@ -12,10 +12,13 @@ namespace xips {
 
 class AssetScanner {
 public:
-    ScanResult scan(const QList<LibraryRoot> &roots,
-                    const std::atomic_bool *cancelled = nullptr) const;
+    [[nodiscard]] ScanResult scan(
+        const QString &libraryRoot,
+        const std::atomic_bool *cancelled = nullptr) const;
 
-    static QString contentHash(const Manifest &manifest, const QString &assetRoot);
+    [[nodiscard]] static QStringList assetFiles(const QString &assetRoot);
+    [[nodiscard]] static QString contentHash(const Manifest &manifest,
+                                             const QString &assetRoot);
 
 private:
     void discoverManifests(const QString &directory,

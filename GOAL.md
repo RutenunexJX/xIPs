@@ -1,47 +1,19 @@
 # xIPs long-term goal
 
-Deliver a reliable personal FPGA reusable-asset manager whose source directories
-and Git repositories are the only facts of record. xIPs must remain independent
-from ZeroSlack and Pinloom while exposing stable file, CLI, and URI integration
-boundaries.
+xIPs 的长期目标是成为个人 FPGA IP 的本地资产目录：能够可靠地收集、查找、保存版本并导出，不扩展为 HDL IDE、构建系统、依赖管理器或云服务。
 
-## Invariants
+## 不变量
 
-- SQLite contains only disposable indexes, cached semantics/test results, and
-  convenience activity timestamps.
-- External registration never moves or copies source.
-- Manifest and lockfile writes are atomic and preserve extensions.
-- SystemVerilog facts come from Slang; no fallback source regex parser exists.
-- Dependency resolution and import planning are deterministic and independent of
-  Qt Widgets.
-- User-modified destination files are never silently overwritten.
-- Long-running analysis, indexing, Git, test, and copy work stays off the UI
-  thread and supports cancellation where applicable.
-- Results are published only for the matching asset identity, content hash, and
-  generation.
+- 产品只管理一种用户可见资产：IP。
+- 每个 IP 使用稳定且唯一的 ID；旧 `module`、`code-block` manifest 仅作为读取兼容。
+- 资产目录和 `.xips.json` 是事实来源，不使用共享数据库。
+- 新写入路径相对 IP 根目录，能够随坚果云目录整体移动。
+- manifest 原子替换，未知字段不会因编辑而丢失。
+- 导入不修改源目录；版本快照不可变；导出不覆盖已有目录。
+- `.git`、构建、工具缓存和内部版本目录不会进入新快照。
+- 界面只呈现资产列表、基本信息、文件和版本。
+- 全局唤起和 ZeroSlack 通过核心库、只读 CLI 或 `xips://` URI 接入，不向核心模型加入专属业务。
 
-## Milestone state
+## 完成定义
 
-- Phase 1: complete; rebuildable/incremental indexing, selective fuzzy search,
-  text/binary-safe multi-source preview, last-used caching, and 10 automated
-  cases verified.
-- Phase 2: complete; Slang protocol parsing and stale-generation guards verified.
-- Phase 3: complete; deterministic Reference/Vendor planning, non-destructive
-  Reference merge, metadata/path confinement, ownership conflicts,
-  cancellation, guarded Reference repair, transactional rollback, and 11
-  phase-specific cases verified.
-- Phase 4: complete; bounded Git facts, structured differences, confirmed and
-  cancellable test execution, stale-result guards, and upgrade preview verified.
-- Phase 5: complete; stable JSON CLI, explicit execution gates, atomic handoff,
-  confined/stale-safe managed creation, in-place Slang-assisted registration,
-  and outbound ZeroSlack URI boundaries verified without shared databases.
-- Final acceptance: complete; a clean Release build passed 6/6 CTest suites and
-  47 functional cases, including three offscreen GUI cases. A self-contained
-  Windows deployment tree was generated and its GUI/CLI executables passed
-  loader startup checks without the Qt development `PATH`; the deployed CLI
-  cataloged the installed example library, and the offscreen GUI harness passed
-  against the installed Qt runtime/plugin directory.
-
-The completed Codex goal covered all milestones, phased updates to this file,
-`PLAN.md`, and `README.md`, and an evidence-based report of behavior,
-limitations, and changed files. No remote push was part of the goal.
+一个可用版本必须能够完成：选择资产库、复制导入 IP、编辑元数据、搜索筛选、预览文件、创建版本、导出工作副本或历史版本，以及通过稳定 ID 从 CLI/URI 定位资产。构建和验收必须能够完全离屏执行。

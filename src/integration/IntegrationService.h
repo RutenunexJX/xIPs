@@ -1,59 +1,35 @@
 #pragma once
 
-#include "assetcore/Asset.h"
-
 #include <QJsonObject>
-#include <QList>
 #include <QString>
 #include <QUrl>
 
+#include <optional>
+
 namespace xips {
 
-struct IntegrationIssue {
-    Diagnostic::Severity severity = Diagnostic::Severity::Error;
-    QString message;
-    QString path;
+enum class ActivationAction {
+    ShowLibrary,
+    OpenAsset,
+    Search
 };
 
-struct ModuleRegistrationRequest {
-    QString assetRoot;
-    QString sourcePath;
-    QStringList sourcePaths;
-    QString id;
-    QString name;
-    QString top;
-    QString version;
-    QStringList includeDirs;
-    QStringList defines;
-    QList<DependencySpec> dependencies;
-    QStringList existingAssetIds;
-};
+struct ActivationRequest {
+    ActivationAction action = ActivationAction::ShowLibrary;
+    QString value;
 
-struct ModuleRegistrationPlan {
-    QString assetRoot;
-    QString manifestPath;
-    Manifest manifest;
-    QList<IntegrationIssue> issues;
-
-    [[nodiscard]] bool canExecute() const;
+    [[nodiscard]] bool isValid() const;
     [[nodiscard]] QJsonObject toJson() const;
+    [[nodiscard]] static std::optional<ActivationRequest> fromJson(
+        const QJsonObject &object);
 };
 
 class IntegrationService {
 public:
-    [[nodiscard]] ModuleRegistrationPlan planModuleRegistration(
-        const ModuleRegistrationRequest &request) const;
-    bool executeModuleRegistration(const ModuleRegistrationPlan &plan,
-                                   bool confirmed,
-                                   QString *error = nullptr) const;
-
-    [[nodiscard]] static QUrl zeroSlackOpenUri(const AssetRecord &asset);
-    [[nodiscard]] static QJsonObject codeBlockPayload(const AssetRecord &asset);
-    static bool writeCodeBlockHandoff(const AssetRecord &asset,
-                                      const QString &path,
-                                      QString *error = nullptr);
-    [[nodiscard]] static QUrl zeroSlackCodeBlockUri(const AssetRecord &asset,
-                                                   const QString &handoffPath);
+    [[nodiscard]] static QUrl assetUri(const QString &assetId);
+    [[nodiscard]] static QUrl searchUri(const QString &query);
+    [[nodiscard]] static std::optional<ActivationRequest> parseUri(
+        const QUrl &uri);
 };
 
 } // namespace xips

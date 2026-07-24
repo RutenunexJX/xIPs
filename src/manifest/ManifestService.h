@@ -25,14 +25,18 @@ class ManifestService {
 public:
     static constexpr int CurrentSchemaVersion = 1;
 
-    ManifestLoadResult load(const QString &manifestPath) const;
-    ManifestLoadResult parse(const QByteArray &contents,
-                             const QString &sourceName = QStringLiteral("<memory>")) const;
+    [[nodiscard]] ManifestLoadResult load(const QString &manifestPath) const;
+    [[nodiscard]] ManifestLoadResult parse(
+        const QByteArray &contents,
+        const QString &sourceName = QStringLiteral("<memory>")) const;
 
-    QJsonObject toJson(const Manifest &manifest) const;
-    bool write(const QString &manifestPath, const Manifest &manifest, QString *error = nullptr) const;
-    QList<Diagnostic> validate(const Manifest &manifest,
-                               const QString &sourceName = QStringLiteral("<memory>")) const;
+    [[nodiscard]] QJsonObject toJson(const Manifest &manifest) const;
+    bool write(const QString &manifestPath,
+               const Manifest &manifest,
+               QString *error = nullptr) const;
+    [[nodiscard]] QList<Diagnostic> validate(
+        const Manifest &manifest,
+        const QString &sourceName = QStringLiteral("<memory>")) const;
 
 private:
     bool migrate(QJsonObject &object,

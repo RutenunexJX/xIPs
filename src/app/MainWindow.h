@@ -2,23 +2,22 @@
 
 #include "app/AssetTableModel.h"
 #include "app/LibraryController.h"
-#include "importer/ImportService.h"
-#include "testrunner/TestRunner.h"
+#include "integration/IntegrationService.h"
+#include "library/AssetLibraryService.h"
 
 #include <QMainWindow>
 
-#include <atomic>
-#include <memory>
+#include <optional>
 
+class QAction;
 class QComboBox;
+class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
-class QSplitter;
 class QTableView;
 class QTabWidget;
 class QTimer;
 class QTreeWidget;
-class QTreeWidgetItem;
 
 namespace xips {
 
@@ -26,56 +25,57 @@ class MainWindow final : public QMainWindow {
     Q_OBJECT
 
 public:
-    MainWindow(QString primaryLibrary,
-               QStringList externalLibraries,
-               QString indexPath,
-               QWidget *parent = nullptr);
+    explicit MainWindow(QString libraryRoot, QWidget *parent = nullptr);
+    void applyActivation(const ActivationRequest &request);
 
 private:
     void buildUi();
     void buildMenus();
-    void populateFilterTree(const QList<AssetRecord> &assets);
     void runSearch();
-    void updateDetails(const AssetRecord *record);
-    void openPrimaryLibrary();
-    void addExternalLibrary();
-    void importCurrentAsset(ImportMode mode);
-    void inspectReferences();
-    void executeImportPlan(const ImportPlan &plan);
-    void runCurrentTest();
-    void loadTestResults(const AssetRecord &record);
-    void compareCurrentAsset();
-    void openCurrentInZeroSlack();
-    void sendCurrentCodeBlock();
-    void createManagedAsset();
-    void registerSystemVerilogSource();
-    void cancelFileOperation();
-    void markAssetUsed(const QString &assetId);
-    void saveLibrarySettings();
-    const AssetRecord *currentRecord() const;
+    void refreshTagFilter();
+    void updateDetails(const AssetRecord *asset);
+    void populateFiles(const AssetRecord &asset);
+    void populateVersions(const AssetRecord &asset);
     void selectFirstRow();
+    bool selectAssetById(const QString &assetId);
 
-    QString m_primaryLibrary;
-    QStringList m_externalLibraries;
+    void chooseLibrary();
+    void addIp();
+    void editCurrentIp();
+    void createCurrentVersion();
+    void exportCurrentVersion();
+    void openCurrentFolder();
+    void copyCurrentLink();
+    void saveLibrarySetting();
+
+    [[nodiscard]] const AssetRecord *currentRecord() const;
+    [[nodiscard]] QString selectedVersion() const;
+
+    QString m_libraryRoot;
     LibraryController *m_controller = nullptr;
-    TestRunner *m_testRunner = nullptr;
-    qint64 m_activeTestGeneration = -1;
-    std::shared_ptr<std::atomic_bool> m_fileOperationCancelled;
+    AssetLibraryService m_libraryService;
+    std::optional<ActivationRequest> m_pendingActivation;
 
     QLineEdit *m_searchEdit = nullptr;
-    QTreeWidget *m_filterTree = nullptr;
+    QComboBox *m_tagFilter = nullptr;
     QTableView *m_assetTable = nullptr;
-    QTreeWidget *m_inspector = nullptr;
-    QComboBox *m_sourceSelector = nullptr;
-    QPlainTextEdit *m_sourcePreview = nullptr;
-    QTreeWidget *m_dependencies = nullptr;
-    QPlainTextEdit *m_versions = nullptr;
-    QPlainTextEdit *m_tests = nullptr;
-    QPlainTextEdit *m_usage = nullptr;
-    QTabWidget *m_detailsTabs = nullptr;
-    QTimer *m_searchTimer = nullptr;
     AssetTableModel *m_tableModel = nullptr;
     AssetFilterProxyModel *m_proxyModel = nullptr;
+    QLabel *m_nameLabel = nullptr;
+    QTreeWidget *m_infoTree = nullptr;
+    QPlainTextEdit *m_description = nullptr;
+    QTreeWidget *m_fileTree = nullptr;
+    QPlainTextEdit *m_sourcePreview = nullptr;
+    QTreeWidget *m_versionTree = nullptr;
+    QTabWidget *m_tabs = nullptr;
+    QTimer *m_searchTimer = nullptr;
+
+    QAction *m_editAction = nullptr;
+    QAction *m_versionAction = nullptr;
+    QAction *m_exportAction = nullptr;
+    QAction *m_openFolderAction = nullptr;
+    QAction *m_copyLinkAction = nullptr;
+
     QList<AssetRecord> m_assets;
     QList<ScanIssue> m_scanIssues;
 };

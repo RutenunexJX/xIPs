@@ -1,26 +1,18 @@
 {
-  "schemaVersion": 1,
-  "id": "common_types",
-  "type": "module",
-  "name": "Common Types Package",
-  "description": "Small package used by the example reset and counter assets.",
-  "version": "1.1.0",
-  "top": "common_types_pkg",
-  "language": "SystemVerilog",
-  "sources": [
-    "rtl/common_types_pkg.sv"
-  ],
-  "includeDirs": [],
-  "defines": [],
-  "constraints": [],
-  "dependencies": [],
-  "tests": [],
-  "tools": {
-    "slang": ">=6.0"
-  },
-  "tags": [
-    "package",
-    "types"
-  ],
-  "project": "Utility RTL"
+    "schemaVersion": 1,
+    "id": "common_types",
+    "type": "ip",
+    "name": "Common Types Package",
+    "description": "Small reusable SystemVerilog type package.",
+    "version": "1.1.0",
+    "top": "common_types_pkg",
+    "language": "SystemVerilog",
+    "sources": [
+        "rtl/common_types_pkg.sv"
+    ],
+    "constraints": [],
+    "tags": [
+        "package",
+        "types"
+    ]
 }

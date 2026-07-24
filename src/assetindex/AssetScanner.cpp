@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QSet>
 
 #include <algorithm>
@@ -32,22 +33,33 @@ bool isLinkLike(const QFileInfo &info)
 
 bool isIgnoredDirectory(const QString &name)
 {
-    const QString normalized = name.toLower();
-    return normalized == QStringLiteral(".git") || normalized == QStringLiteral(".xips")
-           || normalized == QStringLiteral(".cache") || normalized == QStringLiteral("build")
-           || normalized.startsWith(QStringLiteral("build-"))
-           || normalized.startsWith(QStringLiteral(".xips-create-"));
+    const QString value = name.toLower();
+    return value == QStringLiteral(".git")
+           || value == QStringLiteral(".xips")
+           || value == QStringLiteral(".cache")
+           || value == QStringLiteral(".xil")
+           || value == QStringLiteral("ip_user_files")
+           || value == QStringLiteral("build")
+           || value.startsWith(QStringLiteral("build-"))
+           || value.startsWith(QStringLiteral(".xips-create-"));
 }
 
-QString resolvedPath(const QString &assetRoot, const QString &path)
+QString normalizedAbsolute(const QString &path)
 {
-    if (QDir::isAbsolutePath(path)) {
-        return QDir::cleanPath(path);
-    }
-    return QDir(assetRoot).absoluteFilePath(path);
+    return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
 }
 
-void collectDirectoryFiles(const QString &directory, QStringList &files)
+bool pathIsWithin(const QString &path, const QString &root)
+{
+    const QString candidate = QDir::fromNativeSeparators(normalizedAbsolute(path));
+    const QString boundary = QDir::fromNativeSeparators(normalizedAbsolute(root));
+    return candidate.compare(boundary, Qt::CaseInsensitive) == 0
+           || candidate.startsWith(boundary + u'/', Qt::CaseInsensitive);
+}
+
+void collectFiles(const QString &directory,
+                  const QString &assetRoot,
+                  QStringList &files)
 {
     const QFileInfoList entries = QDir(directory).entryInfoList(
         QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
@@ -58,174 +70,154 @@ void collectDirectoryFiles(const QString &directory, QStringList &files)
         }
         if (entry.isDir()) {
             if (!isIgnoredDirectory(entry.fileName())) {
-                collectDirectoryFiles(entry.absoluteFilePath(), files);
+                collectFiles(entry.absoluteFilePath(), assetRoot, files);
             }
-        } else if (entry.isFile()) {
-            files.append(entry.absoluteFilePath());
+            continue;
         }
+        if (!entry.isFile() || entry.fileName() == QStringLiteral(".xips.json")) {
+            continue;
+        }
+        QString relative = QDir(assetRoot).relativeFilePath(entry.absoluteFilePath());
+        relative = QDir::cleanPath(relative);
+        relative = QDir::fromNativeSeparators(relative);
+        files.append(relative);
     }
-}
-
-QStringList declaredFiles(const Manifest &manifest, const QString &assetRoot)
-{
-    QStringList paths = manifest.sources;
-    paths.append(manifest.constraints);
-    paths.append(manifest.tests);
-    paths.append(manifest.examples);
-    paths.append(manifest.documentation);
-    for (const QString &includeDirectory : manifest.includeDirs) {
-        const QString absoluteDirectory = resolvedPath(assetRoot, includeDirectory);
-        QStringList includeFiles;
-        if (QFileInfo(absoluteDirectory).isDir()) {
-            collectDirectoryFiles(absoluteDirectory, includeFiles);
-        }
-        for (const QString &includeFile : includeFiles) {
-            if (QDir::isAbsolutePath(includeDirectory)) {
-                paths.append(includeFile);
-            } else {
-                QString relative = QDir(assetRoot).relativeFilePath(includeFile);
-                relative = QDir::cleanPath(relative);
-                relative.replace(u'\\', u'/');
-                paths.append(relative);
-            }
-        }
-    }
-    paths.removeDuplicates();
-    std::sort(paths.begin(), paths.end());
-    return paths;
 }
 
 } // namespace
 
-ScanResult AssetScanner::scan(const QList<LibraryRoot> &roots,
+ScanResult AssetScanner::scan(const QString &libraryRoot,
                               const std::atomic_bool *cancelled) const
 {
     ScanResult result;
-    QHash<QString, QString> firstManifestById;
+    const QFileInfo rootInfo(libraryRoot);
+    if (!rootInfo.isDir()) {
+        result.issues.append({
+            .severity = Diagnostic::Severity::Error,
+            .assetId = {},
+            .path = normalizedAbsolute(libraryRoot),
+            .message = QStringLiteral("Library root does not exist or is not a directory"),
+        });
+        return result;
+    }
 
-    for (const LibraryRoot &root : roots) {
+    QStringList manifests;
+    discoverManifests(rootInfo.absoluteFilePath(), manifests, cancelled);
+    std::sort(manifests.begin(), manifests.end());
+    QHash<QString, QString> firstPathById;
+    for (const QString &manifestPath : manifests) {
         if (isCancelled(cancelled)) {
             result.cancelled = true;
             return result;
         }
-
-        const QFileInfo rootInfo(root.path);
-        if (!rootInfo.exists() || !rootInfo.isDir()) {
-            result.issues.append(ScanIssue{
+        const ManifestLoadResult loaded = m_manifestService.load(manifestPath);
+        if (!loaded.ok()) {
+            for (const Diagnostic &entry : loaded.diagnostics) {
+                result.issues.append({
+                    .severity = entry.severity,
+                    .assetId = {},
+                    .path = manifestPath,
+                    .message = entry.message,
+                });
+            }
+            continue;
+        }
+        const Manifest &manifest = *loaded.manifest;
+        if (firstPathById.contains(manifest.id)) {
+            result.issues.append({
                 .severity = Diagnostic::Severity::Error,
-                .path = root.path,
-                .message = QStringLiteral("Library root does not exist or is not a directory"),
+                .assetId = manifest.id,
+                .path = manifestPath,
+                .message = QStringLiteral("Duplicate IP id '%1'; first seen at %2")
+                               .arg(manifest.id, firstPathById.value(manifest.id)),
             });
             continue;
         }
+        firstPathById.insert(manifest.id, manifestPath);
 
-        QStringList manifests;
-        discoverManifests(rootInfo.absoluteFilePath(), manifests, cancelled);
-        std::sort(manifests.begin(), manifests.end());
+        AssetRecord record;
+        record.manifest = manifest;
+        record.manifestPath = normalizedAbsolute(manifestPath);
+        record.assetRoot = QFileInfo(manifestPath).absolutePath();
+        record.contentHash = contentHash(manifest, record.assetRoot);
+        record.lastModified = QFileInfo(manifestPath).lastModified();
 
-        for (const QString &manifestPath : manifests) {
-            if (isCancelled(cancelled)) {
-                result.cancelled = true;
-                return result;
+        const QStringList files = assetFiles(record.assetRoot);
+        record.fileCount = files.size();
+        for (const QString &relative : files) {
+            const QFileInfo info(QDir(record.assetRoot).absoluteFilePath(relative));
+            record.totalBytes += info.size();
+            if (info.lastModified() > record.lastModified) {
+                record.lastModified = info.lastModified();
             }
+        }
 
-            const ManifestLoadResult loadResult = m_manifestService.load(manifestPath);
-            if (!loadResult.ok()) {
-                for (const Diagnostic &diagnostic : loadResult.diagnostics) {
-                    result.issues.append(ScanIssue{
-                        .severity = diagnostic.severity,
-                        .path = manifestPath,
-                        .message = diagnostic.message,
-                    });
-                }
-                continue;
-            }
-
-            const Manifest &manifest = *loadResult.manifest;
-            if (firstManifestById.contains(manifest.id)) {
-                const QString firstPath = firstManifestById.value(manifest.id);
-                result.issues.append(ScanIssue{
+        QStringList declared = manifest.sources;
+        declared.append(manifest.constraints);
+        declared.append(manifest.documentation);
+        declared.removeDuplicates();
+        for (const QString &path : declared) {
+            const QString absolute = QDir::isAbsolutePath(path)
+                                         ? normalizedAbsolute(path)
+                                         : normalizedAbsolute(
+                                               QDir(record.assetRoot).absoluteFilePath(path));
+            if (!pathIsWithin(absolute, record.assetRoot)) {
+                result.issues.append({
                     .severity = Diagnostic::Severity::Error,
                     .assetId = manifest.id,
-                    .path = manifestPath,
-                    .message = QStringLiteral("Duplicate asset id '%1'; first seen at %2")
-                                   .arg(manifest.id, firstPath),
+                    .path = absolute,
+                    .message = QStringLiteral("Manifest path escapes the IP directory"),
                 });
-                continue;
-            }
-            firstManifestById.insert(manifest.id, manifestPath);
-
-            AssetRecord record;
-            record.manifest = manifest;
-            record.assetRoot = QFileInfo(manifestPath).absolutePath();
-            record.manifestPath = QFileInfo(manifestPath).absoluteFilePath();
-            record.origin = root.origin;
-            record.contentHash = contentHash(manifest, record.assetRoot);
-            record.sourceRepository =
-                manifest.rawObject.value(QStringLiteral("sourceRepository")).toString();
-            if (record.sourceRepository.isEmpty()) {
-                record.sourceRepository = rootInfo.absoluteFilePath();
-            }
-            record.lastUsed = QDateTime::fromString(
-                manifest.rawObject.value(QStringLiteral("lastUsed")).toString(),
-                Qt::ISODateWithMs);
-
-            bool hasMissingFiles = false;
-            for (const QString &source : manifest.sources) {
-                const QString absolutePath = resolvedPath(record.assetRoot, source);
-                if (!QFileInfo::exists(absolutePath)) {
-                    hasMissingFiles = true;
-                    result.issues.append(ScanIssue{
-                        .severity = Diagnostic::Severity::Error,
-                        .assetId = manifest.id,
-                        .path = absolutePath,
-                        .message = QStringLiteral("Declared source file is missing"),
-                    });
-                }
-            }
-            for (const QString &includeDirectory : manifest.includeDirs) {
-                const QString absolutePath =
-                    resolvedPath(record.assetRoot, includeDirectory);
-                if (!QFileInfo(absolutePath).isDir()) {
-                    hasMissingFiles = true;
-                    result.issues.append(ScanIssue{
-                        .severity = Diagnostic::Severity::Error,
-                        .assetId = manifest.id,
-                        .path = absolutePath,
-                        .message = QStringLiteral("Declared include directory is missing"),
-                    });
-                }
-            }
-            record.diagnosticsStatus =
-                hasMissingFiles ? QStringLiteral("manifest-error")
-                                : QStringLiteral("not-analyzed");
-            result.assets.append(record);
-
-            for (const Diagnostic &diagnostic : loadResult.diagnostics) {
-                result.issues.append(ScanIssue{
-                    .severity = diagnostic.severity,
+            } else if (!QFileInfo::exists(absolute)) {
+                result.issues.append({
+                    .severity = Diagnostic::Severity::Error,
                     .assetId = manifest.id,
-                    .path = manifestPath,
-                    .message = diagnostic.message,
+                    .path = absolute,
+                    .message = QStringLiteral("Declared file is missing"),
                 });
             }
         }
+        for (const Diagnostic &entry : loaded.diagnostics) {
+            result.issues.append({
+                .severity = entry.severity,
+                .assetId = manifest.id,
+                .path = manifestPath,
+                .message = entry.message,
+            });
+        }
+        result.assets.append(record);
     }
+
+    std::sort(result.assets.begin(), result.assets.end(),
+              [](const AssetRecord &left, const AssetRecord &right) {
+                  return QString::compare(left.manifest.name,
+                                          right.manifest.name,
+                                          Qt::CaseInsensitive) < 0;
+              });
     return result;
 }
 
-QString AssetScanner::contentHash(const Manifest &manifest, const QString &assetRoot)
+QStringList AssetScanner::assetFiles(const QString &assetRoot)
 {
-    ManifestService service;
+    QStringList files;
+    if (QFileInfo(assetRoot).isDir()) {
+        collectFiles(normalizedAbsolute(assetRoot), normalizedAbsolute(assetRoot), files);
+    }
+    std::sort(files.begin(), files.end());
+    files.removeDuplicates();
+    return files;
+}
+
+QString AssetScanner::contentHash(const Manifest &manifest,
+                                  const QString &assetRoot)
+{
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    hash.addData(QByteArrayView("xips-content-v1\0", 16));
-    hash.addData(json::canonicalJson(service.toJson(manifest)));
-
-    for (const QString &declaredPath : declaredFiles(manifest, assetRoot)) {
+    hash.addData(QByteArrayView("xips-ip-v1\0", 11));
+    hash.addData(json::canonicalJson(ManifestService().toJson(manifest)));
+    for (const QString &relative : assetFiles(assetRoot)) {
         hash.addData(QByteArrayView("\0path\0", 6));
-        hash.addData(declaredPath.toUtf8());
-
-        QFile file(resolvedPath(assetRoot, declaredPath));
+        hash.addData(relative.toUtf8());
+        QFile file(QDir(assetRoot).absoluteFilePath(relative));
         if (!file.open(QIODevice::ReadOnly)) {
             hash.addData(QByteArrayView("\0missing\0", 9));
             continue;
@@ -245,26 +237,22 @@ void AssetScanner::discoverManifests(const QString &directory,
     if (isCancelled(cancelled)) {
         return;
     }
-
     const QDir dir(directory);
+    const QString localManifest = dir.absoluteFilePath(QStringLiteral(".xips.json"));
+    if (QFileInfo(localManifest).isFile()) {
+        manifests.append(normalizedAbsolute(localManifest));
+        return;
+    }
+
     const QFileInfoList entries = dir.entryInfoList(
-        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+        QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
         QDir::Name);
     for (const QFileInfo &entry : entries) {
         if (isCancelled(cancelled)) {
             return;
         }
-        if (isLinkLike(entry)) {
-            continue;
-        }
-        if (entry.isDir()) {
-            if (!isIgnoredDirectory(entry.fileName())) {
-                discoverManifests(entry.absoluteFilePath(), manifests, cancelled);
-            }
-            continue;
-        }
-        if (entry.isFile() && entry.fileName() == QStringLiteral(".xips.json")) {
-            manifests.append(entry.absoluteFilePath());
+        if (!isLinkLike(entry) && !isIgnoredDirectory(entry.fileName())) {
+            discoverManifests(entry.absoluteFilePath(), manifests, cancelled);
         }
     }
 }
