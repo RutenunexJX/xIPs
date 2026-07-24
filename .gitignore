@@ -47,6 +47,13 @@ CMakeLists.txt.user*
 
 # QtCreator 4.8< compilation database
 compile_commands.json
+/build/
+/build-*/
+/.cache/
+/.xips/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
 # QtCreator local machine specific files for imported projects
 *creator.user*

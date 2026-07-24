@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "vivado_clocking_ip",
+  "type": "ip",
+  "name": "Vivado Clocking Wizard Package",
+  "description": "Opaque example package for a generated Vivado clocking IP.",
+  "version": "2.0.0",
+  "top": "clk_wiz_0",
+  "language": "Mixed",
+  "sources": [
+    "ip/clk_wiz_0.xci",
+    "scripts/recreate_ip.tcl"
+  ],
+  "includeDirs": [],
+  "defines": [],
+  "constraints": [
+    "constraints/clocking.xdc"
+  ],
+  "dependencies": [],
+  "tests": [],
+  "tools": {
+    "vivado": "2022.2"
+  },
+  "tags": [
+    "vivado",
+    "clocking",
+    "opaque"
+  ],
+  "opaque": true,
+  "rebuildScript": "scripts/recreate_ip.tcl",
+  "excludedGeneratedDirectories": [
+    ".Xil",
+    "ip_user_files",
+    "sim",
+    "synth"
+  ],
+  "project": "Vendor IP"
+}

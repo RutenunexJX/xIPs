@@ -1,0 +1,3 @@
+`ifndef XIPS_RESET_STAGES
+`define XIPS_RESET_STAGES 2
+`endif
