@@ -47,7 +47,8 @@ private:
     void runSearch();
     void rebuildGroups(const QList<AssetRecord> &assets);
     void updateDetails(const AssetRecord *asset);
-    void populateFiles(const AssetRecord &asset);
+    void populateFiles(const AssetRecord &asset,
+                       const QString &matchedFile = {});
     void populateVersions(const AssetRecord &asset);
     void selectFirstRow();
     bool selectAssetById(const QString &assetId);
@@ -64,6 +65,7 @@ private:
     void copyCurrentVersion();
     void deleteSelectedVersion();
     void openCurrent();
+    void openMatchedFile();
     void openSelectedFile();
     void assignNewGroup();
     void renameCurrentGroup();
@@ -78,6 +80,7 @@ private:
 
     [[nodiscard]] const AssetRecord *currentRecord() const;
     [[nodiscard]] QList<AssetRecord> selectedRecords() const;
+    [[nodiscard]] QString currentMatchedFile() const;
     [[nodiscard]] QString currentGroup() const;
     [[nodiscard]] QString selectedVersion() const;
 
@@ -115,6 +118,7 @@ private:
     QFrame *m_noticeFrame = nullptr;
     QLabel *m_noticeLabel = nullptr;
     QToolButton *m_noticeActionButton = nullptr;
+    QToolButton *m_openMatchedFileButton = nullptr;
 
     QAction *m_addFilesAction = nullptr;
     QAction *m_addFolderAction = nullptr;
@@ -124,6 +128,7 @@ private:
     QAction *m_versionAction = nullptr;
     QAction *m_copyAction = nullptr;
     QAction *m_openAction = nullptr;
+    QAction *m_openMatchedFileAction = nullptr;
     QAction *m_refreshAction = nullptr;
     QAction *m_problemAction = nullptr;
     QAction *m_deleteVersionAction = nullptr;

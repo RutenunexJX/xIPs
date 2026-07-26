@@ -95,6 +95,8 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
         QStringLiteral("deleteAssetAction"));
     auto *edit = window.findChild<QAction *>(QStringLiteral("editAction"));
     auto *open = window.findChild<QAction *>(QStringLiteral("openAction"));
+    auto *openMatched = window.findChild<QAction *>(
+        QStringLiteral("openMatchedFileAction"));
     auto *more = window.findChild<QToolButton *>(QStringLiteral("moreButton"));
     auto *groupMenu = window.findChild<QToolButton *>(QStringLiteral("groupMenuButton"));
     auto *groups = window.findChild<QTreeWidget *>(QStringLiteral("groupTree"));
@@ -120,6 +122,7 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
     QVERIFY(deleteAsset);
     QVERIFY(edit);
     QVERIFY(open);
+    QVERIFY(openMatched);
     QVERIFY(more);
     QVERIFY(groupMenu);
     QVERIFY(groups);
@@ -165,6 +168,7 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
     QVERIFY(!findItem(info, 0, QStringLiteral("Last saved version")));
     QCOMPARE(files->columnCount(), 1);
     QCOMPARE(open->text(), QStringLiteral("Open file"));
+    QVERIFY(!openMatched->isVisible());
     QCOMPARE(versions->topLevelItemCount(), 0);
     QVERIFY(!deleteVersion->isVisible());
 
@@ -201,6 +205,7 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
     QVERIFY(emptyResults->text().contains(QStringLiteral("group reset")));
     search->clear();
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 1, 3000);
+    QVERIFY(!openMatched->isVisible());
     groups->setCurrentItem(groups->topLevelItem(0));
     QTRY_VERIFY_WITH_TIMEOUT(table->model()->rowCount() >= 3, 3000);
 
@@ -223,6 +228,15 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
                 .data(Qt::ToolTipRole)
                 .toString()
                 .contains(QStringLiteral("reset_config.svh")));
+    QTRY_VERIFY_WITH_TIMEOUT(openMatched->isVisible(), 3000);
+    QVERIFY(openMatched->isEnabled());
+    QCOMPARE(QDir::cleanPath(openMatched->data().toString()),
+             QDir::cleanPath(QDir(QString::fromUtf8(XIPS_EXAMPLE_LIBRARY))
+                                 .absoluteFilePath(
+                                     QStringLiteral("reset_gen/rtl/include/reset_config.svh"))));
+    QVERIFY(files->currentItem());
+    QVERIFY(files->currentItem()->text(0).endsWith(
+        QStringLiteral("reset_config.svh")));
 
     search->setText(QStringLiteral("reset_gen"));
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 1, 3000);

@@ -7,9 +7,11 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDesktopServices>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEventLoop>
 #include <QFile>
 #include <QLineEdit>
 #include <QLabel>
@@ -61,6 +63,19 @@ bool hasGroup(const QTreeWidget *tree, const QString &name, const QString &count
 
 } // namespace
 
+class UrlCapture final : public QObject {
+    Q_OBJECT
+
+public:
+    QUrl openedUrl;
+
+public slots:
+    void capture(const QUrl &url)
+    {
+        openedUrl = url;
+    }
+};
+
 class UserJourneyTest final : public QObject {
     Q_OBJECT
 
@@ -94,6 +109,9 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     auto *table = window.findChild<QTableView *>(QStringLiteral("assetTable"));
     auto *search = window.findChild<QLineEdit *>(QStringLiteral("searchEdit"));
     auto *groups = window.findChild<QTreeWidget *>(QStringLiteral("groupTree"));
+    auto *files = window.findChild<QTreeWidget *>(QStringLiteral("fileTree"));
+    auto *openMatchedAction = window.findChild<QAction *>(
+        QStringLiteral("openMatchedFileAction"));
     auto *updateAction = window.findChild<QAction *>(
         QStringLiteral("updateAssetAction"));
     auto *copyAction = window.findChild<QAction *>(QStringLiteral("copyAction"));
@@ -105,6 +123,8 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QVERIFY(table);
     QVERIFY(search);
     QVERIFY(groups);
+    QVERIFY(files);
+    QVERIFY(openMatchedAction);
     QVERIFY(updateAction);
     QVERIFY(copyAction);
     QVERIFY(deleteAssetAction);
@@ -153,12 +173,32 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
                 .data(Qt::ToolTipRole)
                 .toString()
                 .contains(QStringLiteral("rtl/packet_router.sv")));
+    QTRY_VERIFY_WITH_TIMEOUT(openMatchedAction->isVisible(), 3000);
+    QVERIFY(openMatchedAction->isEnabled());
+    const QString matchedTarget = openMatchedAction->data().toString();
+    QVERIFY(QFileInfo(matchedTarget).isFile());
+    QVERIFY(files->currentItem());
+    QVERIFY(files->currentItem()->text(0).endsWith(
+        QStringLiteral("packet_router.sv")));
+    UrlCapture capture;
+    QDesktopServices::setUrlHandler(QStringLiteral("file"),
+                                    &capture,
+                                    "capture");
+    openMatchedAction->trigger();
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    QDesktopServices::unsetUrlHandler(QStringLiteral("file"));
+    QCOMPARE(capture.openedUrl, QUrl::fromLocalFile(matchedTarget));
 
     AssetLibraryService service;
     ScanResult scan = AssetScanner().scan(library);
     QCOMPARE(scan.assets.size(), 2);
     const AssetRecord *single = findAsset(scan, QStringLiteral("uart_rx_sv"));
+    const AssetRecord *folder = findAsset(scan, QStringLiteral("packet_router"));
     QVERIFY(single);
+    QVERIFY(folder);
+    QCOMPARE(QDir::cleanPath(openMatchedAction->data().toString()),
+             QDir::cleanPath(QDir(folder->assetRoot).absoluteFilePath(
+                 QStringLiteral("rtl/packet_router.sv"))));
     QCOMPARE(QDir::cleanPath(MainWindow::openTarget(*single)),
              QDir::cleanPath(QDir(single->assetRoot).absoluteFilePath(
                  QStringLiteral("uart_rx.sv"))));
@@ -191,6 +231,7 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
             .toString(),
         QStringLiteral("uart_rx.sv"),
         3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!openMatchedAction->isVisible(), 3000);
     bool updateCompleted = false;
     QTimer::singleShot(0, &window, [&] {
         QDialog *dialog = window.findChild<QDialog *>(

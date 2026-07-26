@@ -13,7 +13,7 @@ xIPs is a personal FPGA reusable-asset library. It minimizes the work required t
 - Complete-asset deletion is bounded to a validated child of the selected library, includes every saved version, and never deletes the original import source.
 - Copy to names its working/saved source and final destination, exports payload only, and never overwrites an existing target.
 - Groups reuse manifest `tags` and do not change directory layout.
-- A new search starts across all assets; an intentional group scope remains visible. Search includes and directly shows real file names and relative paths.
+- A new search starts across all assets; an intentional group scope remains visible. Search includes and directly shows real file names and relative paths, selects the matched file in details, and makes it immediately actionable.
 - Git, HDL semantics, tool execution, dependency management, and cloud protocols are not product responsibilities.
 - Jianguoyun support means operating safely on an ordinary synced folder and refreshing external changes, not implementing a cloud client.
 - Future global activation and ZeroSlack embedding reuse stable IDs, the read-only CLI, and `xips://` requests without expanding the asset model.

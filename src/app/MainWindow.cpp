@@ -348,6 +348,15 @@ void MainWindow::buildUi()
     m_openAction = new QAction(QStringLiteral("Open"), this);
     m_openAction->setObjectName(QStringLiteral("openAction"));
     connect(m_openAction, &QAction::triggered, this, &MainWindow::openCurrent);
+    m_openMatchedFileAction = new QAction(
+        QStringLiteral("Open matched file"),
+        this);
+    m_openMatchedFileAction->setObjectName(
+        QStringLiteral("openMatchedFileAction"));
+    connect(m_openMatchedFileAction,
+            &QAction::triggered,
+            this,
+            &MainWindow::openMatchedFile);
     m_editAction = new QAction(QStringLiteral("Edit details"), this);
     m_editAction->setObjectName(QStringLiteral("editAction"));
     connect(m_editAction, &QAction::triggered, this, &MainWindow::editCurrentAsset);
@@ -469,8 +478,10 @@ void MainWindow::buildUi()
         auto *button = new QToolButton(details);
         button->setDefaultAction(action);
         detailActions->addWidget(button);
+        return button;
     };
     addDetailAction(m_openAction);
+    m_openMatchedFileButton = addDetailAction(m_openMatchedFileAction);
     addDetailAction(m_editAction);
     addDetailAction(m_versionAction);
     detailActions->addStretch(1);
@@ -624,7 +635,7 @@ void MainWindow::buildUi()
             });
     connect(m_assetTable, &QTableView::doubleClicked,
             this, &MainWindow::openCurrent);
-    connect(m_fileTree, &QTreeWidget::itemDoubleClicked,
+    connect(m_fileTree, &QTreeWidget::itemActivated,
             this, &MainWindow::openSelectedFile);
     connect(m_versionTree,
             &QTreeWidget::currentItemChanged,
@@ -662,6 +673,9 @@ void MainWindow::buildUi()
     m_versionAction->setEnabled(false);
     m_copyAction->setEnabled(false);
     m_openAction->setEnabled(false);
+    m_openMatchedFileAction->setEnabled(false);
+    m_openMatchedFileAction->setVisible(false);
+    m_openMatchedFileButton->hide();
     m_updateAction->setEnabled(false);
     m_deleteAssetAction->setEnabled(false);
     m_deleteVersionAction->setEnabled(false);
@@ -782,6 +796,10 @@ void MainWindow::updateDetails(const AssetRecord *asset)
     m_description->clear();
     m_fileTree->clear();
     m_versionTree->clear();
+    m_openMatchedFileAction->setData({});
+    m_openMatchedFileAction->setEnabled(false);
+    m_openMatchedFileAction->setVisible(false);
+    m_openMatchedFileButton->hide();
     if (!asset) {
         m_nameLabel->setText(QStringLiteral("No asset selected"));
         m_openAction->setText(QStringLiteral("Open"));
@@ -794,6 +812,17 @@ void MainWindow::updateDetails(const AssetRecord *asset)
     m_openAction->setText(asset->files.size() == 1
                               ? QStringLiteral("Open file")
                               : QStringLiteral("Open folder"));
+    const QString matchedFile = currentMatchedFile();
+    if (!matchedFile.isEmpty() && asset->files.contains(matchedFile)) {
+        const QString matchedPath = QDir(asset->assetRoot).absoluteFilePath(
+            matchedFile);
+        m_openMatchedFileAction->setData(matchedPath);
+        m_openMatchedFileAction->setToolTip(
+            QDir::toNativeSeparators(matchedFile));
+        m_openMatchedFileAction->setEnabled(true);
+        m_openMatchedFileAction->setVisible(true);
+        m_openMatchedFileButton->show();
+    }
     m_workingStateItem = new QTreeWidgetItem(
         m_infoTree,
         {QStringLiteral("Working copy"), QStringLiteral("Checking...")});
@@ -807,7 +836,7 @@ void MainWindow::updateDetails(const AssetRecord *asset)
                asset->lastModified.toLocalTime().toString(
                    QStringLiteral("yyyy-MM-dd HH:mm")));
     m_description->setPlainText(asset->manifest.description);
-    populateFiles(*asset);
+    populateFiles(*asset, matchedFile);
     populateVersions(*asset);
 
     const AssetRecord selectedAsset = *asset;
@@ -844,8 +873,10 @@ void MainWindow::updateDetails(const AssetRecord *asset)
     }));
 }
 
-void MainWindow::populateFiles(const AssetRecord &asset)
+void MainWindow::populateFiles(const AssetRecord &asset,
+                               const QString &matchedFile)
 {
+    QTreeWidgetItem *selection = nullptr;
     for (const QString &relative : asset.files) {
         const QString absolute = QDir(asset.assetRoot).absoluteFilePath(relative);
         auto *item = new QTreeWidgetItem(
@@ -853,9 +884,16 @@ void MainWindow::populateFiles(const AssetRecord &asset)
             {QDir::toNativeSeparators(relative)});
         item->setToolTip(0, absolute);
         item->setData(0, FilePathRole, absolute);
+        if (relative == matchedFile) {
+            selection = item;
+        }
     }
     if (m_fileTree->topLevelItemCount() > 0) {
-        m_fileTree->setCurrentItem(m_fileTree->topLevelItem(0));
+        m_fileTree->setCurrentItem(selection ? selection
+                                             : m_fileTree->topLevelItem(0));
+        if (selection) {
+            m_fileTree->scrollToItem(selection);
+        }
     }
 }
 
@@ -1522,6 +1560,23 @@ void MainWindow::openCurrent()
     }
 }
 
+void MainWindow::openMatchedFile()
+{
+    const QString target = m_openMatchedFileAction->data().toString();
+    if (!QFileInfo(target).isFile()) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Matched file is unavailable"),
+            QStringLiteral("The matched file no longer exists. Refresh the library and search again."));
+        return;
+    }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(target))) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Cannot open matched file"),
+                             QDir::toNativeSeparators(target));
+    }
+}
+
 void MainWindow::openSelectedFile()
 {
     const QTreeWidgetItem *item = m_fileTree->currentItem();
@@ -1666,6 +1721,9 @@ void MainWindow::setLibraryReady(const bool ready)
         m_versionAction->setEnabled(false);
         m_copyAction->setEnabled(false);
         m_openAction->setEnabled(false);
+        m_openMatchedFileAction->setEnabled(false);
+        m_openMatchedFileAction->setVisible(false);
+        m_openMatchedFileButton->hide();
         m_updateAction->setEnabled(false);
         m_deleteAssetAction->setEnabled(false);
         m_deleteVersionAction->setEnabled(false);
@@ -1745,6 +1803,17 @@ QList<AssetRecord> MainWindow::selectedRecords() const
         }
     }
     return records;
+}
+
+QString MainWindow::currentMatchedFile() const
+{
+    const QModelIndex current = m_assetTable->currentIndex();
+    if (!current.isValid()) {
+        return {};
+    }
+    return current.siblingAtColumn(AssetTableModel::NameColumn)
+        .data(AssetTableModel::MatchedFileRole)
+        .toString();
 }
 
 QString MainWindow::currentGroup() const

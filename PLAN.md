@@ -6,7 +6,7 @@ Status: complete.
 
 1. Explicitly choose an asset library on first launch.
 2. Import files or folders by selection or mixed drag-and-drop; infer metadata, recover name collisions automatically, and offer one-step undo.
-3. Start searches across all assets, show any intentional group scope, and display the matched file path directly in the result.
+3. Start searches across all assets, show any intentional group scope, display the matched file path directly, select it in details, and expose a contextual one-click open action.
 4. Open a single-file asset directly or open a directory asset in the file manager.
 5. Replace an existing working copy from a file or directory only after previewing additions, replacements, and removals; preserve identity, metadata, and saved versions.
 6. Save immutable versions only after content changes; show selected-asset change state and suggest the next patch version.
