@@ -48,6 +48,7 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
     auto *table = window.findChild<QTableView *>(QStringLiteral("assetTable"));
     auto *addFolder = window.findChild<QAction *>(QStringLiteral("addFolderAction"));
     auto *addFile = window.findChild<QAction *>(QStringLiteral("addFileAction"));
+    auto *groups = window.findChild<QTreeWidget *>(QStringLiteral("groupTree"));
     auto *search = window.findChild<QLineEdit *>(QStringLiteral("searchEdit"));
     auto *tags = window.findChild<QComboBox *>(QStringLiteral("tagFilter"));
     auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("detailTabs"));
@@ -57,6 +58,10 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
     QVERIFY(table);
     QVERIFY(addFolder);
     QVERIFY(addFile);
+    QVERIFY(groups);
+    QVERIFY(groups->isVisible());
+    QVERIFY(groups->width() >= 150);
+    QVERIFY(table->width() > groups->width());
     QCOMPARE(addFolder->text(), QStringLiteral("Add folder"));
     QCOMPARE(addFile->text(), QStringLiteral("Add file"));
     QVERIFY(search);
@@ -69,6 +74,34 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
     QCOMPARE(table->model()->columnCount(), 5);
     QTRY_VERIFY_WITH_TIMEOUT(table->model()->rowCount() >= 3, 10000);
     QVERIFY(table->currentIndex().isValid());
+
+    QTRY_VERIFY_WITH_TIMEOUT(groups->topLevelItemCount() > 1, 10000);
+    QCOMPARE(groups->topLevelItem(0)->text(0), QStringLiteral("All assets"));
+    QCOMPARE(groups->topLevelItem(0)->text(1), QStringLiteral("3"));
+    QTreeWidgetItem *resetGroup = nullptr;
+    for (int index = 1; index < groups->topLevelItemCount(); ++index) {
+        QTreeWidgetItem *item = groups->topLevelItem(index);
+        if (item->text(0).compare(QStringLiteral("reset"),
+                                  Qt::CaseInsensitive) == 0) {
+            resetGroup = item;
+            break;
+        }
+    }
+    QVERIFY(resetGroup);
+    QCOMPARE(resetGroup->text(1), QStringLiteral("1"));
+    groups->setCurrentItem(resetGroup);
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 1, 3000);
+    QCOMPARE(table->model()
+                 ->index(0, AssetTableModel::NameColumn)
+                 .data()
+                 .toString(),
+             QStringLiteral("Reset Generator"));
+    search->setText(QStringLiteral("clocking"));
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 0, 3000);
+    search->clear();
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 1, 3000);
+    groups->setCurrentItem(groups->topLevelItem(0));
+    QTRY_VERIFY_WITH_TIMEOUT(table->model()->rowCount() >= 3, 3000);
 
     search->setText(QStringLiteral("reset_gen"));
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 1, 3000);

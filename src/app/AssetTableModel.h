@@ -13,7 +13,7 @@ public:
     enum Column {
         NameColumn,
         VersionColumn,
-        TagsColumn,
+        GroupsColumn,
         FilesColumn,
         ModifiedColumn,
         ColumnCount

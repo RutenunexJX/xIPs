@@ -137,9 +137,12 @@ void CoreTest::importSingleFileCreatesAsset()
 
     const QString library = temporary.filePath(QStringLiteral("library"));
     AssetLibraryService service;
-    const AssetMetadata metadata = service.suggestedMetadata(source);
+    AssetMetadata metadata = service.suggestedMetadata(source);
     QCOMPARE(metadata.name, QStringLiteral("uart_rx.sv"));
     QCOMPARE(metadata.id, QStringLiteral("uart_rx_sv"));
+    metadata.tags = {QStringLiteral("AXI"),
+                     QStringLiteral("axi"),
+                     QStringLiteral("UART")};
 
     AssetRecord created;
     QString error;
@@ -151,6 +154,8 @@ void CoreTest::importSingleFileCreatesAsset()
                  &error),
              qPrintable(error));
     QCOMPARE(created.manifest.id, QStringLiteral("uart_rx_sv"));
+    QCOMPARE(created.manifest.tags,
+             QStringList({QStringLiteral("AXI"), QStringLiteral("UART")}));
     QCOMPARE(created.fileCount, 1);
     QCOMPARE(created.files, QStringList{QStringLiteral("uart_rx.sv")});
     QFile imported(QDir(created.assetRoot).absoluteFilePath(

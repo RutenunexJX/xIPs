@@ -36,7 +36,7 @@ QVariant AssetTableModel::data(const QModelIndex &index, const int role) const
             return asset.manifest.name.toCaseFolded();
         case VersionColumn:
             return asset.manifest.version.toCaseFolded();
-        case TagsColumn:
+        case GroupsColumn:
             return asset.manifest.tags.join(u' ').toCaseFolded();
         case FilesColumn:
             return static_cast<qlonglong>(asset.fileCount);
@@ -53,7 +53,7 @@ QVariant AssetTableModel::data(const QModelIndex &index, const int role) const
     case VersionColumn:
         return asset.manifest.version.isEmpty() ? QStringLiteral("-")
                                                 : asset.manifest.version;
-    case TagsColumn:
+    case GroupsColumn:
         return asset.manifest.tags.join(QStringLiteral(", "));
     case FilesColumn:
         return static_cast<qlonglong>(asset.fileCount);
@@ -76,7 +76,7 @@ QVariant AssetTableModel::headerData(const int section,
     static const QStringList headers{
         QStringLiteral("Asset"),
         QStringLiteral("Last saved"),
-        QStringLiteral("Tags"),
+        QStringLiteral("Groups"),
         QStringLiteral("Files"),
         QStringLiteral("Modified"),
     };

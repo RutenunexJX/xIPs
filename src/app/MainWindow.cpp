@@ -16,9 +16,12 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMap>
 #include <QPlainTextEdit>
+#include <QSet>
 #include <QSettings>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QSortFilterProxyModel>
 #include <QSplitter>
 #include <QStatusBar>
@@ -30,10 +33,18 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <utility>
+
 namespace xips {
 namespace {
 
 constexpr int VersionRole = Qt::UserRole;
+constexpr int GroupRole = Qt::UserRole;
+
+struct GroupSummary {
+    QString name;
+    int count = 0;
+};
 
 QString formatBytes(const qint64 bytes)
 {
@@ -51,6 +62,16 @@ QString formatBytes(const qint64 bytes)
 void addInfoRow(QTreeWidget *tree, const QString &field, const QString &value)
 {
     new QTreeWidgetItem(tree, {field, value.isEmpty() ? QStringLiteral("-") : value});
+}
+
+bool hasGroup(const AssetRecord &asset, const QString &group)
+{
+    for (const QString &tag : asset.manifest.tags) {
+        if (tag.trimmed().compare(group, Qt::CaseInsensitive) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool editMetadata(QWidget *parent,
@@ -71,14 +92,15 @@ bool editMetadata(QWidget *parent,
     auto *name = new QLineEdit(metadata.name, &dialog);
     name->setObjectName(QStringLiteral("ipNameEdit"));
     auto *tags = new QLineEdit(metadata.tags.join(QStringLiteral(", ")), &dialog);
-    tags->setPlaceholderText(QStringLiteral("comma-separated"));
+    tags->setObjectName(QStringLiteral("groupEdit"));
+    tags->setPlaceholderText(QStringLiteral("comma-separated, for example AXI, UART"));
     auto *description = new QPlainTextEdit(metadata.description, &dialog);
     description->setPlaceholderText(QStringLiteral("What this asset provides"));
     description->setMaximumBlockCount(100);
 
     form->addRow(QStringLiteral("ID"), id);
     form->addRow(QStringLiteral("Name"), name);
-    form->addRow(QStringLiteral("Tags"), tags);
+    form->addRow(QStringLiteral("Groups"), tags);
     form->addRow(QStringLiteral("Description"), description);
     layout->addLayout(form);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok
@@ -130,6 +152,7 @@ MainWindow::MainWindow(QString libraryRoot, QWidget *parent)
             [this](const QList<AssetRecord> &assets,
                    const QStringList &errors) {
                 m_loaded = true;
+                rebuildGroups(assets);
                 runSearch();
                 QString status = QStringLiteral("%1 assets  |  %2")
                                      .arg(assets.size())
@@ -202,7 +225,7 @@ void MainWindow::buildUi()
     m_searchEdit->setObjectName(QStringLiteral("searchEdit"));
     m_searchEdit->setClearButtonEnabled(true);
     m_searchEdit->setPlaceholderText(
-        QStringLiteral("name, ID, version, tag, or description"));
+        QStringLiteral("name, ID, version, group, or description"));
     m_searchEdit->setMinimumWidth(280);
     toolbar->addWidget(m_searchEdit);
     QAction *refreshAction = toolbar->addAction(QStringLiteral("Refresh"));
@@ -235,10 +258,24 @@ void MainWindow::buildUi()
     m_assetTable->horizontalHeader()->setStretchLastSection(true);
     m_assetTable->setColumnWidth(AssetTableModel::NameColumn, 190);
     m_assetTable->setColumnWidth(AssetTableModel::VersionColumn, 90);
-    m_assetTable->setColumnWidth(AssetTableModel::TagsColumn, 170);
+    m_assetTable->setColumnWidth(AssetTableModel::GroupsColumn, 170);
     m_assetTable->setColumnWidth(AssetTableModel::FilesColumn, 55);
 
     auto *mainSplitter = new QSplitter(Qt::Horizontal, this);
+    m_groupTree = new QTreeWidget(mainSplitter);
+    m_groupTree->setObjectName(QStringLiteral("groupTree"));
+    m_groupTree->setColumnCount(2);
+    m_groupTree->setHeaderLabels(
+        {QStringLiteral("Group"), QStringLiteral("Assets")});
+    m_groupTree->setRootIsDecorated(false);
+    m_groupTree->setAlternatingRowColors(true);
+    m_groupTree->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_groupTree->setMinimumWidth(150);
+    m_groupTree->setMaximumWidth(240);
+    m_groupTree->setToolTip(
+        QStringLiteral("Groups are created from the comma-separated Groups field."));
+    m_groupTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_groupTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     mainSplitter->addWidget(m_assetTable);
     auto *details = new QWidget(mainSplitter);
     auto *detailsLayout = new QVBoxLayout(details);
@@ -297,9 +334,10 @@ void MainWindow::buildUi()
     tabs->addTab(filesPage, QStringLiteral("Files"));
     tabs->addTab(m_versionTree, QStringLiteral("Versions"));
     detailsLayout->addWidget(tabs, 1);
-    mainSplitter->setSizes({560, 620});
+    mainSplitter->setSizes({180, 460, 540});
     mainSplitter->setCollapsible(0, false);
     mainSplitter->setCollapsible(1, false);
+    mainSplitter->setCollapsible(2, false);
     setCentralWidget(mainSplitter);
     statusBar()->setSizeGripEnabled(true);
 
@@ -316,6 +354,12 @@ void MainWindow::buildUi()
             });
     connect(m_assetTable, &QTableView::doubleClicked,
             this, &MainWindow::openCurrentFolder);
+    connect(m_groupTree,
+            &QTreeWidget::currentItemChanged,
+            this,
+            [this](QTreeWidgetItem *, QTreeWidgetItem *) {
+                runSearch();
+            });
     auto *focusSearch = new QShortcut(QKeySequence::Find, this);
     connect(focusSearch, &QShortcut::activated, m_searchEdit, [this] {
         m_searchEdit->setFocus();
@@ -332,20 +376,77 @@ void MainWindow::runSearch()
 {
     const AssetRecord *selected = currentRecord();
     const QString selectedId = selected ? selected->manifest.id : QString();
-    const bool searching = !m_searchEdit->text().trimmed().isEmpty();
-    if (searching) {
+    const bool hasQuery = !m_searchEdit->text().trimmed().isEmpty();
+    if (hasQuery) {
         m_assetTable->setSortingEnabled(false);
         m_proxyModel->sort(-1);
     } else {
         m_assetTable->setSortingEnabled(true);
     }
-    m_tableModel->setHits(m_controller->search(m_searchEdit->text()));
-    if (!searching) {
+    QList<SearchHit> hits = m_controller->search(m_searchEdit->text());
+    const QString group = currentGroup();
+    if (!group.isEmpty()) {
+        QList<SearchHit> grouped;
+        grouped.reserve(hits.size());
+        for (SearchHit &hit : hits) {
+            if (hasGroup(hit.asset, group)) {
+                grouped.append(std::move(hit));
+            }
+        }
+        hits.swap(grouped);
+    }
+    m_tableModel->setHits(std::move(hits));
+    if (!hasQuery) {
         m_assetTable->sortByColumn(AssetTableModel::NameColumn, Qt::AscendingOrder);
     }
     if (selectedId.isEmpty() || !selectAssetById(selectedId)) {
         selectFirstRow();
     }
+}
+
+void MainWindow::rebuildGroups(const QList<AssetRecord> &assets)
+{
+    const QString previous = currentGroup();
+    const QSignalBlocker blocker(m_groupTree);
+    m_groupTree->clear();
+
+    auto *all = new QTreeWidgetItem(
+        m_groupTree,
+        {QStringLiteral("All assets"), QString::number(assets.size())});
+    all->setData(0, GroupRole, QString());
+    all->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+    QTreeWidgetItem *selection = all;
+
+    QMap<QString, GroupSummary> groups;
+    for (const AssetRecord &asset : assets) {
+        QSet<QString> counted;
+        for (const QString &rawTag : asset.manifest.tags) {
+            const QString name = rawTag.trimmed();
+            const QString key = name.toCaseFolded();
+            if (name.isEmpty() || counted.contains(key)) {
+                continue;
+            }
+            counted.insert(key);
+            GroupSummary &summary = groups[key];
+            if (summary.name.isEmpty()) {
+                summary.name = name;
+            }
+            ++summary.count;
+        }
+    }
+
+    for (auto iterator = groups.cbegin(); iterator != groups.cend(); ++iterator) {
+        const GroupSummary &summary = iterator.value();
+        auto *item = new QTreeWidgetItem(
+            m_groupTree,
+            {summary.name, QString::number(summary.count)});
+        item->setData(0, GroupRole, summary.name);
+        item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+        if (summary.name.compare(previous, Qt::CaseInsensitive) == 0) {
+            selection = item;
+        }
+    }
+    m_groupTree->setCurrentItem(selection);
 }
 
 void MainWindow::updateDetails(const AssetRecord *asset)
@@ -366,7 +467,7 @@ void MainWindow::updateDetails(const AssetRecord *asset)
                asset->manifest.version.isEmpty() ? QStringLiteral("None")
                                                  : asset->manifest.version);
     addInfoRow(m_infoTree,
-               QStringLiteral("Tags"),
+               QStringLiteral("Groups"),
                asset->manifest.tags.join(QStringLiteral(", ")));
     addInfoRow(m_infoTree,
                QStringLiteral("Files"),
@@ -468,6 +569,7 @@ void MainWindow::chooseLibrary()
     m_loaded = false;
     saveLibrarySetting();
     m_tableModel->setHits({});
+    rebuildGroups({});
     updateDetails(nullptr);
     m_controller->rebuild();
 }
@@ -641,6 +743,12 @@ const AssetRecord *MainWindow::currentRecord() const
     return m_tableModel->recordAt(source.row());
 }
 
+QString MainWindow::currentGroup() const
+{
+    const QTreeWidgetItem *item = m_groupTree ? m_groupTree->currentItem() : nullptr;
+    return item ? item->data(0, GroupRole).toString() : QString();
+}
+
 QString MainWindow::selectedVersion() const
 {
     const QTreeWidgetItem *item = m_versionTree->currentItem();
@@ -651,6 +759,9 @@ void MainWindow::applyActivation(const ActivationRequest &request)
 {
     if (!request.isValid()) {
         return;
+    }
+    if (m_groupTree && m_groupTree->topLevelItemCount() > 0) {
+        m_groupTree->setCurrentItem(m_groupTree->topLevelItem(0));
     }
     if (request.action == ActivationAction::Search) {
         m_searchEdit->setText(request.value);

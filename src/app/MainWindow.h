@@ -30,6 +30,7 @@ public:
 private:
     void buildUi();
     void runSearch();
+    void rebuildGroups(const QList<AssetRecord> &assets);
     void updateDetails(const AssetRecord *asset);
     void populateFiles(const AssetRecord &asset);
     void populateVersions(const AssetRecord &asset);
@@ -47,6 +48,7 @@ private:
     void saveLibrarySetting();
 
     [[nodiscard]] const AssetRecord *currentRecord() const;
+    [[nodiscard]] QString currentGroup() const;
     [[nodiscard]] QString selectedVersion() const;
 
     QString m_libraryRoot;
@@ -56,6 +58,7 @@ private:
     bool m_loaded = false;
 
     QLineEdit *m_searchEdit = nullptr;
+    QTreeWidget *m_groupTree = nullptr;
     QTableView *m_assetTable = nullptr;
     AssetTableModel *m_tableModel = nullptr;
     QSortFilterProxyModel *m_proxyModel = nullptr;

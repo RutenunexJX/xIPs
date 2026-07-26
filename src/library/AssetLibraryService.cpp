@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QUuid>
 
 #include <algorithm>
@@ -55,15 +56,20 @@ bool copyPayload(const QString &sourceRoot,
 
 QStringList cleanedTags(QStringList tags)
 {
+    QStringList unique;
+    QSet<QString> seen;
     for (QString &tag : tags) {
         tag = tag.trimmed();
+        const QString key = tag.toCaseFolded();
+        if (!tag.isEmpty() && !seen.contains(key)) {
+            seen.insert(key);
+            unique.append(tag);
+        }
     }
-    tags.removeAll(QString());
-    tags.removeDuplicates();
-    std::sort(tags.begin(), tags.end(), [](const QString &left, const QString &right) {
+    std::sort(unique.begin(), unique.end(), [](const QString &left, const QString &right) {
         return QString::compare(left, right, Qt::CaseInsensitive) < 0;
     });
-    return tags;
+    return unique;
 }
 
 Manifest makeManifest(const AssetMetadata &metadata)

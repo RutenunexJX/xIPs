@@ -13,6 +13,7 @@
 状态：完成。
 
 - manifest 只建模 `schemaVersion`、`id`、`name`、`description`、`version` 和 `tags`。
+- `tags` 直接作为用户分组；界面按分组汇总、计数并与文本搜索组合过滤。
 - 版本只能通过 **Save version** 更新，元数据编辑不修改版本。
 - 文件从目录实际内容枚举，不维护来源、约束、文档、语言或工具分类。
 - 内容哈希只在保存版本或 resolve 工作副本时按需计算。
@@ -39,6 +40,6 @@
 状态：完成。
 
 - 严格 Debug 构建通过 `-Wall -Wextra -Wpedantic -Wconversion -Wshadow`，无编译警告。
-- `core` 与 Qt offscreen `gui_smoke` 共 11 个用例全部通过，包括单文件导入、快照和 CLI 具体文件路径解析。
-- CLI 版本输出为 0.4.0。
+- `core` 与 Qt offscreen `gui_smoke` 共 11 个用例全部通过，包括单文件导入、分组汇总与组合过滤、快照和 CLI 具体文件路径解析。
+- CLI 版本输出为 0.5.0。
 - 全程未操作可见桌面；验证只使用一次性构建目录，未生成部署树或界面截图。
