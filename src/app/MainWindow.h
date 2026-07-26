@@ -63,6 +63,7 @@ private:
     void deleteCurrentAsset();
     void createCurrentVersion();
     void copyCurrentVersion();
+    void restoreSelectedVersion();
     void deleteSelectedVersion();
     void openCurrent();
     void openMatchedFile();
@@ -131,6 +132,7 @@ private:
     QAction *m_openMatchedFileAction = nullptr;
     QAction *m_refreshAction = nullptr;
     QAction *m_problemAction = nullptr;
+    QAction *m_restoreVersionAction = nullptr;
     QAction *m_deleteVersionAction = nullptr;
 };
 

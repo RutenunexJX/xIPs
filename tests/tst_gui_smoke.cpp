@@ -109,6 +109,8 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
     auto *info = window.findChild<QTreeWidget *>(QStringLiteral("infoTree"));
     auto *files = window.findChild<QTreeWidget *>(QStringLiteral("fileTree"));
     auto *versions = window.findChild<QTreeWidget *>(QStringLiteral("versionTree"));
+    auto *restoreVersion = window.findChild<QAction *>(
+        QStringLiteral("restoreVersionAction"));
     auto *deleteVersion = window.findChild<QAction *>(
         QStringLiteral("deleteVersionAction"));
     auto *preview = window.findChild<QPlainTextEdit *>(QStringLiteral("sourcePreview"));
@@ -142,6 +144,7 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
     QVERIFY(info);
     QVERIFY(files);
     QVERIFY(versions);
+    QVERIFY(restoreVersion);
     QVERIFY(deleteVersion);
     QVERIFY(!preview);
     QVERIFY(notice);
@@ -170,6 +173,7 @@ void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
     QCOMPARE(open->text(), QStringLiteral("Open file"));
     QVERIFY(!openMatched->isVisible());
     QCOMPARE(versions->topLevelItemCount(), 0);
+    QVERIFY(!restoreVersion->isVisible());
     QVERIFY(!deleteVersion->isVisible());
 
     QTRY_VERIFY_WITH_TIMEOUT(groups->topLevelItemCount() > 1, 10000);

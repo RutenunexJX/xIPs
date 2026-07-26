@@ -110,11 +110,14 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     auto *search = window.findChild<QLineEdit *>(QStringLiteral("searchEdit"));
     auto *groups = window.findChild<QTreeWidget *>(QStringLiteral("groupTree"));
     auto *files = window.findChild<QTreeWidget *>(QStringLiteral("fileTree"));
+    auto *versions = window.findChild<QTreeWidget *>(QStringLiteral("versionTree"));
     auto *openMatchedAction = window.findChild<QAction *>(
         QStringLiteral("openMatchedFileAction"));
     auto *updateAction = window.findChild<QAction *>(
         QStringLiteral("updateAssetAction"));
     auto *copyAction = window.findChild<QAction *>(QStringLiteral("copyAction"));
+    auto *restoreVersionAction = window.findChild<QAction *>(
+        QStringLiteral("restoreVersionAction"));
     auto *deleteAssetAction = window.findChild<QAction *>(
         QStringLiteral("deleteAssetAction"));
     auto *noticeAction = window.findChild<QToolButton *>(
@@ -124,9 +127,11 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QVERIFY(search);
     QVERIFY(groups);
     QVERIFY(files);
+    QVERIFY(versions);
     QVERIFY(openMatchedAction);
     QVERIFY(updateAction);
     QVERIFY(copyAction);
+    QVERIFY(restoreVersionAction);
     QVERIFY(deleteAssetAction);
     QVERIFY(noticeAction);
     QVERIFY(noticeLabel);
@@ -259,6 +264,7 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QFile updatedWorking(workingFile);
     QVERIFY(updatedWorking.open(QIODevice::ReadOnly));
     QCOMPARE(updatedWorking.readAll(), secondRevision);
+    updatedWorking.close();
     QFile unchangedUpdateSource(updateSource);
     QVERIFY(unchangedUpdateSource.open(QIODevice::ReadOnly));
     QCOMPARE(unchangedUpdateSource.readAll(), secondRevision);
@@ -320,6 +326,71 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
                                    nullptr,
                                    &error),
              qPrintable(error));
+
+    QEvent versionRefresh(QEvent::WindowActivate);
+    QApplication::sendEvent(&window, &versionRefresh);
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 2, 10000);
+    window.applyActivation({
+        .action = ActivationAction::OpenAsset,
+        .value = QStringLiteral("uart_rx_sv"),
+    });
+    QTRY_COMPARE_WITH_TIMEOUT(
+        table->currentIndex()
+            .siblingAtColumn(AssetTableModel::NameColumn)
+            .data(AssetTableModel::AssetNameRole)
+            .toString(),
+        QStringLiteral("uart_rx.sv"),
+        3000);
+    QTRY_COMPARE_WITH_TIMEOUT(versions->topLevelItemCount(), 2, 10000);
+    QTreeWidgetItem *firstSavedVersion = nullptr;
+    for (int index = 0; index < versions->topLevelItemCount(); ++index) {
+        QTreeWidgetItem *item = versions->topLevelItem(index);
+        if (item->text(0) == QStringLiteral("1.0.0")) {
+            firstSavedVersion = item;
+            break;
+        }
+    }
+    QVERIFY(firstSavedVersion);
+    versions->setCurrentItem(firstSavedVersion);
+    QTRY_VERIFY_WITH_TIMEOUT(restoreVersionAction->isVisible(), 3000);
+    QVERIFY(restoreVersionAction->isEnabled());
+    bool restoreConfirmed = false;
+    QTimer::singleShot(0, &window, [&] {
+        QMessageBox *confirmation = window.findChild<QMessageBox *>();
+        if (!confirmation) {
+            return;
+        }
+        restoreConfirmed = confirmation->text().contains(
+                               QStringLiteral("Restore saved version 1.0.0"))
+                           && confirmation->text().contains(
+                               QStringLiteral("Files replaced: 1"))
+                           && confirmation->text().contains(
+                               QStringLiteral("current working copy will be replaced"))
+                           && confirmation->text().contains(
+                               QStringLiteral("Saved versions will not be changed"));
+        confirmation->button(QMessageBox::Yes)->click();
+    });
+    restoreVersionAction->trigger();
+    QVERIFY(restoreConfirmed);
+    QFile restoredWorking(workingFile);
+    QVERIFY(restoredWorking.open(QIODevice::ReadOnly));
+    QCOMPARE(restoredWorking.readAll(), firstRevision);
+    restoredWorking.close();
+    QCOMPARE(service.versions(single->assetRoot, &error).size(), 2);
+    QFile preservedUpdateSource(updateSource);
+    QVERIFY(preservedUpdateSource.open(QIODevice::ReadOnly));
+    QCOMPARE(preservedUpdateSource.readAll(), secondRevision);
+    QTRY_VERIFY_WITH_TIMEOUT(noticeLabel->text().contains(
+                                 QStringLiteral("saved versions were kept")),
+                             3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        table->currentIndex()
+            .siblingAtColumn(AssetTableModel::NameColumn)
+            .data(AssetTableModel::AssetNameRole)
+            .toString(),
+        QStringLiteral("uart_rx.sv"),
+        3000);
+    QTRY_COMPARE_WITH_TIMEOUT(versions->topLevelItemCount(), 2, 3000);
 
     int changed = 0;
     QVERIFY2(service.changeGroupMembership(scan.assets,
@@ -395,7 +466,7 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
              qPrintable(error));
     QFile working(workingFile);
     QVERIFY(working.open(QIODevice::ReadOnly));
-    QCOMPARE(working.readAll(), secondRevision);
+    QCOMPARE(working.readAll(), firstRevision);
     QCOMPARE(service.versions(single->assetRoot, &error).size(), 1);
 
     window.applyActivation({

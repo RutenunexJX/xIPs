@@ -534,6 +534,14 @@ void MainWindow::buildUi()
     m_versionTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_versionTree->header()->setStretchLastSection(true);
     versionsLayout->addWidget(m_versionTree, 1);
+    m_restoreVersionAction = new QAction(
+        QStringLiteral("Restore to working copy..."), this);
+    m_restoreVersionAction->setObjectName(
+        QStringLiteral("restoreVersionAction"));
+    connect(m_restoreVersionAction,
+            &QAction::triggered,
+            this,
+            &MainWindow::restoreSelectedVersion);
     m_deleteVersionAction = new QAction(QStringLiteral("Delete saved version..."),
                                         this);
     m_deleteVersionAction->setObjectName(QStringLiteral("deleteVersionAction"));
@@ -541,10 +549,18 @@ void MainWindow::buildUi()
             &QAction::triggered,
             this,
             &MainWindow::deleteSelectedVersion);
+    auto *versionActions = new QHBoxLayout;
+    versionActions->setContentsMargins(0, 0, 0, 0);
+    auto *restoreVersionButton = new QToolButton(versionsPage);
+    restoreVersionButton->setObjectName(QStringLiteral("restoreVersionButton"));
+    restoreVersionButton->setDefaultAction(m_restoreVersionAction);
+    versionActions->addWidget(restoreVersionButton);
     auto *deleteVersionButton = new QToolButton(versionsPage);
     deleteVersionButton->setObjectName(QStringLiteral("deleteVersionButton"));
     deleteVersionButton->setDefaultAction(m_deleteVersionAction);
-    versionsLayout->addWidget(deleteVersionButton, 0, Qt::AlignLeft);
+    versionActions->addWidget(deleteVersionButton);
+    versionActions->addStretch(1);
+    versionsLayout->addLayout(versionActions);
     tabs->addTab(filesPage, QStringLiteral("Files"));
     tabs->addTab(versionsPage, QStringLiteral("Versions"));
     detailsLayout->addWidget(tabs, 1);
@@ -642,6 +658,7 @@ void MainWindow::buildUi()
             this,
             [this](QTreeWidgetItem *, QTreeWidgetItem *) {
                 const QString version = selectedVersion();
+                m_restoreVersionAction->setEnabled(!version.isEmpty());
                 m_deleteVersionAction->setEnabled(!version.isEmpty());
                 m_copyAction->setText(
                     version.isEmpty()
@@ -678,6 +695,8 @@ void MainWindow::buildUi()
     m_openMatchedFileButton->hide();
     m_updateAction->setEnabled(false);
     m_deleteAssetAction->setEnabled(false);
+    m_restoreVersionAction->setEnabled(false);
+    m_restoreVersionAction->setVisible(false);
     m_deleteVersionAction->setEnabled(false);
     m_deleteVersionAction->setVisible(false);
 }
@@ -804,6 +823,7 @@ void MainWindow::updateDetails(const AssetRecord *asset)
         m_nameLabel->setText(QStringLiteral("No asset selected"));
         m_openAction->setText(QStringLiteral("Open"));
         m_copyAction->setText(QStringLiteral("Copy working copy..."));
+        m_restoreVersionAction->setVisible(false);
         m_deleteVersionAction->setVisible(false);
         return;
     }
@@ -918,6 +938,8 @@ void MainWindow::populateVersions(const AssetRecord &asset)
         item->setData(0, VersionRole, version.version);
     }
     m_versionTree->setCurrentItem(nullptr);
+    m_restoreVersionAction->setVisible(!versions.isEmpty());
+    m_restoreVersionAction->setEnabled(false);
     m_deleteVersionAction->setVisible(!versions.isEmpty());
     m_deleteVersionAction->setEnabled(false);
     m_copyAction->setText(QStringLiteral("Copy working copy..."));
@@ -1539,6 +1561,91 @@ void MainWindow::deleteSelectedVersion()
     m_controller->rebuild();
 }
 
+void MainWindow::restoreSelectedVersion()
+{
+    const AssetRecord *asset = currentRecord();
+    const QString version = selectedVersion();
+    if (!asset || version.isEmpty()) {
+        return;
+    }
+    const AssetRecord selectedAsset = *asset;
+    const UpdatePreview preview = m_libraryService.previewRestore(
+        selectedAsset, version);
+    if (!preview.ok()) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot inspect saved version"),
+                              preview.error);
+        return;
+    }
+    if (preview.addedFiles.isEmpty()
+        && preview.replacedFiles.isEmpty()
+        && preview.removedFiles.isEmpty()) {
+        const QString message = QStringLiteral(
+            "Working copy already matches version %1")
+                                    .arg(version);
+        statusBar()->showMessage(message);
+        showNotice(message);
+        return;
+    }
+
+    const QString recoveryText = m_removalMode == RemovalMode::MoveToTrash
+                                     ? QStringLiteral(
+                                           "The current working copy will be moved to the recycle bin.")
+                                     : QStringLiteral(
+                                           "The current working copy will be replaced.");
+    const QString question = QStringLiteral(
+        "Restore saved version %1 to the working copy?\n\n"
+        "Files added: %2\nFiles replaced: %3\nFiles removed: %4\n\n"
+        "%5\nSaved versions will not be changed.")
+                                 .arg(version)
+                                 .arg(preview.addedFiles.size())
+                                 .arg(preview.replacedFiles.size())
+                                 .arg(preview.removedFiles.size())
+                                 .arg(recoveryText);
+    if (QMessageBox::question(this,
+                              QStringLiteral("Restore saved version"),
+                              question) != QMessageBox::Yes) {
+        return;
+    }
+
+    UpdateAssetResult restored;
+    QString error;
+    if (!m_libraryService.restoreVersion(selectedAsset,
+                                         version,
+                                         m_removalMode,
+                                         &restored,
+                                         &error)) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot restore saved version"),
+                              error);
+        return;
+    }
+    m_pendingActivation = ActivationRequest{
+        .action = ActivationAction::OpenAsset,
+        .value = selectedAsset.manifest.id,
+    };
+    m_undoImportAssets.clear();
+    const QString message = QStringLiteral(
+        "Restored version %1 to the working copy; saved versions were kept")
+                                .arg(version);
+    statusBar()->showMessage(message);
+    if (!restored.warning.isEmpty()) {
+        const QString warning = QStringLiteral("%1: %2")
+                                    .arg(selectedAsset.manifest.name,
+                                         restored.warning);
+        if (!m_lastProblems.contains(warning)) {
+            m_lastProblems.append(warning);
+        }
+        m_problemAction->setEnabled(true);
+        showNotice(message,
+                   QStringLiteral("Review"),
+                   [this] { showProblems(); });
+    } else {
+        showNotice(message);
+    }
+    m_controller->rebuild();
+}
+
 QString MainWindow::openTarget(const AssetRecord &asset)
 {
     return asset.files.size() == 1
@@ -1726,6 +1833,7 @@ void MainWindow::setLibraryReady(const bool ready)
         m_openMatchedFileButton->hide();
         m_updateAction->setEnabled(false);
         m_deleteAssetAction->setEnabled(false);
+        m_restoreVersionAction->setEnabled(false);
         m_deleteVersionAction->setEnabled(false);
     }
 }

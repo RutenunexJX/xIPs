@@ -95,11 +95,19 @@ public:
     [[nodiscard]] UpdatePreview previewUpdate(
         const AssetRecord &asset,
         const QString &sourcePath) const;
+    [[nodiscard]] UpdatePreview previewRestore(
+        const AssetRecord &asset,
+        const QString &version) const;
     bool updateAsset(const AssetRecord &asset,
                      const QString &sourcePath,
                      RemovalMode recoveryMode = RemovalMode::MoveToTrash,
                      UpdateAssetResult *result = nullptr,
                      QString *error = nullptr) const;
+    bool restoreVersion(const AssetRecord &asset,
+                        const QString &version,
+                        RemovalMode recoveryMode = RemovalMode::MoveToTrash,
+                        UpdateAssetResult *result = nullptr,
+                        QString *error = nullptr) const;
     bool deleteAsset(const QString &libraryRoot,
                      const AssetRecord &asset,
                      RemovalMode mode = RemovalMode::MoveToTrash,

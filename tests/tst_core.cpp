@@ -583,6 +583,87 @@ void CoreTest::versionStateCopyToAndDeletionFormASafeWorkflow()
                                         nullptr,
                                         &error));
 
+    const QList<VersionInfo> versionsBeforeRestore = service.versions(
+        asset.assetRoot, &error);
+    QCOMPARE(versionsBeforeRestore.size(), 2);
+    const ManifestLoadResult manifestBeforeRestore = ManifestService().load(
+        asset.manifestPath);
+    QVERIFY(manifestBeforeRestore.ok());
+    QCOMPARE(manifestBeforeRestore.manifest->version,
+             QStringLiteral("1.0.1"));
+    const UpdatePreview restorePreview = service.previewRestore(
+        asset, QStringLiteral("1.0.0"));
+    QVERIFY2(restorePreview.ok(), qPrintable(restorePreview.error));
+    QCOMPARE(restorePreview.addedFiles.size(), 0);
+    QCOMPARE(restorePreview.replacedFiles,
+             QStringList{QStringLiteral("uart_rx.sv")});
+    QCOMPARE(restorePreview.removedFiles.size(), 0);
+    UpdateAssetResult restored;
+    error.clear();
+    QVERIFY2(service.restoreVersion(asset,
+                                    QStringLiteral("1.0.0"),
+                                    RemovalMode::Permanent,
+                                    &restored,
+                                    &error),
+             qPrintable(error));
+    QCOMPARE(restored.preview.replacedFiles,
+             QStringList{QStringLiteral("uart_rx.sv")});
+    QVERIFY(restored.warning.isEmpty());
+    QCOMPARE(restored.updated.manifest.version, QStringLiteral("1.0.1"));
+    QFile restoredWorking(workingFile);
+    QVERIFY(restoredWorking.open(QIODevice::ReadOnly));
+    QVERIFY(restoredWorking.readAll().contains(QByteArrayLiteral("V = 1")));
+    const QList<VersionInfo> versionsAfterRestore = service.versions(
+        asset.assetRoot, &error);
+    QCOMPARE(versionsAfterRestore.size(), versionsBeforeRestore.size());
+    for (const VersionInfo &before : versionsBeforeRestore) {
+        const auto after = std::find_if(
+            versionsAfterRestore.cbegin(),
+            versionsAfterRestore.cend(),
+            [&before](const VersionInfo &candidate) {
+                return candidate.version == before.version;
+            });
+        QVERIFY(after != versionsAfterRestore.cend());
+        QCOMPARE(after->contentHash, before.contentHash);
+    }
+    const ManifestLoadResult manifestAfterRestore = ManifestService().load(
+        asset.manifestPath);
+    QVERIFY(manifestAfterRestore.ok());
+    QCOMPARE(manifestAfterRestore.manifest->id,
+             manifestBeforeRestore.manifest->id);
+    QCOMPARE(manifestAfterRestore.manifest->name,
+             manifestBeforeRestore.manifest->name);
+    QCOMPARE(manifestAfterRestore.manifest->description,
+             manifestBeforeRestore.manifest->description);
+    QCOMPARE(manifestAfterRestore.manifest->tags,
+             manifestBeforeRestore.manifest->tags);
+    QCOMPARE(manifestAfterRestore.manifest->version,
+             manifestBeforeRestore.manifest->version);
+    state = service.workingCopyState(asset);
+    QVERIFY2(state.error.isEmpty(), qPrintable(state.error));
+    QVERIFY(state.changed);
+    QCOMPARE(state.latestVersion, QStringLiteral("1.0.1"));
+    error.clear();
+    QVERIFY(!service.restoreVersion(asset,
+                                    QStringLiteral("1.0.0"),
+                                    RemovalMode::Permanent,
+                                    nullptr,
+                                    &error));
+    QVERIFY(error.contains(QStringLiteral("already matches")));
+    error.clear();
+    QVERIFY(!service.restoreVersion(asset,
+                                    QStringLiteral("missing"),
+                                    RemovalMode::Permanent,
+                                    nullptr,
+                                    &error));
+    QVERIFY(error.contains(QStringLiteral("Version not found")));
+    const QStringList restoreStaging = QDir(QFileInfo(asset.assetRoot).absolutePath())
+                                           .entryList(
+                                               {QStringLiteral(".xips-create-restore-*")},
+                                               QDir::Dirs | QDir::Hidden
+                                                   | QDir::NoDotAndDotDot);
+    QVERIFY(restoreStaging.isEmpty());
+
     QVERIFY2(service.deleteVersion(asset,
                                    QStringLiteral("1.0.1"),
                                    RemovalMode::Permanent,

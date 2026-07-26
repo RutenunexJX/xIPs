@@ -11,6 +11,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QTemporaryDir>
 #include <QUuid>
 
 #include <algorithm>
@@ -142,6 +143,39 @@ bool filesEqual(const QString &leftPath, const QString &rightPath)
         }
     }
     return left.atEnd() && right.atEnd();
+}
+
+UpdatePreview comparePayload(const QString &assetRoot,
+                             const SourcePayload &source)
+{
+    UpdatePreview preview;
+    const QStringList currentFiles = AssetScanner::assetFiles(assetRoot);
+    if (source.singleFile && currentFiles.size() != 1) {
+        preview.error = QStringLiteral(
+            "A single file can only update an asset with one payload file");
+        return preview;
+    }
+    const QSet<QString> currentSet(currentFiles.cbegin(), currentFiles.cend());
+    const QSet<QString> sourceSet(source.files.cbegin(), source.files.cend());
+    for (const QString &relative : source.files) {
+        if (!currentSet.contains(relative)) {
+            preview.addedFiles.append(relative);
+            continue;
+        }
+        const QString currentPath = QDir(assetRoot).absoluteFilePath(relative);
+        const QString replacementPath = QDir(source.root).absoluteFilePath(relative);
+        if (filesEqual(currentPath, replacementPath)) {
+            ++preview.unchangedCount;
+        } else {
+            preview.replacedFiles.append(relative);
+        }
+    }
+    for (const QString &relative : currentFiles) {
+        if (!sourceSet.contains(relative)) {
+            preview.removedFiles.append(relative);
+        }
+    }
+    return preview;
 }
 
 bool validateAssetRecord(const AssetRecord &asset,
@@ -482,33 +516,34 @@ UpdatePreview AssetLibraryService::previewUpdate(
         return preview;
     }
 
-    const QStringList currentFiles = AssetScanner::assetFiles(assetRoot);
-    if (source.singleFile && currentFiles.size() != 1) {
-        preview.error = QStringLiteral(
-            "A single file can only update an asset with one payload file");
+    return comparePayload(assetRoot, source);
+}
+
+UpdatePreview AssetLibraryService::previewRestore(
+    const AssetRecord &asset,
+    const QString &version) const
+{
+    UpdatePreview preview;
+    QString validationError;
+    if (!validateAssetRecord(asset, nullptr, &validationError)) {
+        preview.error = validationError;
         return preview;
     }
-    const QSet<QString> currentSet(currentFiles.cbegin(), currentFiles.cend());
-    const QSet<QString> sourceSet(source.files.cbegin(), source.files.cend());
-    for (const QString &relative : source.files) {
-        if (!currentSet.contains(relative)) {
-            preview.addedFiles.append(relative);
-            continue;
-        }
-        const QString currentPath = QDir(assetRoot).absoluteFilePath(relative);
-        const QString replacementPath = QDir(source.root).absoluteFilePath(relative);
-        if (filesEqual(currentPath, replacementPath)) {
-            ++preview.unchangedCount;
-        } else {
-            preview.replacedFiles.append(relative);
-        }
+    if (version.trimmed().isEmpty()) {
+        preview.error = QStringLiteral("A saved version is required");
+        return preview;
     }
-    for (const QString &relative : currentFiles) {
-        if (!sourceSet.contains(relative)) {
-            preview.removedFiles.append(relative);
-        }
+    const CopyPlan plan = copyPlan(asset, version);
+    if (!plan.ok()) {
+        preview.error = plan.error;
+        return preview;
     }
-    return preview;
+    SourcePayload source;
+    if (!resolveSourcePayload(plan.sourceRoot, source, &validationError)) {
+        preview.error = validationError;
+        return preview;
+    }
+    return comparePayload(files::normalizedAbsolute(asset.assetRoot), source);
 }
 
 bool AssetLibraryService::updateAsset(const AssetRecord &asset,
@@ -631,6 +666,79 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                                 .arg(backupRoot);
     } else {
         completed.recoveryPath = removedPath;
+    }
+    if (result) {
+        *result = completed;
+    }
+    return true;
+}
+
+bool AssetLibraryService::restoreVersion(const AssetRecord &asset,
+                                         const QString &version,
+                                         const RemovalMode recoveryMode,
+                                         UpdateAssetResult *result,
+                                         QString *error) const
+{
+    const QString cleanVersion = version.trimmed();
+    const UpdatePreview preview = previewRestore(asset, cleanVersion);
+    if (!preview.ok()) {
+        return fail(error, preview.error);
+    }
+    if (preview.addedFiles.isEmpty()
+        && preview.replacedFiles.isEmpty()
+        && preview.removedFiles.isEmpty()) {
+        return fail(error,
+                    QStringLiteral("The working copy already matches version %1")
+                        .arg(cleanVersion));
+    }
+
+    const CopyPlan plan = copyPlan(asset, cleanVersion);
+    if (!plan.ok()) {
+        return fail(error, plan.error);
+    }
+    const QString parent = QFileInfo(asset.assetRoot).absolutePath();
+    QTemporaryDir restoreSource(
+        QDir(parent).absoluteFilePath(
+            QStringLiteral(".xips-create-restore-XXXXXX")));
+    restoreSource.setAutoRemove(false);
+    if (!restoreSource.isValid()) {
+        return fail(error,
+                    QStringLiteral("Cannot create the restore staging directory"));
+    }
+    QString operationError;
+    if (!copyPayload(plan.sourceRoot, restoreSource.path(), &operationError)) {
+        const QString stagingPath = restoreSource.path();
+        if (!restoreSource.remove()) {
+            operationError += QStringLiteral(
+                "; restore staging data remains at %1")
+                                  .arg(stagingPath);
+        }
+        return fail(error, operationError);
+    }
+
+    UpdateAssetResult completed;
+    if (!updateAsset(asset,
+                     restoreSource.path(),
+                     recoveryMode,
+                     &completed,
+                     &operationError)) {
+        const QString stagingPath = restoreSource.path();
+        if (!restoreSource.remove()) {
+            operationError += QStringLiteral(
+                "; restore staging data remains at %1")
+                                  .arg(stagingPath);
+        }
+        return fail(error, operationError);
+    }
+    completed.preview = preview;
+    const QString stagingPath = restoreSource.path();
+    if (!restoreSource.remove()) {
+        if (!completed.warning.isEmpty()) {
+            completed.warning += QStringLiteral("; ");
+        }
+        completed.warning += QStringLiteral(
+            "restored the working copy, but temporary data remains at %1")
+                                 .arg(stagingPath);
     }
     if (result) {
         *result = completed;
