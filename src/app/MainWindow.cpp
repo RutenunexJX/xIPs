@@ -226,7 +226,8 @@ MainWindow::MainWindow(QString libraryRoot,
                 }
                 statusBar()->showMessage(status);
                 if (!m_undoImportAssets.isEmpty()) {
-                    QString message = QStringLiteral("Added %1 asset(s) to the library")
+                    QString message = QStringLiteral(
+                                          "Added %1 ungrouped asset(s) to the library; showing All assets")
                                           .arg(m_undoImportAssets.size());
                     if (!errors.isEmpty()) {
                         message += QStringLiteral("; %1 item(s) were skipped")
@@ -1030,11 +1031,9 @@ void MainWindow::importPaths(const QStringList &sourcePaths)
     if (m_libraryRoot.isEmpty() || sourcePaths.isEmpty()) {
         return;
     }
-    const QString group = currentGroup();
     const ImportBatchResult result = m_libraryService.importAssets(
         m_libraryRoot,
-        sourcePaths,
-        group.isEmpty() ? QStringList{} : QStringList{group});
+        sourcePaths);
     m_lastProblems.append(result.errors);
     m_lastProblems.removeDuplicates();
     m_problemAction->setEnabled(!m_lastProblems.isEmpty());
@@ -1052,7 +1051,12 @@ void MainWindow::importPaths(const QStringList &sourcePaths)
         .value = result.created.first().manifest.id,
     };
     m_undoImportAssets = result.created;
-    QString status = QStringLiteral("Added %1 asset(s)").arg(result.created.size());
+    if (m_groupTree->topLevelItemCount() > 0) {
+        m_groupTree->setCurrentItem(m_groupTree->topLevelItem(0));
+    }
+    QString status = QStringLiteral(
+                         "Added %1 ungrouped asset(s); showing All assets")
+                         .arg(result.created.size());
     if (!result.errors.isEmpty()) {
         status += QStringLiteral("; %1 skipped; open More > Problems")
                       .arg(result.errors.size());

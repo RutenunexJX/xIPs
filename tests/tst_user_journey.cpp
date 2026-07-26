@@ -418,11 +418,28 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
                                       QStringLiteral("2")),
                              5000);
 
+    QTreeWidgetItem *serialGroup = nullptr;
+    for (int index = 1; index < groups->topLevelItemCount(); ++index) {
+        QTreeWidgetItem *item = groups->topLevelItem(index);
+        if (item->text(0) == QStringLiteral("Serial")) {
+            serialGroup = item;
+            break;
+        }
+    }
+    QVERIFY(serialGroup);
+    groups->setCurrentItem(serialGroup);
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 2, 3000);
     const QString undoSource = temporary.filePath(
         QStringLiteral("incoming/temp_defs.svh"));
+    const QString undoFolderSource = temporary.filePath(
+        QStringLiteral("incoming/temp_spi"));
     QVERIFY(writeFile(undoSource, QByteArrayLiteral("`define TEMP_WIDTH 16\n")));
+    QVERIFY(writeFile(QDir(undoFolderSource).absoluteFilePath(
+                          QStringLiteral("rtl/spi_top.sv")),
+                      QByteArrayLiteral("module spi_top; endmodule\n")));
     QMimeData undoMime;
-    undoMime.setUrls({QUrl::fromLocalFile(undoSource)});
+    undoMime.setUrls({QUrl::fromLocalFile(undoSource),
+                      QUrl::fromLocalFile(undoFolderSource)});
     QDragEnterEvent undoDragEnter(QPoint(10, 10),
                                   Qt::CopyAction,
                                   &undoMime,
@@ -437,14 +454,29 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
                         Qt::NoModifier);
     QApplication::sendEvent(&window, &undoDrop);
     QVERIFY(undoDrop.isAccepted());
-    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 3, 10000);
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 4, 10000);
+    QCOMPARE(groups->currentItem(), groups->topLevelItem(0));
+    const ScanResult importedWhileFiltered = AssetScanner().scan(library);
+    const AssetRecord *ungroupedFile = findAsset(
+        importedWhileFiltered, QStringLiteral("temp_defs_svh"));
+    const AssetRecord *ungroupedFolder = findAsset(
+        importedWhileFiltered, QStringLiteral("temp_spi"));
+    QVERIFY(ungroupedFile);
+    QVERIFY(ungroupedFolder);
+    QVERIFY(ungroupedFile->manifest.tags.isEmpty());
+    QVERIFY(ungroupedFolder->manifest.tags.isEmpty());
     QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
     QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    QVERIFY(noticeLabel->text().contains(QStringLiteral("2 ungrouped asset(s)")));
     noticeAction->click();
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 2, 10000);
     QVERIFY(QFileInfo::exists(undoSource));
+    QVERIFY(QFileInfo::exists(QDir(undoFolderSource).absoluteFilePath(
+        QStringLiteral("rtl/spi_top.sv"))));
     QVERIFY(!findAsset(AssetScanner().scan(library),
                        QStringLiteral("temp_defs_svh")));
+    QVERIFY(!findAsset(AssetScanner().scan(library),
+                       QStringLiteral("temp_spi")));
     QVERIFY(noticeLabel->text().contains(
         QStringLiteral("source files were unchanged")));
 
