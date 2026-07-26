@@ -20,6 +20,11 @@ target_compile_definitions(tst_gui_smoke
 target_link_libraries(tst_gui_smoke PRIVATE xips_app Qt6::Test)
 add_test(NAME gui_smoke COMMAND tst_gui_smoke)
 
+add_executable(tst_user_journey tst_user_journey.cpp)
+set_target_properties(tst_user_journey PROPERTIES FOLDER "tests")
+target_link_libraries(tst_user_journey PRIVATE xips_app Qt6::Test)
+add_test(NAME user_journey COMMAND tst_user_journey)
+
 get_target_property(_xips_qt_core_location Qt6::Core IMPORTED_LOCATION_RELEASE)
 if(NOT _xips_qt_core_location)
     get_target_property(_xips_qt_core_location Qt6::Core IMPORTED_LOCATION)
@@ -27,10 +32,10 @@ endif()
 get_filename_component(_xips_qt_bin_dir "${_xips_qt_core_location}" DIRECTORY)
 get_filename_component(_xips_qt_prefix "${_xips_qt_bin_dir}/.." ABSOLUTE)
 get_filename_component(_xips_compiler_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-set_tests_properties(core gui_smoke PROPERTIES
+set_tests_properties(core gui_smoke user_journey PROPERTIES
     ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${_xips_qt_bin_dir};PATH=path_list_prepend:${_xips_compiler_bin_dir};QT_PLUGIN_PATH=set:${_xips_qt_prefix}/plugins"
 )
-set_property(TEST gui_smoke APPEND PROPERTY
+set_property(TEST gui_smoke user_journey APPEND PROPERTY
     ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen"
 )

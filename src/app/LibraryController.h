@@ -23,6 +23,7 @@ public:
     void rebuild();
     [[nodiscard]] QList<SearchHit> search(const QString &query,
                                           int limit = 1000) const;
+    [[nodiscard]] const QList<AssetRecord> &assets() const;
 
 signals:
     void refreshStarted();

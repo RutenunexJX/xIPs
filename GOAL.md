@@ -1,18 +1,16 @@
-# xIPs long-term goal
+# xIPs product goal
 
-xIPs 是个人 FPGA 可复用内容的本地资产目录：可靠地收集、查找、保存版本并导出，不扩展为 HDL IDE、构建系统、依赖管理器或云服务。
+xIPs is a personal FPGA reusable-asset library. It minimizes the work required to collect code, find it again, keep a few meaningful snapshots, and copy the required files into a project.
 
-## 不变量
+## Invariants
 
-- 产品只管理一种用户可见对象：资产；资产来源可以是完整目录或单个文件。
-- 每个资产使用稳定且唯一的 ID。
-- 资产目录和最小 `.xips.json` 是事实来源，不使用共享数据库。
-- manifest 只保存 ID、名称、说明、用户分组和快照版本；分组复用 `tags` 数组，不分类 HDL 文件。
-- 导入不修改源目录；版本快照不可变；导出不覆盖已有目录。
-- `.git`、构建、工具缓存和内部版本目录不会进入新快照。
-- 界面只呈现用户分组、资产列表、基本信息、文件清单和版本。
-- 全局唤起和 ZeroSlack 通过只读 CLI 或 `xips://` URI 接入，不向资产模型加入专属业务。
-
-## 完成定义
-
-可用版本必须能够选择资产库、复制导入目录或单文件、编辑基本元数据、搜索、查看文件清单、创建版本、导出工作副本或历史版本，并通过稳定 ID 从 CLI/URI 定位资产。构建和 GUI 验收必须能够完全离屏执行。
+- The only user-visible object is an asset. An asset may originate from a directory or a single file.
+- The asset directory and minimal `.xips.json` manifest are the source of truth; no shared database is required.
+- Import copies content and never modifies the source.
+- Saved versions are immutable full snapshots. Deleting a saved version never deletes the working copy.
+- Copy to exports payload only and never overwrites an existing target.
+- Groups reuse manifest `tags` and do not change directory layout.
+- Search includes real file names and relative paths.
+- Git, HDL semantics, tool execution, dependency management, and cloud protocols are not product responsibilities.
+- Jianguoyun support means operating safely on an ordinary synced folder and refreshing external changes, not implementing a cloud client.
+- Future global activation and ZeroSlack embedding reuse stable IDs, the read-only CLI, and `xips://` requests without expanding the asset model.

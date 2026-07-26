@@ -25,10 +25,11 @@ QVariant AssetTableModel::data(const QModelIndex &index, const int role) const
     const SearchHit &hit = m_hits.at(index.row());
     const AssetRecord &asset = hit.asset;
     if (role == Qt::ToolTipRole) {
-        return QStringLiteral("%1\nID: %2\n%3")
-            .arg(asset.manifest.description,
-                 asset.manifest.id,
-                 asset.assetRoot);
+        QString details = asset.manifest.description;
+        if (!hit.matchedFile.isEmpty()) {
+            details += QStringLiteral("\nMatched file: %1").arg(hit.matchedFile);
+        }
+        return details.trimmed();
     }
     if (role == Qt::UserRole) {
         switch (index.column()) {
@@ -36,10 +37,6 @@ QVariant AssetTableModel::data(const QModelIndex &index, const int role) const
             return asset.manifest.name.toCaseFolded();
         case VersionColumn:
             return asset.manifest.version.toCaseFolded();
-        case GroupsColumn:
-            return asset.manifest.tags.join(u' ').toCaseFolded();
-        case FilesColumn:
-            return static_cast<qlonglong>(asset.fileCount);
         case ModifiedColumn:
             return asset.lastModified;
         }
@@ -53,10 +50,6 @@ QVariant AssetTableModel::data(const QModelIndex &index, const int role) const
     case VersionColumn:
         return asset.manifest.version.isEmpty() ? QStringLiteral("-")
                                                 : asset.manifest.version;
-    case GroupsColumn:
-        return asset.manifest.tags.join(QStringLiteral(", "));
-    case FilesColumn:
-        return static_cast<qlonglong>(asset.fileCount);
     case ModifiedColumn:
         return asset.lastModified.isValid()
                    ? asset.lastModified.toLocalTime().toString(
@@ -76,8 +69,6 @@ QVariant AssetTableModel::headerData(const int section,
     static const QStringList headers{
         QStringLiteral("Asset"),
         QStringLiteral("Last saved"),
-        QStringLiteral("Groups"),
-        QStringLiteral("Files"),
         QStringLiteral("Modified"),
     };
     return section >= 0 && section < headers.size() ? headers.at(section)

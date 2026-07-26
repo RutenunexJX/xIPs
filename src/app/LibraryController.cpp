@@ -93,13 +93,14 @@ QList<SearchHit> LibraryController::search(const QString &query,
     const QStringList terms = normalizedQuery.split(u' ', Qt::SkipEmptyParts);
     QList<SearchHit> hits;
     for (const AssetRecord &asset : m_assets) {
-        const QStringList fields{
+        QStringList fields{
             asset.manifest.name,
             asset.manifest.id,
             asset.manifest.version,
             asset.manifest.tags.join(u' '),
             asset.manifest.description,
         };
+        fields.append(asset.files);
         bool matches = true;
         for (const QString &term : terms) {
             bool termMatched = false;
@@ -124,7 +125,25 @@ QList<SearchHit> LibraryController::search(const QString &query,
             score += fieldScore(asset.manifest.version, normalizedQuery, 30, 25, 20);
             score += fieldScore(asset.manifest.description, normalizedQuery, 20, 15, 10);
         }
-        hits.append({.asset = asset, .score = score});
+        QString matchedFile;
+        double matchedFileScore = 0.0;
+        if (!normalizedQuery.isEmpty()) {
+            for (const QString &file : asset.files) {
+                const double fileScore = fieldScore(file,
+                                                    normalizedQuery,
+                                                    50,
+                                                    40,
+                                                    30);
+                if (fileScore > matchedFileScore) {
+                    matchedFileScore = fileScore;
+                    matchedFile = file;
+                }
+            }
+        }
+        score += matchedFileScore;
+        hits.append({.asset = asset,
+                     .score = score,
+                     .matchedFile = matchedFile});
     }
     std::sort(hits.begin(), hits.end(), [](const SearchHit &left, const SearchHit &right) {
         if (left.score != right.score) {
@@ -138,6 +157,11 @@ QList<SearchHit> LibraryController::search(const QString &query,
         hits.erase(hits.begin() + limit, hits.end());
     }
     return hits;
+}
+
+const QList<AssetRecord> &LibraryController::assets() const
+{
+    return m_assets;
 }
 
 } // namespace xips

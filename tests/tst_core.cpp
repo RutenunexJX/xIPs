@@ -47,9 +47,12 @@ private slots:
     void manifestWritesMinimalSchemaAndPreservesUnknownFields();
     void importFolderCreatesPortableAsset();
     void importSingleFileCreatesAsset();
+    void batchImportRecoversCollisionsAndAssignsGroups();
     void scannerListsPayloadAndHashesOnDemand();
     void metadataKeepsStableId();
-    void versionsAreImmutableAndExportable();
+    void versionsAreImmutableAndCopyable();
+    void versionStateCopyToAndDeletionFormASafeWorkflow();
+    void groupChangesApplyAcrossAssets();
     void activationUrisParse();
     void cliListsAndResolvesAssets();
 };
@@ -190,6 +193,44 @@ void CoreTest::importSingleFileCreatesAsset()
     QCOMPARE(resolved.value(QStringLiteral("resolvedFiles")).toArray().size(), 1);
 }
 
+void CoreTest::batchImportRecoversCollisionsAndAssignsGroups()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString first = temporary.filePath(QStringLiteral("one/uart.sv"));
+    const QString second = temporary.filePath(QStringLiteral("two/uart.sv"));
+    QVERIFY(writeFile(first, QByteArrayLiteral("module uart_one; endmodule\n")));
+    QVERIFY(writeFile(second, QByteArrayLiteral("module uart_two; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    Manifest existing;
+    existing.id = QStringLiteral("uart_sv");
+    existing.name = QStringLiteral("Existing UART");
+    QString setupError;
+    const QString existingRoot = QDir(library).absoluteFilePath(
+        QStringLiteral("nested/existing"));
+    QVERIFY(QDir().mkpath(existingRoot));
+    QVERIFY2(ManifestService().write(
+                 QDir(existingRoot).absoluteFilePath(
+                     QStringLiteral(".xips.json")),
+                 existing,
+                 &setupError),
+             qPrintable(setupError));
+
+    AssetLibraryService service;
+    const ImportBatchResult result = service.importAssets(
+        library,
+        {first, second, temporary.filePath(QStringLiteral("missing.sv"))},
+        {QStringLiteral("UART"), QStringLiteral("uart")});
+    QCOMPARE(result.created.size(), 2);
+    QCOMPARE(result.errors.size(), 1);
+    QCOMPARE(result.created.at(0).manifest.id, QStringLiteral("uart_sv_2"));
+    QCOMPARE(result.created.at(1).manifest.id, QStringLiteral("uart_sv_3"));
+    QCOMPARE(result.created.at(1).manifest.name, QStringLiteral("uart.sv (3)"));
+    QCOMPARE(result.created.at(0).manifest.tags,
+             QStringList{QStringLiteral("UART")});
+    QVERIFY(result.errors.first().contains(QStringLiteral("missing.sv")));
+}
+
 void CoreTest::scannerListsPayloadAndHashesOnDemand()
 {
     QTemporaryDir temporary;
@@ -267,7 +308,7 @@ void CoreTest::metadataKeepsStableId()
     QCOMPARE(loaded.manifest->version, QStringLiteral("1.0.0"));
 }
 
-void CoreTest::versionsAreImmutableAndExportable()
+void CoreTest::versionsAreImmutableAndCopyable()
 {
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
@@ -302,19 +343,154 @@ void CoreTest::versionsAreImmutableAndExportable()
     QCOMPARE(versions.size(), 2);
     QVERIFY(!service.createVersion(asset, QStringLiteral("1.0.0"), nullptr, &error));
 
-    const QString exportRoot = temporary.filePath(QStringLiteral("exported-1.0.0"));
-    QVERIFY2(service.exportVersion(asset,
+    const QString copyDirectory = temporary.filePath(QStringLiteral("copy-to"));
+    QVERIFY(QDir().mkpath(copyDirectory));
+    QString copiedRoot;
+    QVERIFY2(service.copyVersionPayload(asset,
+                                        QStringLiteral("1.0.0"),
+                                        copyDirectory,
+                                        &copiedRoot,
+                                        &error),
+             qPrintable(error));
+    QCOMPARE(QFileInfo(copiedRoot).fileName(), QStringLiteral("versioned_ip"));
+    QFile copied(QDir(copiedRoot).absoluteFilePath(QStringLiteral("rtl/top.sv")));
+    QVERIFY(copied.open(QIODevice::ReadOnly));
+    QCOMPARE(copied.readAll(), QByteArrayLiteral("module top; endmodule\n"));
+    QVERIFY(!QFileInfo::exists(QDir(copiedRoot).absoluteFilePath(
+        QStringLiteral(".xips.json"))));
+}
+
+void CoreTest::versionStateCopyToAndDeletionFormASafeWorkflow()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("uart_rx.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module uart_rx; localparam V = 1; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = service.suggestedMetadata(source)},
+                 &asset,
+                 &error),
+             qPrintable(error));
+
+    QCOMPARE(service.suggestedNextVersion(QString()), QStringLiteral("1.0.0"));
+    QCOMPARE(service.suggestedNextVersion(QStringLiteral("1.2.9")),
+             QStringLiteral("1.2.10"));
+    QVERIFY2(service.createVersion(asset,
                                    QStringLiteral("1.0.0"),
-                                   exportRoot,
+                                   nullptr,
                                    &error),
              qPrintable(error));
-    QFile exported(QDir(exportRoot).absoluteFilePath(QStringLiteral("rtl/top.sv")));
-    QVERIFY(exported.open(QIODevice::ReadOnly));
-    QCOMPARE(exported.readAll(), QByteArrayLiteral("module top; endmodule\n"));
-    QVERIFY(QFileInfo::exists(QDir(exportRoot).absoluteFilePath(
-        QStringLiteral(".xips.json"))));
-    QVERIFY(!QFileInfo::exists(QDir(exportRoot).absoluteFilePath(
-        QStringLiteral(".snapshot.json"))));
+    WorkingCopyState state = service.workingCopyState(asset);
+    QVERIFY2(state.error.isEmpty(), qPrintable(state.error));
+    QVERIFY(state.hasSavedVersion);
+    QVERIFY(!state.changed);
+    QVERIFY(!service.createVersion(asset,
+                                   QStringLiteral("1.0.1"),
+                                   nullptr,
+                                   &error));
+    QVERIFY(error.contains(QStringLiteral("has not changed")));
+
+    const QString workingFile = QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("uart_rx.sv"));
+    QVERIFY(writeFile(workingFile,
+                      QByteArrayLiteral("module uart_rx; localparam V = 2; endmodule\n")));
+    state = service.workingCopyState(asset);
+    QVERIFY(state.changed);
+    error.clear();
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.1"),
+                                   nullptr,
+                                   &error),
+             qPrintable(error));
+
+    const QString destination = temporary.filePath(QStringLiteral("copy-to"));
+    QVERIFY(QDir().mkpath(destination));
+    QString copiedPath;
+    QVERIFY2(service.copyVersionPayload(asset,
+                                        QStringLiteral("1.0.0"),
+                                        destination,
+                                        &copiedPath,
+                                        &error),
+             qPrintable(error));
+    QCOMPARE(QFileInfo(copiedPath).fileName(), QStringLiteral("uart_rx.sv"));
+    QVERIFY(!QFileInfo(QDir(destination).absoluteFilePath(
+        QStringLiteral(".xips.json"))).exists());
+    QFile copied(copiedPath);
+    QVERIFY(copied.open(QIODevice::ReadOnly));
+    QVERIFY(copied.readAll().contains(QByteArrayLiteral("V = 1")));
+    QVERIFY(!service.copyVersionPayload(asset,
+                                        QStringLiteral("1.0.0"),
+                                        destination,
+                                        nullptr,
+                                        &error));
+
+    QVERIFY2(service.deleteVersion(asset,
+                                   QStringLiteral("1.0.1"),
+                                   VersionDeleteMode::Permanent,
+                                   &error),
+             qPrintable(error));
+    QCOMPARE(service.versions(asset.assetRoot, &error).size(), 1);
+    const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
+    QVERIFY(loaded.ok());
+    QCOMPARE(loaded.manifest->version, QStringLiteral("1.0.0"));
+    QVERIFY(!service.deleteVersion(asset,
+                                   QString(),
+                                   VersionDeleteMode::Permanent,
+                                   &error));
+}
+
+void CoreTest::groupChangesApplyAcrossAssets()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString first = temporary.filePath(QStringLiteral("one.sv"));
+    const QString second = temporary.filePath(QStringLiteral("two.sv"));
+    QVERIFY(writeFile(first, QByteArrayLiteral("module one; endmodule\n")));
+    QVERIFY(writeFile(second, QByteArrayLiteral("module two; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    const ImportBatchResult imported = service.importAssets(library, {first, second});
+    QCOMPARE(imported.created.size(), 2);
+
+    int changed = 0;
+    QString error;
+    QVERIFY2(service.changeGroupMembership(imported.created,
+                                           QString(),
+                                           QStringLiteral("AXI"),
+                                           &changed,
+                                           &error),
+             qPrintable(error));
+    QCOMPARE(changed, 2);
+    QVERIFY2(service.changeGroupMembership(imported.created,
+                                           QStringLiteral("AXI"),
+                                           QStringLiteral("AMBA"),
+                                           &changed,
+                                           &error),
+             qPrintable(error));
+    QCOMPARE(changed, 2);
+    const ScanResult renamed = AssetScanner().scan(library);
+    QCOMPARE(renamed.assets.size(), 2);
+    for (const AssetRecord &asset : renamed.assets) {
+        QCOMPARE(asset.manifest.tags, QStringList{QStringLiteral("AMBA")});
+    }
+    QVERIFY2(service.changeGroupMembership(renamed.assets,
+                                           QStringLiteral("AMBA"),
+                                           QString(),
+                                           &changed,
+                                           &error),
+             qPrintable(error));
+    QCOMPARE(changed, 2);
+    const ScanResult removed = AssetScanner().scan(library);
+    for (const AssetRecord &asset : removed.assets) {
+        QVERIFY(asset.manifest.tags.isEmpty());
+    }
 }
 
 void CoreTest::activationUrisParse()
@@ -361,6 +537,25 @@ void CoreTest::cliListsAndResolvesAssets()
                                == QStringLiteral("reset_gen");
     }
     QVERIFY(foundResetGenerator);
+
+    QProcess fileSearch;
+    fileSearch.start(cli,
+                     {QStringLiteral("--action"), QStringLiteral("list"),
+                      QStringLiteral("--library"), library,
+                      QStringLiteral("--query"),
+                      QStringLiteral("reset_config.svh")});
+    QVERIFY(fileSearch.waitForFinished(10000));
+    QCOMPARE(fileSearch.exitCode(), 0);
+    const QJsonArray fileMatches = QJsonDocument::fromJson(
+        fileSearch.readAllStandardOutput())
+                                       .object()
+                                       .value(QStringLiteral("data"))
+                                       .toObject()
+                                       .value(QStringLiteral("assets"))
+                                       .toArray();
+    QCOMPARE(fileMatches.size(), 1);
+    QCOMPARE(fileMatches.first().toObject().value(QStringLiteral("id")).toString(),
+             QStringLiteral("reset_gen"));
 
     QProcess resolve;
     resolve.start(cli,

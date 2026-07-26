@@ -1,59 +1,57 @@
 # xIPs
 
-xIPs 是本地优先的个人 FPGA 可复用资产管理器。它统一管理完整 IP 目录和单个 `.v`、`.sv`、`.svh` 等文件，只负责收集、查找、保存版本和导出，不解析 HDL，不运行仿真或综合，不管理依赖，也不替代 ZeroSlack、Vivado 或 Git。
+xIPs 是个人使用的 FPGA 可复用资产管理器。它只处理三件事：收集代码资产、按名称或文件名查找资产、保存和取用历史版本。资产可以是完整 IP 目录，也可以是单个 `.v`、`.sv`、`.svh`、约束或脚本文件。
 
-## 使用流程
+xIPs 不解析 HDL，不执行仿真或综合，不管理依赖，不接管 Git，也不实现云盘客户端。
 
-1. **Library...** 选择本地或坚果云同步目录。
-2. **Add folder** 导入完整 IP 目录；**Add file** 直接导入单个文件。两者都会复制到资产库并生成最小 `.xips.json`。
-3. 使用搜索框按名称、ID、版本、分组或说明查找资产。
-4. 从左侧 **Groups** 选择用户分组；分组与搜索条件可以同时生效。
-5. 在详情区查看基本信息、实际文件和版本记录。
-6. **Save version** 创建不可变的完整资产快照。
-7. **Export** 导出工作副本或选中的历史版本；已有目标不会被覆盖。
+## 开始使用
 
-版本号只由 **Save version** 维护，普通元数据编辑不会改变版本。
+首次启动时选择一个资产库文件夹。该文件夹可以位于坚果云同步目录中；xIPs 不会自行创建隐藏的默认库。
 
-## 资产库与坚果云
+主界面只保留三个高频入口：
 
-资产库是普通目录，可直接放入坚果云同步位置：
+- **Add**：选择多个文件、选择一个文件夹，或把多个文件和文件夹直接拖入窗口。导入会复制内容，原文件不变；名称和内部 ID 自动推断，重名时自动生成不冲突的名称。
+- **Search**：按资产名称、说明、分组、版本、实际文件名或相对路径查找。
+- **Copy to...**：把工作副本或选中的历史版本复制到工程目录。单文件资产复制为原文件名；目录资产复制为一个目录；内部 `.xips.json` 和版本元数据不会带入工程，也不会覆盖已有目标。
+
+选中资产后，详情区提供 **Open**、**Edit details** 和 **Save version**。单文件资产直接打开文件，目录资产打开目录。版本号默认建议下一个补丁版本，例如 `1.2.9` 后建议 `1.2.10`。
+
+## 资产与分组
+
+每个资产在资产库中使用一个独立目录，最少包含 `.xips.json` 和实际载荷文件：
 
 ```text
 xIPs Library/
   reset_gen/
     .xips.json
-    rtl/
-    constraints/
-    .xips/
-      versions/
-        1.0.0/
-        1.1.0/
+    rtl/reset_gen.sv
+    constraints/reset_gen.xdc
   uart_rx_sv/
     .xips.json
     uart_rx.sv
-    .xips/
-      versions/
-        1.0.0/
 ```
 
-单文件也使用独立资产目录。xIPs 自动保留原始文件名，并以同一套搜索、版本和导出逻辑管理；不会为它增加 Module、Code Block 或 HDL 类型字段。
+左侧 Groups 来自各资产 manifest 的 `tags`。一个资产可以属于多个分组。表格支持多选，**Manage groups** 可以把所选资产加入新分组、重命名当前分组，或从所有资产中移除当前分组；这些操作不会移动或删除资产文件。
 
-## 自定义分组
+## 版本
 
-新增或编辑资产时，在 **Groups** 中输入逗号分隔的名称，例如 `AXI, UART, Common`。这些名称仍存储在 manifest 的 `tags` 数组中，左侧 Groups 列表会自动汇总并显示资产数量。
+**Save version** 保存完整、不可变的文件快照，位置为 `.xips/versions/<version>`。详情区只在选中资产时异步检查当前内容，并显示：
 
-- 一个资产可以属于多个分组。
-- 分组名称不区分大小写，重复名称会自动合并。
-- 新名称随任一资产保存后自动出现；从所有资产中移除后自动消失。
-- 分组只是视图和筛选，不改变资产目录，也不引入数据库或新的 manifest 字段。
+- 尚未保存版本；
+- 与最近版本一致；
+- 自最近版本后已修改。
 
-xIPs 不实现云账号或上传协议。资产、manifest 和版本快照由坚果云按普通文件同步。`.git`、构建目录、`.Xil`、`ip_user_files`、缓存和内部版本目录不会进入新快照。
+内容没有变化时不会创建重复版本。Versions 页可以选择历史版本供 **Copy to...** 使用，也可以把保存版本移入系统回收站；工作副本不会被删除。
 
-云端文件发生变化后，使用 **Refresh** 重新读取资产库。xIPs 不自动合并多个设备同时修改产生的冲突。
+版本不是 Git 提交。它是代码文件的完整副本，适合个人资产量和“保留少量有效版本、删除过时版本”的使用方式。
+
+## 坚果云同步
+
+xIPs 只读写普通文件和目录，因此可把整个资产库放在坚果云同步位置。应用启动和重新获得焦点时会防抖刷新，仍可从 **More > Refresh now** 手动刷新。无法读取的 manifest、重复 ID 或部分导入失败会保留在 **More > Problems**，直到用户查看。
+
+xIPs 不自动合并两台设备对同一文件的并发修改。发生云盘冲突时，应先在文件系统中确认需要保留的副本，再回到 xIPs 刷新。
 
 ## Manifest
-
-每个资产目录只需要一个最小 `.xips.json`：
 
 ```json
 {
@@ -66,21 +64,17 @@ xIPs 不实现云账号或上传协议。资产、manifest 和版本快照由坚
 }
 ```
 
-载荷由资产目录中的实际文件决定，不再维护 `type`、`top`、`language`、`sources`、`constraints`、`documentation` 或 `tools` 分类字段。详细规则见 [Manifest 格式](docs/manifest-format.md)。
+详细规则见 [Manifest 格式](docs/manifest-format.md)。
 
-## 构建
+## 构建与测试
 
-要求：
-
-- Qt 6.5 或更新版本，包含 Core、Concurrent、Widgets 和 Test
-- CMake 3.25 或更新版本
-- Ninja
-- C++20 编译器
+要求 Qt 6.5 或更新版本（Core、Concurrent、Widgets、Test）、CMake 3.25、Ninja 和 C++20 编译器。
 
 ```powershell
 $env:PATH = "E:\QT6\Tools\mingw1310_64\bin;E:\QT6\6.10.2\mingw_64\bin;$env:PATH"
 E:\QT6\Tools\CMake_64\bin\cmake.exe -S . -B build -G Ninja `
   -DCMAKE_BUILD_TYPE=Debug `
+  -DBUILD_TESTING=ON `
   -DCMAKE_PREFIX_PATH=E:\QT6\6.10.2\mingw_64 `
   -DCMAKE_MAKE_PROGRAM=E:\QT6\Tools\Ninja\ninja.exe `
   -DCMAKE_CXX_COMPILER=E:\QT6\Tools\mingw1310_64\bin\g++.exe
@@ -88,51 +82,6 @@ E:\QT6\Tools\CMake_64\bin\cmake.exe --build build
 E:\QT6\Tools\CMake_64\bin\ctest.exe --test-dir build --output-on-failure
 ```
 
-精简 Windows 部署：
+`core` 验证文件和版本行为，`gui_smoke` 在 Qt offscreen 平台验证主界面，`user_journey` 在临时坚果云目录中完成“导入—查找—保存版本—复制取用—分组—自动刷新—安全删除”的完整任务。测试不会操作可见桌面。
 
-```powershell
-E:\QT6\Tools\CMake_64\bin\cmake.exe --install build --prefix build\install
-E:\QT6\6.10.2\mingw_64\bin\windeployqt.exe `
-  --release --no-translations --no-system-d3d-compiler --no-opengl-sw `
-  --compiler-runtime `
-  --skip-plugin-types generic,imageformats,iconengines,networkinformation,tls `
-  build\install\bin\xips.exe
-```
-
-Qt Creator 中打开仓库根目录的 `CMakeLists.txt`，选择匹配的 Desktop MinGW Kit。可运行目标只有 `xips` 和 `xips-cli`。详细配置见 [Qt Creator 构建与调试](docs/qt-creator.md)。
-
-## 最小集成边界
-
-桌面应用支持：
-
-```text
-xips.exe --open-asset reset_gen
-xips.exe --search clocking
-xips.exe xips://asset/reset_gen
-xips.exe "xips://search?q=clocking"
-```
-
-只读 CLI 支持：
-
-```powershell
-xips-cli --action list --library E:\Nutstore\xIPs --query uart
-xips-cli --action resolve --library E:\Nutstore\xIPs --asset uart_ip
-xips-cli --action resolve --library E:\Nutstore\xIPs --asset uart_ip --asset-version 1.0.0
-```
-
-CLI 只提供 `list` 和 `resolve`，用于未来 ZeroSlack 选择器或脚本查询。URI 注册、单实例转发和嵌入控件属于后续适配层，协议说明见 [CLI 与唤起协议](docs/cli-and-integration.md)。
-
-## 数据规则
-
-- `.xips.json` 只保存基本元数据，实际文件是资产事实来源。
-- manifest 使用 `QSaveFile` 原子替换，未知用户字段在编辑时保留。
-- 导入、版本和导出拒绝符号链接及 Windows junction。
-- 写入先进入暂存目录，再通过目录重命名发布。
-- 版本快照不可修改；工作副本可以继续编辑。
-- 内容哈希只在保存版本或明确解析工作副本时计算，不在每次刷新时读取全部文件内容。
-
-## 测试
-
-`core` 覆盖最小 manifest、目录与单文件导入、分组名称规范化、文件枚举、按需哈希、稳定 ID、版本、导出、URI 和真实 CLI 子进程。`gui_smoke` 覆盖 Groups 汇总与筛选、文件导入入口、文件清单、版本列表和按 ID 唤起。GUI 测试固定使用 Qt offscreen 平台，不操作桌面。
-
-当前版本尚未提供安装器、代码签名、自动更新、Windows URI 注册、单实例 IPC 或 ZeroSlack 嵌入控件。
+Qt Creator 配置见 [Qt Creator 构建与调试](docs/qt-creator.md)。只读 CLI 和未来全局唤起边界见 [CLI 与唤起协议](docs/cli-and-integration.md)。

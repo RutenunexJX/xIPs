@@ -52,8 +52,9 @@ targets:
 
 The two internal static libraries and `tst_*` executables remain available in
 the Build target list, but they do not create application run configurations.
-CTest and Qt Creator's Tests view can run the `core` and `gui_smoke` suites;
-the latter is configured for Qt's offscreen platform.
+CTest and Qt Creator's Tests view can run the `core`, `gui_smoke`, and
+`user_journey` suites. Both GUI suites are configured for Qt's offscreen
+platform and do not operate the visible desktop.
 
 For desktop debugging:
 

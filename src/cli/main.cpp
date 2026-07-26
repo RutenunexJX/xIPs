@@ -168,6 +168,7 @@ int main(int argc, char *argv[])
                     asset.manifest.version,
                     asset.manifest.description,
                     asset.manifest.tags.join(u' '),
+                    asset.files.join(u' '),
                 }.join(u' '));
             bool matches = true;
             for (const QString &term : terms) {

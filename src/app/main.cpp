@@ -7,7 +7,6 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSettings>
-#include <QStandardPaths>
 #include <QTextStream>
 
 #include <optional>
@@ -25,9 +24,7 @@ QString defaultLibraryPath()
     if (QFileInfo(environment).isDir()) {
         return QFileInfo(environment).absoluteFilePath();
     }
-    const QString documents = QStandardPaths::writableLocation(
-        QStandardPaths::DocumentsLocation);
-    return QDir(documents).absoluteFilePath(QStringLiteral("xIPs Library"));
+    return {};
 }
 
 } // namespace
@@ -110,7 +107,7 @@ int main(int argc, char *argv[])
     const QString library = parser.isSet(libraryOption)
                                 ? QFileInfo(parser.value(libraryOption)).absoluteFilePath()
                                 : defaultLibraryPath();
-    if (!QDir().mkpath(library)) {
+    if (!library.isEmpty() && !QDir().mkpath(library)) {
         QTextStream(stderr) << "Cannot create asset library: " << library << u'\n';
         return 3;
     }

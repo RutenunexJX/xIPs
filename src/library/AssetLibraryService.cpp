@@ -14,6 +14,7 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <limits>
 
 namespace xips {
 namespace {
@@ -80,6 +81,23 @@ Manifest makeManifest(const AssetMetadata &metadata)
     manifest.description = metadata.description.trimmed();
     manifest.tags = cleanedTags(metadata.tags);
     return manifest;
+}
+
+AssetMetadata withAvailableIdentity(AssetMetadata metadata,
+                                    const QString &libraryRoot,
+                                    const QSet<QString> &existingIds)
+{
+    const QString baseId = metadata.id;
+    const QString baseName = metadata.name;
+    int suffix = 2;
+    while (existingIds.contains(metadata.id.toCaseFolded())
+           || QFileInfo::exists(
+               QDir(libraryRoot).absoluteFilePath(metadata.id))) {
+        metadata.id = QStringLiteral("%1_%2").arg(baseId).arg(suffix);
+        metadata.name = QStringLiteral("%1 (%2)").arg(baseName).arg(suffix);
+        ++suffix;
+    }
+    return metadata;
 }
 
 bool validVersion(const QString &version)
@@ -161,6 +179,24 @@ AssetMetadata AssetLibraryService::suggestedMetadata(const QString &sourcePath)
     return metadata;
 }
 
+QString AssetLibraryService::suggestedNextVersion(const QString &currentVersion)
+{
+    static const QRegularExpression semanticVersion(
+        QStringLiteral("^(\\d+)\\.(\\d+)\\.(\\d+)$"));
+    const QRegularExpressionMatch match = semanticVersion.match(
+        currentVersion.trimmed());
+    if (!match.hasMatch()) {
+        return QStringLiteral("1.0.0");
+    }
+    bool ok = false;
+    const qulonglong patch = match.captured(3).toULongLong(&ok);
+    if (!ok || patch == std::numeric_limits<qulonglong>::max()) {
+        return currentVersion.trimmed() + QStringLiteral(".1");
+    }
+    return QStringLiteral("%1.%2.%3")
+        .arg(match.captured(1), match.captured(2), QString::number(patch + 1));
+}
+
 bool AssetLibraryService::importAsset(const ImportAssetRequest &request,
                                       AssetRecord *created,
                                       QString *error) const
@@ -237,6 +273,41 @@ bool AssetLibraryService::importAsset(const ImportAssetRequest &request,
     return true;
 }
 
+ImportBatchResult AssetLibraryService::importAssets(
+    const QString &libraryRoot,
+    const QStringList &sourcePaths,
+    const QStringList &groups) const
+{
+    ImportBatchResult result;
+    QSet<QString> existingIds;
+    if (QFileInfo(libraryRoot).isDir()) {
+        const ScanResult scan = AssetScanner().scan(libraryRoot);
+        for (const AssetRecord &asset : scan.assets) {
+            existingIds.insert(asset.manifest.id.toCaseFolded());
+        }
+    }
+    for (const QString &sourcePath : sourcePaths) {
+        AssetMetadata metadata = withAvailableIdentity(
+            suggestedMetadata(sourcePath), libraryRoot, existingIds);
+        metadata.tags.append(groups);
+        AssetRecord created;
+        QString error;
+        if (importAsset({.libraryRoot = libraryRoot,
+                         .sourcePath = sourcePath,
+                         .metadata = metadata},
+                        &created,
+                        &error)) {
+            result.created.append(created);
+            existingIds.insert(created.manifest.id.toCaseFolded());
+        } else {
+            result.errors.append(
+                QStringLiteral("%1: %2").arg(QDir::toNativeSeparators(sourcePath),
+                                              error));
+        }
+    }
+    return result;
+}
+
 bool AssetLibraryService::updateMetadata(const AssetRecord &asset,
                                          const AssetMetadata &metadata,
                                          QString *error) const
@@ -255,6 +326,81 @@ bool AssetLibraryService::updateMetadata(const AssetRecord &asset,
     manifest.description = metadata.description.trimmed();
     manifest.tags = cleanedTags(metadata.tags);
     return ManifestService().write(asset.manifestPath, manifest, error);
+}
+
+bool AssetLibraryService::changeGroupMembership(
+    const QList<AssetRecord> &assets,
+    const QString &oldGroup,
+    const QString &newGroup,
+    int *changed,
+    QString *error) const
+{
+    const QString oldName = oldGroup.trimmed();
+    const QString newName = newGroup.trimmed();
+    if (oldName.isEmpty() && newName.isEmpty()) {
+        return fail(error, QStringLiteral("A group name is required"));
+    }
+
+    struct PendingWrite {
+        QString path;
+        Manifest before;
+        Manifest after;
+    };
+    QList<PendingWrite> writes;
+    for (const AssetRecord &asset : assets) {
+        const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
+        if (!loaded.ok()) {
+            return fail(error,
+                        QStringLiteral("Cannot reload asset '%1'")
+                            .arg(asset.manifest.name));
+        }
+        Manifest updated = *loaded.manifest;
+        QStringList groups = updated.tags;
+        bool assetChanged = false;
+        if (oldName.isEmpty()) {
+            const bool alreadyAssigned = std::any_of(
+                groups.cbegin(), groups.cend(), [&newName](const QString &group) {
+                    return group.trimmed().compare(newName,
+                                                   Qt::CaseInsensitive) == 0;
+                });
+            if (!alreadyAssigned) {
+                groups.append(newName);
+                assetChanged = true;
+            }
+        } else {
+            for (QString &group : groups) {
+                if (group.trimmed().compare(oldName, Qt::CaseInsensitive) == 0) {
+                    group = newName;
+                    assetChanged = true;
+                }
+            }
+        }
+        updated.tags = cleanedTags(groups);
+        if (assetChanged) {
+            writes.append({.path = asset.manifestPath,
+                           .before = *loaded.manifest,
+                           .after = std::move(updated)});
+        }
+    }
+
+    int completed = 0;
+    for (const PendingWrite &write : writes) {
+        QString writeError;
+        if (!ManifestService().write(write.path, write.after, &writeError)) {
+            for (int index = completed - 1; index >= 0; --index) {
+                QString rollbackError;
+                ManifestService().write(writes.at(index).path,
+                                        writes.at(index).before,
+                                        &rollbackError);
+            }
+            return fail(error, writeError);
+        }
+        ++completed;
+    }
+    if (changed) {
+        *changed = completed;
+    }
+    return true;
 }
 
 QList<VersionInfo> AssetLibraryService::versions(const QString &assetRoot,
@@ -315,6 +461,34 @@ QList<VersionInfo> AssetLibraryService::versions(const QString &assetRoot,
     return result;
 }
 
+WorkingCopyState AssetLibraryService::workingCopyState(
+    const AssetRecord &asset) const
+{
+    WorkingCopyState state;
+    QString versionsError;
+    const QList<VersionInfo> savedVersions = versions(asset.assetRoot,
+                                                       &versionsError);
+    if (!versionsError.isEmpty()) {
+        state.error = versionsError;
+        return state;
+    }
+    if (savedVersions.isEmpty()) {
+        return state;
+    }
+    const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
+    if (!loaded.ok()) {
+        state.error = QStringLiteral("Cannot reload the selected asset manifest");
+        return state;
+    }
+    state.hasSavedVersion = true;
+    state.latestVersion = savedVersions.first().version;
+    Manifest comparable = *loaded.manifest;
+    comparable.version = state.latestVersion;
+    state.changed = AssetScanner::contentHash(comparable, asset.assetRoot)
+                    != savedVersions.first().contentHash;
+    return state;
+}
+
 bool AssetLibraryService::createVersion(const AssetRecord &asset,
                                         const QString &version,
                                         VersionInfo *created,
@@ -328,6 +502,15 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
     const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
     if (!loaded.ok()) {
         return fail(error, QStringLiteral("Cannot reload the selected asset manifest"));
+    }
+    const WorkingCopyState state = workingCopyState(asset);
+    if (!state.error.isEmpty()) {
+        return fail(error, state.error);
+    }
+    if (state.hasSavedVersion && !state.changed) {
+        return fail(error,
+                    QStringLiteral("The working copy has not changed since version %1")
+                        .arg(state.latestVersion));
     }
 
     const QString versionsRoot = QDir(asset.assetRoot).absoluteFilePath(
@@ -402,15 +585,82 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
     return true;
 }
 
-bool AssetLibraryService::exportVersion(const AssetRecord &asset,
+bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
                                         const QString &version,
-                                        const QString &destination,
+                                        const VersionDeleteMode mode,
                                         QString *error) const
+{
+    const QString cleanVersion = version.trimmed();
+    if (cleanVersion.isEmpty()) {
+        return fail(error, QStringLiteral("The working copy cannot be deleted here"));
+    }
+    QString versionsError;
+    const QList<VersionInfo> available = versions(asset.assetRoot, &versionsError);
+    if (!versionsError.isEmpty()) {
+        return fail(error, versionsError);
+    }
+    const auto found = std::find_if(
+        available.cbegin(), available.cend(), [&cleanVersion](const VersionInfo &entry) {
+            return entry.version == cleanVersion;
+        });
+    if (found == available.cend()) {
+        return fail(error,
+                    QStringLiteral("Version not found: %1").arg(cleanVersion));
+    }
+
+    const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
+    if (!loaded.ok()) {
+        return fail(error, QStringLiteral("Cannot reload the selected asset manifest"));
+    }
+    Manifest updated = *loaded.manifest;
+    const bool updateCurrent = updated.version == cleanVersion;
+    if (updateCurrent) {
+        updated.version.clear();
+        for (const VersionInfo &candidate : available) {
+            if (candidate.version != cleanVersion) {
+                updated.version = candidate.version;
+                break;
+            }
+        }
+        QString manifestError;
+        if (!ManifestService().write(asset.manifestPath, updated, &manifestError)) {
+            return fail(error, manifestError);
+        }
+    }
+
+    bool removed = false;
+    if (mode == VersionDeleteMode::MoveToTrash) {
+        removed = QFile::moveToTrash(found->path);
+    } else {
+        removed = QDir(found->path).removeRecursively();
+    }
+    if (!removed) {
+        if (updateCurrent) {
+            QString rollbackError;
+            ManifestService().write(asset.manifestPath,
+                                    *loaded.manifest,
+                                    &rollbackError);
+        }
+        return fail(error,
+                    mode == VersionDeleteMode::MoveToTrash
+                        ? QStringLiteral("Cannot move the saved version to the trash")
+                        : QStringLiteral("Cannot delete the saved version"));
+    }
+    return true;
+}
+
+bool AssetLibraryService::copyVersionPayload(
+    const AssetRecord &asset,
+    const QString &version,
+    const QString &destinationDirectory,
+    QString *copiedPath,
+    QString *error) const
 {
     QString sourceRoot = asset.assetRoot;
     if (!version.trimmed().isEmpty()) {
         QString versionsError;
-        const QList<VersionInfo> available = versions(asset.assetRoot, &versionsError);
+        const QList<VersionInfo> available = versions(asset.assetRoot,
+                                                       &versionsError);
         if (!versionsError.isEmpty()) {
             return fail(error, versionsError);
         }
@@ -420,54 +670,70 @@ bool AssetLibraryService::exportVersion(const AssetRecord &asset,
             });
         if (found == available.cend()) {
             return fail(error,
-                        QStringLiteral("Version not found: %1").arg(version.trimmed()));
+                        QStringLiteral("Version not found: %1")
+                            .arg(version.trimmed()));
         }
         sourceRoot = found->path;
     }
 
-    const QString targetRoot = files::normalizedAbsolute(destination);
-    if (QFileInfo::exists(targetRoot)) {
+    const QString destinationRoot = files::normalizedAbsolute(
+        destinationDirectory);
+    if (!QFileInfo(destinationRoot).isDir()) {
+        return fail(error, QStringLiteral("Copy destination is not a directory"));
+    }
+    if (files::isWithin(destinationRoot, sourceRoot)) {
         return fail(error,
-                    QStringLiteral("Export destination already exists: %1").arg(targetRoot));
+                    QStringLiteral("Copy destination cannot be inside the source asset"));
     }
-    if (files::isWithin(targetRoot, asset.assetRoot)) {
-        return fail(error,
-                    QStringLiteral("Export destination cannot be inside the source asset"));
-    }
-    const QString parent = QFileInfo(targetRoot).absolutePath();
-    const QString targetName = QFileInfo(targetRoot).fileName();
-    if (targetName.isEmpty() || !QDir().mkpath(parent)) {
-        return fail(error, QStringLiteral("Cannot create the export parent directory"));
-    }
-    const QString stagingName = QStringLiteral(".xips-export-%1")
-                                    .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
-    const QString stagingRoot = QDir(parent).absoluteFilePath(stagingName);
-    if (!QDir().mkpath(stagingRoot)) {
-        return fail(error, QStringLiteral("Cannot create the export staging directory"));
+    const QStringList payload = AssetScanner::assetFiles(sourceRoot);
+    if (payload.isEmpty()) {
+        return fail(error, QStringLiteral("The selected asset has no payload files"));
     }
 
-    QString operationError;
-    if (!copyPayload(sourceRoot, stagingRoot, &operationError)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, operationError);
+    if (payload.size() == 1) {
+        const QString source = QDir(sourceRoot).absoluteFilePath(payload.first());
+        const QString target = QDir(destinationRoot).absoluteFilePath(
+            QFileInfo(payload.first()).fileName());
+        if (QFileInfo::exists(target)) {
+            return fail(error,
+                        QStringLiteral("Copy destination already exists: %1")
+                            .arg(target));
+        }
+        if (!QFile::copy(source, target)) {
+            return fail(error,
+                        QStringLiteral("Cannot copy %1 to %2").arg(source, target));
+        }
+        if (copiedPath) {
+            *copiedPath = target;
+        }
+        return true;
     }
-    const QString sourceManifest = QDir(sourceRoot).absoluteFilePath(
-        QStringLiteral(".xips.json"));
-    const ManifestLoadResult loaded = ManifestService().load(sourceManifest);
-    if (!loaded.ok()
-        || !ManifestService().write(
-            QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
-            loaded.ok() ? *loaded.manifest : asset.manifest,
-            &operationError)) {
+
+    const QString targetRoot = QDir(destinationRoot).absoluteFilePath(
+        asset.manifest.id);
+    if (QFileInfo::exists(targetRoot)) {
+        return fail(error,
+                    QStringLiteral("Copy destination already exists: %1")
+                        .arg(targetRoot));
+    }
+    const QString stagingName = QStringLiteral(".xips-copy-%1")
+                                    .arg(QUuid::createUuid().toString(
+                                        QUuid::WithoutBraces));
+    const QString stagingRoot = QDir(destinationRoot).absoluteFilePath(stagingName);
+    if (!QDir().mkpath(stagingRoot)) {
+        return fail(error, QStringLiteral("Cannot create the copy staging directory"));
+    }
+    QString copyError;
+    if (!copyPayload(sourceRoot, stagingRoot, &copyError)
+        || !QDir(destinationRoot).rename(stagingName, asset.manifest.id)) {
         QDir(stagingRoot).removeRecursively();
         return fail(error,
-                    operationError.isEmpty()
-                        ? QStringLiteral("Cannot read the version manifest")
-                        : operationError);
+                    copyError.isEmpty()
+                        ? QStringLiteral("Cannot publish the copied asset")
+                        : copyError);
     }
-    if (!QDir(parent).rename(stagingName, targetName)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, QStringLiteral("Cannot publish the exported asset"));
+    if (copiedPath) {
+        *copiedPath = targetRoot;
     }
     return true;
 }

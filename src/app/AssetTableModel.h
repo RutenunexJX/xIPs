@@ -13,8 +13,6 @@ public:
     enum Column {
         NameColumn,
         VersionColumn,
-        GroupsColumn,
-        FilesColumn,
         ModifiedColumn,
         ColumnCount
     };

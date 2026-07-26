@@ -36,6 +36,7 @@ struct ScanResult {
 struct SearchHit {
     AssetRecord asset;
     double score = 0.0;
+    QString matchedFile;
 };
 
 } // namespace xips

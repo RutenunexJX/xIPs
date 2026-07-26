@@ -58,5 +58,6 @@
 - `tests/CMakeLists.txt`
 - `tests/tst_core.cpp`
 - `tests/tst_gui_smoke.cpp`
+- `tests/tst_user_journey.cpp`
 
 旧的 AssetIndex、Slang、DependencyResolver、ImportService、GitService、DiffService、TestRunner、ManagedAssetService 及五阶段测试源码已删除。当前仅保留资产核心库、Qt Widgets 应用层、桌面程序和只读 CLI。
