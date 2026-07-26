@@ -1,14 +1,14 @@
 # xIPs
 
-xIPs 是本地优先的个人 FPGA IP 资产管理器。它只负责收集、查找、保存版本和导出 IP，不解析 HDL，不运行仿真或综合，不管理依赖，也不替代 ZeroSlack、Vivado 或 Git。
+xIPs 是本地优先的个人 FPGA 可复用资产管理器。它统一管理完整 IP 目录和单个 `.v`、`.sv`、`.svh` 等文件，只负责收集、查找、保存版本和导出，不解析 HDL，不运行仿真或综合，不管理依赖，也不替代 ZeroSlack、Vivado 或 Git。
 
 ## 使用流程
 
 1. **Library...** 选择本地或坚果云同步目录。
-2. **Add IP** 将已有目录复制到资产库，并生成最小 `.xips.json`。
-3. 使用搜索框按名称、ID、版本、标签或说明查找 IP。
+2. **Add folder** 导入完整 IP 目录；**Add file** 直接导入单个文件。两者都会复制到资产库并生成最小 `.xips.json`。
+3. 使用搜索框按名称、ID、版本、标签或说明查找资产。
 4. 在详情区查看基本信息、实际文件和版本记录。
-5. **Save version** 创建不可变的完整目录快照。
+5. **Save version** 创建不可变的完整资产快照。
 6. **Export** 导出工作副本或选中的历史版本；已有目标不会被覆盖。
 
 版本号只由 **Save version** 维护，普通元数据编辑不会改变版本。
@@ -27,7 +27,15 @@ xIPs Library/
       versions/
         1.0.0/
         1.1.0/
+  uart_rx_sv/
+    .xips.json
+    uart_rx.sv
+    .xips/
+      versions/
+        1.0.0/
 ```
+
+单文件也使用独立资产目录。xIPs 自动保留原始文件名，并以同一套搜索、版本和导出逻辑管理；不会为它增加 Module、Code Block 或 HDL 类型字段。
 
 xIPs 不实现云账号或上传协议。资产、manifest 和版本快照由坚果云按普通文件同步。`.git`、构建目录、`.Xil`、`ip_user_files`、缓存和内部版本目录不会进入新快照。
 
@@ -35,7 +43,7 @@ xIPs 不实现云账号或上传协议。资产、manifest 和版本快照由坚
 
 ## Manifest
 
-每个 IP 只需要一个最小 `.xips.json`：
+每个资产目录只需要一个最小 `.xips.json`：
 
 ```json
 {
@@ -48,7 +56,7 @@ xIPs 不实现云账号或上传协议。资产、manifest 和版本快照由坚
 }
 ```
 
-载荷由 IP 目录中的实际文件决定，不再维护 `type`、`top`、`language`、`sources`、`constraints`、`documentation` 或 `tools` 分类字段。详细规则见 [Manifest 格式](docs/manifest-format.md)。
+载荷由资产目录中的实际文件决定，不再维护 `type`、`top`、`language`、`sources`、`constraints`、`documentation` 或 `tools` 分类字段。详细规则见 [Manifest 格式](docs/manifest-format.md)。
 
 ## 构建
 
@@ -115,6 +123,6 @@ CLI 只提供 `list` 和 `resolve`，用于未来 ZeroSlack 选择器或脚本�
 
 ## 测试
 
-`core` 覆盖最小 manifest、导入、文件枚举、按需哈希、稳定 ID、版本、导出、URI 和真实 CLI 子进程。`gui_smoke` 覆盖精简首屏、文件清单、版本列表和按 ID 唤起。GUI 测试固定使用 Qt offscreen 平台，不操作桌面。
+`core` 覆盖最小 manifest、目录与单文件导入、文件枚举、按需哈希、稳定 ID、版本、导出、URI 和真实 CLI 子进程。`gui_smoke` 覆盖精简首屏、文件导入入口、文件清单、版本列表和按 ID 唤起。GUI 测试固定使用 Qt offscreen 平台，不操作桌面。
 
 当前版本尚未提供安装器、代码签名、自动更新、Windows URI 注册、单实例 IPC 或 ZeroSlack 嵌入控件。

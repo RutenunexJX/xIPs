@@ -37,8 +37,10 @@ private:
     bool selectAssetById(const QString &assetId);
 
     void chooseLibrary();
-    void addIp();
-    void editCurrentIp();
+    void addFolder();
+    void addFile();
+    void importAsset(const QString &sourcePath, const QString &dialogTitle);
+    void editCurrentAsset();
     void createCurrentVersion();
     void exportCurrentVersion();
     void openCurrentFolder();

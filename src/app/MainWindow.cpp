@@ -55,7 +55,7 @@ void addInfoRow(QTreeWidget *tree, const QString &field, const QString &value)
 
 bool editMetadata(QWidget *parent,
                   const QString &title,
-                  IpMetadata &metadata,
+                  AssetMetadata &metadata,
                   const bool idEditable)
 {
     QDialog dialog(parent);
@@ -73,7 +73,7 @@ bool editMetadata(QWidget *parent,
     auto *tags = new QLineEdit(metadata.tags.join(QStringLiteral(", ")), &dialog);
     tags->setPlaceholderText(QStringLiteral("comma-separated"));
     auto *description = new QPlainTextEdit(metadata.description, &dialog);
-    description->setPlaceholderText(QStringLiteral("What this IP provides"));
+    description->setPlaceholderText(QStringLiteral("What this asset provides"));
     description->setMaximumBlockCount(100);
 
     form->addRow(QStringLiteral("ID"), id);
@@ -122,7 +122,7 @@ MainWindow::MainWindow(QString libraryRoot, QWidget *parent)
     m_controller->setLibraryRoot(m_libraryRoot);
 
     connect(m_controller, &LibraryController::refreshStarted, this, [this] {
-        statusBar()->showMessage(QStringLiteral("Refreshing IP library..."));
+        statusBar()->showMessage(QStringLiteral("Refreshing asset library..."));
     });
     connect(m_controller,
             &LibraryController::refreshFinished,
@@ -131,7 +131,7 @@ MainWindow::MainWindow(QString libraryRoot, QWidget *parent)
                    const QStringList &errors) {
                 m_loaded = true;
                 runSearch();
-                QString status = QStringLiteral("%1 IPs  |  %2")
+                QString status = QStringLiteral("%1 assets  |  %2")
                                      .arg(assets.size())
                                      .arg(QDir::toNativeSeparators(m_libraryRoot));
                 if (!errors.isEmpty()) {
@@ -157,11 +157,11 @@ MainWindow::MainWindow(QString libraryRoot, QWidget *parent)
 
 void MainWindow::buildUi()
 {
-    setWindowTitle(QStringLiteral("xIPs - IP Library"));
+    setWindowTitle(QStringLiteral("xIPs - Asset Library"));
     resize(1180, 760);
     setMinimumSize(900, 600);
 
-    auto *toolbar = addToolBar(QStringLiteral("IP Library"));
+    auto *toolbar = addToolBar(QStringLiteral("Asset Library"));
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
     QAction *libraryAction = toolbar->addAction(QStringLiteral("Library..."));
@@ -170,10 +170,17 @@ void MainWindow::buildUi()
             this,
             &MainWindow::chooseLibrary);
     toolbar->addSeparator();
-    QAction *addAction = toolbar->addAction(QStringLiteral("Add IP"));
-    connect(addAction, &QAction::triggered, this, &MainWindow::addIp);
+    QAction *addFolderAction = toolbar->addAction(QStringLiteral("Add folder"));
+    addFolderAction->setObjectName(QStringLiteral("addFolderAction"));
+    connect(addFolderAction, &QAction::triggered, this, &MainWindow::addFolder);
+    QAction *addFileAction = toolbar->addAction(QStringLiteral("Add file"));
+    addFileAction->setObjectName(QStringLiteral("addFileAction"));
+    connect(addFileAction, &QAction::triggered, this, &MainWindow::addFile);
     m_editAction = toolbar->addAction(QStringLiteral("Edit"));
-    connect(m_editAction, &QAction::triggered, this, &MainWindow::editCurrentIp);
+    connect(m_editAction,
+            &QAction::triggered,
+            this,
+            &MainWindow::editCurrentAsset);
     m_versionAction = toolbar->addAction(QStringLiteral("Save version"));
     connect(m_versionAction,
             &QAction::triggered,
@@ -237,7 +244,7 @@ void MainWindow::buildUi()
     auto *detailsLayout = new QVBoxLayout(details);
     detailsLayout->setContentsMargins(8, 4, 0, 0);
     detailsLayout->setSpacing(6);
-    m_nameLabel = new QLabel(QStringLiteral("No IP selected"), details);
+    m_nameLabel = new QLabel(QStringLiteral("No asset selected"), details);
     QFont heading = m_nameLabel->font();
     heading.setBold(true);
     heading.setPointSize(heading.pointSize() + 2);
@@ -348,7 +355,7 @@ void MainWindow::updateDetails(const AssetRecord *asset)
     m_fileTree->clear();
     m_versionTree->clear();
     if (!asset) {
-        m_nameLabel->setText(QStringLiteral("No IP selected"));
+        m_nameLabel->setText(QStringLiteral("No asset selected"));
         return;
     }
 
@@ -451,7 +458,7 @@ void MainWindow::chooseLibrary()
 {
     const QString selected = QFileDialog::getExistingDirectory(
         this,
-        QStringLiteral("Choose IP library"),
+        QStringLiteral("Choose asset library"),
         m_libraryRoot);
     if (selected.isEmpty()) {
         return;
@@ -465,31 +472,50 @@ void MainWindow::chooseLibrary()
     m_controller->rebuild();
 }
 
-void MainWindow::addIp()
+void MainWindow::addFolder()
 {
     const QString source = QFileDialog::getExistingDirectory(
         this,
-        QStringLiteral("Select IP directory to copy into the library"),
+        QStringLiteral("Select asset folder to copy into the library"),
         QDir::homePath());
     if (source.isEmpty()) {
         return;
     }
-    IpMetadata metadata = AssetLibraryService::suggestedMetadata(source);
-    if (!editMetadata(this, QStringLiteral("Add IP"), metadata, true)) {
+    importAsset(source, QStringLiteral("Add folder"));
+}
+
+void MainWindow::addFile()
+{
+    const QString source = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Select file to copy into the library"),
+        QDir::homePath(),
+        QStringLiteral("FPGA files (*.v *.vh *.sv *.svh *.vhd *.vhdl *.xdc *.sdc *.tcl *.qsf *.qip *.mif *.mem *.coe);;All files (*)"));
+    if (source.isEmpty()) {
+        return;
+    }
+    importAsset(source, QStringLiteral("Add file"));
+}
+
+void MainWindow::importAsset(const QString &sourcePath,
+                             const QString &dialogTitle)
+{
+    AssetMetadata metadata = AssetLibraryService::suggestedMetadata(sourcePath);
+    if (!editMetadata(this, dialogTitle, metadata, true)) {
         return;
     }
 
     QString error;
     AssetRecord created;
-    if (!m_libraryService.importIp(
-            ImportIpRequest{
+    if (!m_libraryService.importAsset(
+            ImportAssetRequest{
                 .libraryRoot = m_libraryRoot,
-                .sourceDirectory = source,
+                .sourcePath = sourcePath,
                 .metadata = metadata,
             },
             &created,
             &error)) {
-        QMessageBox::critical(this, QStringLiteral("Cannot add IP"), error);
+        QMessageBox::critical(this, QStringLiteral("Cannot add asset"), error);
         return;
     }
     m_pendingActivation = ActivationRequest{
@@ -497,28 +523,28 @@ void MainWindow::addIp()
         .value = created.manifest.id.isEmpty() ? metadata.id : created.manifest.id,
     };
     statusBar()->showMessage(
-        QStringLiteral("Added %1 to the IP library").arg(metadata.name));
+        QStringLiteral("Added %1 to the asset library").arg(metadata.name));
     m_controller->rebuild();
 }
 
-void MainWindow::editCurrentIp()
+void MainWindow::editCurrentAsset()
 {
     const AssetRecord *asset = currentRecord();
     if (!asset) {
         return;
     }
-    IpMetadata metadata{
+    AssetMetadata metadata{
         .id = asset->manifest.id,
         .name = asset->manifest.name,
         .description = asset->manifest.description,
         .tags = asset->manifest.tags,
     };
-    if (!editMetadata(this, QStringLiteral("Edit IP metadata"), metadata, false)) {
+    if (!editMetadata(this, QStringLiteral("Edit metadata"), metadata, false)) {
         return;
     }
     QString error;
     if (!m_libraryService.updateMetadata(*asset, metadata, &error)) {
-        QMessageBox::critical(this, QStringLiteral("Cannot update IP"), error);
+        QMessageBox::critical(this, QStringLiteral("Cannot update asset"), error);
         return;
     }
     m_pendingActivation = ActivationRequest{
@@ -580,7 +606,7 @@ void MainWindow::exportCurrentVersion()
         asset->manifest.id + u'-' + suffix);
     QString error;
     if (!m_libraryService.exportVersion(*asset, version, destination, &error)) {
-        QMessageBox::critical(this, QStringLiteral("Cannot export IP"), error);
+        QMessageBox::critical(this, QStringLiteral("Cannot export asset"), error);
         return;
     }
     statusBar()->showMessage(
@@ -638,7 +664,7 @@ void MainWindow::applyActivation(const ActivationRequest &request)
         runSearch();
         if (!selectAssetById(request.value)) {
             statusBar()->showMessage(
-                QStringLiteral("IP not found: %1").arg(request.value));
+                QStringLiteral("Asset not found: %1").arg(request.value));
         }
     }
     if (isMinimized()) {

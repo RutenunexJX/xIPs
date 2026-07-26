@@ -6,6 +6,7 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -55,12 +56,22 @@ QJsonObject assetJson(const xips::AssetRecord &asset)
         {QStringLiteral("version"), asset.manifest.version},
         {QStringLiteral("description"), asset.manifest.description},
         {QStringLiteral("tags"), xips::json::toArray(asset.manifest.tags)},
+        {QStringLiteral("files"), xips::json::toArray(asset.files)},
         {QStringLiteral("path"), asset.assetRoot},
         {QStringLiteral("fileCount"), static_cast<qint64>(asset.fileCount)},
         {QStringLiteral("uri"),
          xips::IntegrationService::assetUri(asset.manifest.id)
              .toString(QUrl::FullyEncoded)},
     };
+}
+
+QJsonArray resolvedFiles(const QString &root)
+{
+    QJsonArray result;
+    for (const QString &relative : xips::AssetScanner::assetFiles(root)) {
+        result.append(QDir(root).absoluteFilePath(relative));
+    }
+    return result;
 }
 
 } // namespace
@@ -73,7 +84,7 @@ int main(int argc, char *argv[])
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
-        QStringLiteral("Read-only bridge for the xIPs FPGA IP library"));
+        QStringLiteral("Read-only bridge for the xIPs FPGA asset library"));
     parser.addHelpOption();
     parser.addVersionOption();
     const QCommandLineOption actionOption(
@@ -83,15 +94,15 @@ int main(int argc, char *argv[])
         QStringLiteral("list"));
     const QCommandLineOption libraryOption(
         {QStringLiteral("l"), QStringLiteral("library")},
-        QStringLiteral("IP library directory."),
+        QStringLiteral("Asset library directory."),
         QStringLiteral("directory"));
     const QCommandLineOption assetOption(
         QStringLiteral("asset"),
-        QStringLiteral("Stable IP id."),
+        QStringLiteral("Stable asset id."),
         QStringLiteral("id"));
     const QCommandLineOption versionOption(
         QStringLiteral("asset-version"),
-        QStringLiteral("Saved IP version."),
+        QStringLiteral("Saved asset version."),
         QStringLiteral("version"));
     const QCommandLineOption queryOption(
         QStringLiteral("query"),
@@ -187,11 +198,12 @@ int main(int argc, char *argv[])
             return asset.manifest.id == assetId;
         });
     if (found == scan.assets.cend()) {
-        return fail(action, QStringLiteral("IP not found: %1").arg(assetId), 4);
+        return fail(action, QStringLiteral("Asset not found: %1").arg(assetId), 4);
     }
 
     QJsonObject data = assetJson(*found);
     const QString requestedVersion = parser.value(versionOption).trimmed();
+    QString resolvedPath;
     if (!requestedVersion.isEmpty()) {
         QString versionError;
         const QList<xips::VersionInfo> versions =
@@ -208,15 +220,22 @@ int main(int argc, char *argv[])
                         QStringLiteral("Version not found: %1").arg(requestedVersion),
                         4);
         }
+        resolvedPath = selected->path;
         data.insert(QStringLiteral("resolvedVersion"), selected->version);
-        data.insert(QStringLiteral("resolvedPath"), selected->path);
+        data.insert(QStringLiteral("resolvedPath"), resolvedPath);
         data.insert(QStringLiteral("resolvedContentHash"), selected->contentHash);
     } else {
+        resolvedPath = found->assetRoot;
         data.insert(QStringLiteral("resolvedVersion"), QStringLiteral("working"));
-        data.insert(QStringLiteral("resolvedPath"), found->assetRoot);
+        data.insert(QStringLiteral("resolvedPath"), resolvedPath);
         data.insert(QStringLiteral("resolvedContentHash"),
                     xips::AssetScanner::contentHash(found->manifest,
                                                     found->assetRoot));
+    }
+    const QJsonArray files = resolvedFiles(resolvedPath);
+    data.insert(QStringLiteral("resolvedFiles"), files);
+    if (files.size() == 1) {
+        data.insert(QStringLiteral("resolvedFile"), files.at(0));
     }
     writeJson(success(action, data), output);
     return 0;

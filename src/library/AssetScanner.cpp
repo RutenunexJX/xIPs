@@ -50,7 +50,7 @@ ScanResult AssetScanner::scan(const QString &libraryRoot,
         const Manifest &manifest = *loaded.manifest;
         if (firstPathById.contains(manifest.id)) {
             result.errors.append(
-                QStringLiteral("Duplicate IP id '%1': %2 and %3")
+                QStringLiteral("Duplicate asset id '%1': %2 and %3")
                     .arg(manifest.id,
                          firstPathById.value(manifest.id),
                          manifestPath));

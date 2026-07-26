@@ -45,7 +45,8 @@ class CoreTest final : public QObject {
 
 private slots:
     void manifestWritesMinimalSchemaAndPreservesUnknownFields();
-    void importCreatesPortableIp();
+    void importFolderCreatesPortableAsset();
+    void importSingleFileCreatesAsset();
     void scannerListsPayloadAndHashesOnDemand();
     void metadataKeepsStableId();
     void versionsAreImmutableAndExportable();
@@ -85,7 +86,7 @@ void CoreTest::manifestWritesMinimalSchemaAndPreservesUnknownFields()
              QStringLiteral("Renamed legacy IP"));
 }
 
-void CoreTest::importCreatesPortableIp()
+void CoreTest::importFolderCreatesPortableAsset()
 {
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
@@ -95,11 +96,11 @@ void CoreTest::importCreatesPortableIp()
     AssetLibraryService service;
     AssetRecord created;
     QString error;
-    QVERIFY2(service.importIp(
-                 ImportIpRequest{
+    QVERIFY2(service.importAsset(
+                 ImportAssetRequest{
                      .libraryRoot = library,
-                     .sourceDirectory = source,
-                     .metadata = IpMetadata{
+                     .sourcePath = source,
+                     .metadata = AssetMetadata{
                          .id = QStringLiteral("uart_ip"),
                          .name = QStringLiteral("UART IP"),
                          .description = QStringLiteral("Reusable UART"),
@@ -124,6 +125,64 @@ void CoreTest::importCreatesPortableIp()
         manifestFile.readAll()).object();
     QVERIFY(!manifestObject.contains(QStringLiteral("type")));
     QVERIFY(!manifestObject.contains(QStringLiteral("sources")));
+}
+
+void CoreTest::importSingleFileCreatesAsset()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("uart_rx.sv"));
+    const QByteArray contents = QByteArrayLiteral("module uart_rx; endmodule\n");
+    QVERIFY(writeFile(source, contents));
+
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    const AssetMetadata metadata = service.suggestedMetadata(source);
+    QCOMPARE(metadata.name, QStringLiteral("uart_rx.sv"));
+    QCOMPARE(metadata.id, QStringLiteral("uart_rx_sv"));
+
+    AssetRecord created;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = metadata},
+                 &created,
+                 &error),
+             qPrintable(error));
+    QCOMPARE(created.manifest.id, QStringLiteral("uart_rx_sv"));
+    QCOMPARE(created.fileCount, 1);
+    QCOMPARE(created.files, QStringList{QStringLiteral("uart_rx.sv")});
+    QFile imported(QDir(created.assetRoot).absoluteFilePath(
+        QStringLiteral("uart_rx.sv")));
+    QVERIFY(imported.open(QIODevice::ReadOnly));
+    QCOMPARE(imported.readAll(), contents);
+    QVERIFY(QFileInfo::exists(source));
+
+    VersionInfo saved;
+    QVERIFY2(service.createVersion(created,
+                                   QStringLiteral("1.0.0"),
+                                   &saved,
+                                   &error),
+             qPrintable(error));
+    QVERIFY(QFileInfo::exists(
+        QDir(saved.path).absoluteFilePath(QStringLiteral("uart_rx.sv"))));
+
+    QProcess resolve;
+    resolve.start(QString::fromUtf8(XIPS_CLI_PATH),
+                  {QStringLiteral("--action"), QStringLiteral("resolve"),
+                   QStringLiteral("--library"), library,
+                   QStringLiteral("--asset"), created.manifest.id});
+    QVERIFY(resolve.waitForFinished(10000));
+    QCOMPARE(resolve.exitCode(), 0);
+    const QJsonObject resolved = QJsonDocument::fromJson(
+        resolve.readAllStandardOutput()).object().value(QStringLiteral("data")).toObject();
+    const QString importedPath = QDir(created.assetRoot).absoluteFilePath(
+        QStringLiteral("uart_rx.sv"));
+    QCOMPARE(QDir::cleanPath(
+                 resolved.value(QStringLiteral("resolvedFile")).toString()),
+             QDir::cleanPath(importedPath));
+    QCOMPARE(resolved.value(QStringLiteral("resolvedFiles")).toArray().size(), 1);
 }
 
 void CoreTest::scannerListsPayloadAndHashesOnDemand()
@@ -165,9 +224,9 @@ void CoreTest::metadataKeepsStableId()
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
-    QVERIFY(service.importIp(
+    QVERIFY(service.importAsset(
         {.libraryRoot = library,
-         .sourceDirectory = source,
+         .sourcePath = source,
          .metadata = {.id = QStringLiteral("stable_ip"),
                       .name = QStringLiteral("Stable IP"),
                       .description = {},
@@ -212,9 +271,9 @@ void CoreTest::versionsAreImmutableAndExportable()
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
-    QVERIFY2(service.importIp(
+    QVERIFY2(service.importAsset(
                  {.libraryRoot = library,
-                  .sourceDirectory = source,
+                  .sourcePath = source,
                   .metadata = {.id = QStringLiteral("versioned_ip"),
                                .name = QStringLiteral("Versioned IP"),
                                .description = {},

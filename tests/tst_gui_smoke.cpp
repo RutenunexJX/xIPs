@@ -2,6 +2,7 @@
 #include "library/AssetLibraryService.h"
 #include "manifest/ManifestService.h"
 
+#include <QAction>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
@@ -33,18 +34,20 @@ class GuiSmokeTest final : public QObject {
     Q_OBJECT
 
 private slots:
-    void firstScreenIsACompactIpLibrary();
+    void firstScreenIsACompactAssetLibrary();
     void binaryFilesRemainInventoryEntries();
-    void activationSelectsAnIp();
+    void activationSelectsAnAsset();
 };
 
-void GuiSmokeTest::firstScreenIsACompactIpLibrary()
+void GuiSmokeTest::firstScreenIsACompactAssetLibrary()
 {
     MainWindow window(QString::fromUtf8(XIPS_EXAMPLE_LIBRARY));
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
 
     auto *table = window.findChild<QTableView *>(QStringLiteral("assetTable"));
+    auto *addFolder = window.findChild<QAction *>(QStringLiteral("addFolderAction"));
+    auto *addFile = window.findChild<QAction *>(QStringLiteral("addFileAction"));
     auto *search = window.findChild<QLineEdit *>(QStringLiteral("searchEdit"));
     auto *tags = window.findChild<QComboBox *>(QStringLiteral("tagFilter"));
     auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("detailTabs"));
@@ -52,6 +55,10 @@ void GuiSmokeTest::firstScreenIsACompactIpLibrary()
     auto *versions = window.findChild<QTreeWidget *>(QStringLiteral("versionTree"));
     auto *preview = window.findChild<QPlainTextEdit *>(QStringLiteral("sourcePreview"));
     QVERIFY(table);
+    QVERIFY(addFolder);
+    QVERIFY(addFile);
+    QCOMPARE(addFolder->text(), QStringLiteral("Add folder"));
+    QCOMPARE(addFile->text(), QStringLiteral("Add file"));
     QVERIFY(search);
     QVERIFY(!tags);
     QVERIFY(tabs);
@@ -126,7 +133,7 @@ void GuiSmokeTest::binaryFilesRemainInventoryEntries()
     QVERIFY(binary);
 }
 
-void GuiSmokeTest::activationSelectsAnIp()
+void GuiSmokeTest::activationSelectsAnAsset()
 {
     MainWindow window(QString::fromUtf8(XIPS_EXAMPLE_LIBRARY));
     window.show();

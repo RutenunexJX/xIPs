@@ -74,7 +74,7 @@ QVariant AssetTableModel::headerData(const int section,
         return QAbstractTableModel::headerData(section, orientation, role);
     }
     static const QStringList headers{
-        QStringLiteral("IP"),
+        QStringLiteral("Asset"),
         QStringLiteral("Last saved"),
         QStringLiteral("Tags"),
         QStringLiteral("Files"),

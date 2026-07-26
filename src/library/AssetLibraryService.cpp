@@ -66,7 +66,7 @@ QStringList cleanedTags(QStringList tags)
     return tags;
 }
 
-Manifest makeManifest(const IpMetadata &metadata)
+Manifest makeManifest(const AssetMetadata &metadata)
 {
     Manifest manifest;
     manifest.id = metadata.id.trimmed();
@@ -131,14 +131,17 @@ QString AssetLibraryService::suggestedId(const QString &text)
     return result.isEmpty() ? QStringLiteral("ip") : result;
 }
 
-IpMetadata AssetLibraryService::suggestedMetadata(const QString &sourceDirectory)
+AssetMetadata AssetLibraryService::suggestedMetadata(const QString &sourcePath)
 {
-    const QFileInfo directory(sourceDirectory);
-    IpMetadata metadata;
-    metadata.name = directory.fileName();
+    const QFileInfo source(sourcePath);
+    AssetMetadata metadata;
+    metadata.name = source.fileName();
     metadata.id = suggestedId(metadata.name);
 
-    const QString manifestPath = QDir(sourceDirectory).absoluteFilePath(
+    if (!source.isDir()) {
+        return metadata;
+    }
+    const QString manifestPath = QDir(sourcePath).absoluteFilePath(
         QStringLiteral(".xips.json"));
     if (QFileInfo(manifestPath).isFile()) {
         const ManifestLoadResult loaded = ManifestService().load(manifestPath);
@@ -152,21 +155,30 @@ IpMetadata AssetLibraryService::suggestedMetadata(const QString &sourceDirectory
     return metadata;
 }
 
-bool AssetLibraryService::importIp(const ImportIpRequest &request,
-                                   AssetRecord *created,
-                                   QString *error) const
+bool AssetLibraryService::importAsset(const ImportAssetRequest &request,
+                                      AssetRecord *created,
+                                      QString *error) const
 {
-    const QString sourceRoot = files::normalizedAbsolute(request.sourceDirectory);
+    const QString sourcePath = files::normalizedAbsolute(request.sourcePath);
     const QString libraryRoot = files::normalizedAbsolute(request.libraryRoot);
-    if (!QFileInfo(sourceRoot).isDir()) {
-        return fail(error, QStringLiteral("Source directory does not exist"));
+    const QFileInfo sourceInfo(sourcePath);
+    if ((!sourceInfo.isDir() && !sourceInfo.isFile())
+        || files::isLinkLike(sourceInfo)) {
+        return fail(error,
+                    QStringLiteral("Source must be a regular file or directory"));
+    }
+    if (sourceInfo.isFile()
+        && (sourceInfo.fileName() == QStringLiteral(".xips.json")
+            || sourceInfo.fileName() == QStringLiteral(".snapshot.json"))) {
+        return fail(error,
+                    QStringLiteral("xIPs metadata files cannot be imported as payload"));
     }
     if (!QDir().mkpath(libraryRoot)) {
-        return fail(error, QStringLiteral("Cannot create the IP library directory"));
+        return fail(error, QStringLiteral("Cannot create the asset library directory"));
     }
-    if (files::isWithin(libraryRoot, sourceRoot)) {
+    if (sourceInfo.isDir() && files::isWithin(libraryRoot, sourcePath)) {
         return fail(error,
-                    QStringLiteral("The IP library cannot be inside the imported directory"));
+                    QStringLiteral("The asset library cannot be inside the imported directory"));
     }
 
     Manifest manifest = makeManifest(request.metadata);
@@ -178,7 +190,7 @@ bool AssetLibraryService::importIp(const ImportIpRequest &request,
     const QString targetRoot = QDir(libraryRoot).absoluteFilePath(manifest.id);
     if (QFileInfo::exists(targetRoot)) {
         return fail(error,
-                    QStringLiteral("An IP directory already exists: %1").arg(targetRoot));
+                    QStringLiteral("An asset already exists: %1").arg(targetRoot));
     }
     const QString stagingName = QStringLiteral(".xips-create-%1")
                                     .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
@@ -188,7 +200,16 @@ bool AssetLibraryService::importIp(const ImportIpRequest &request,
     }
 
     QString operationError;
-    if (!copyPayload(sourceRoot, stagingRoot, &operationError)
+    const bool copied = sourceInfo.isDir()
+                            ? copyPayload(sourcePath, stagingRoot, &operationError)
+                            : QFile::copy(
+                                  sourcePath,
+                                  QDir(stagingRoot).absoluteFilePath(
+                                      sourceInfo.fileName()));
+    if (!copied && operationError.isEmpty()) {
+        operationError = QStringLiteral("Cannot copy source file into the asset");
+    }
+    if (!copied
         || !ManifestService().write(
             QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
             manifest,
@@ -198,7 +219,7 @@ bool AssetLibraryService::importIp(const ImportIpRequest &request,
     }
     if (!QDir(libraryRoot).rename(stagingName, manifest.id)) {
         QDir(stagingRoot).removeRecursively();
-        return fail(error, QStringLiteral("Cannot publish the imported IP directory"));
+        return fail(error, QStringLiteral("Cannot publish the imported asset"));
     }
 
     if (created) {
@@ -211,16 +232,16 @@ bool AssetLibraryService::importIp(const ImportIpRequest &request,
 }
 
 bool AssetLibraryService::updateMetadata(const AssetRecord &asset,
-                                         const IpMetadata &metadata,
+                                         const AssetMetadata &metadata,
                                          QString *error) const
 {
     const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
     if (!loaded.ok()) {
-        return fail(error, QStringLiteral("Cannot reload the selected IP manifest"));
+        return fail(error, QStringLiteral("Cannot reload the selected asset manifest"));
     }
     if (!metadata.id.trimmed().isEmpty()
         && metadata.id.trimmed() != loaded.manifest->id) {
-        return fail(error, QStringLiteral("IP id is stable and cannot be changed"));
+        return fail(error, QStringLiteral("Asset id is stable and cannot be changed"));
     }
 
     Manifest manifest = *loaded.manifest;
@@ -300,7 +321,7 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
     }
     const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
     if (!loaded.ok()) {
-        return fail(error, QStringLiteral("Cannot reload the selected IP manifest"));
+        return fail(error, QStringLiteral("Cannot reload the selected asset manifest"));
     }
 
     const QString versionsRoot = QDir(asset.assetRoot).absoluteFilePath(
@@ -405,7 +426,7 @@ bool AssetLibraryService::exportVersion(const AssetRecord &asset,
     }
     if (files::isWithin(targetRoot, asset.assetRoot)) {
         return fail(error,
-                    QStringLiteral("Export destination cannot be inside the source IP"));
+                    QStringLiteral("Export destination cannot be inside the source asset"));
     }
     const QString parent = QFileInfo(targetRoot).absolutePath();
     const QString targetName = QFileInfo(targetRoot).fileName();
@@ -440,7 +461,7 @@ bool AssetLibraryService::exportVersion(const AssetRecord &asset,
     }
     if (!QDir(parent).rename(stagingName, targetName)) {
         QDir(stagingRoot).removeRecursively();
-        return fail(error, QStringLiteral("Cannot publish the exported IP"));
+        return fail(error, QStringLiteral("Cannot publish the exported asset"));
     }
     return true;
 }

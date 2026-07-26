@@ -67,7 +67,7 @@ void LibraryController::rebuild()
         return;
     }
     if (m_libraryRoot.isEmpty()) {
-        emit refreshFailed(QStringLiteral("No IP library is selected"));
+        emit refreshFailed(QStringLiteral("No asset library is selected"));
         return;
     }
     m_cancelled = std::make_shared<std::atomic_bool>(false);

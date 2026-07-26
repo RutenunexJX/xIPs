@@ -42,16 +42,16 @@ int main(int argc, char *argv[])
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
-        QStringLiteral("Personal FPGA IP asset library"));
+        QStringLiteral("Personal FPGA reusable asset library"));
     parser.addHelpOption();
     parser.addVersionOption();
     const QCommandLineOption libraryOption(
         {QStringLiteral("l"), QStringLiteral("library")},
-        QStringLiteral("IP library directory."),
+        QStringLiteral("Asset library directory."),
         QStringLiteral("directory"));
     const QCommandLineOption assetOption(
         QStringLiteral("open-asset"),
-        QStringLiteral("Open an IP by stable ID."),
+        QStringLiteral("Open an asset by stable ID."),
         QStringLiteral("id"));
     const QCommandLineOption searchOption(
         QStringLiteral("search"),
@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
                                 ? QFileInfo(parser.value(libraryOption)).absoluteFilePath()
                                 : defaultLibraryPath();
     if (!QDir().mkpath(library)) {
-        QTextStream(stderr) << "Cannot create IP library: " << library << u'\n';
+        QTextStream(stderr) << "Cannot create asset library: " << library << u'\n';
         return 3;
     }
     xips::MainWindow window(library);

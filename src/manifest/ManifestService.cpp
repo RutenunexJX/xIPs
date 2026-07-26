@@ -170,10 +170,10 @@ QStringList ManifestService::validate(const Manifest &manifest) const
     static const QRegularExpression idPattern(
         QStringLiteral("^[A-Za-z0-9][A-Za-z0-9_.-]*$"));
     if (!idPattern.match(manifest.id).hasMatch()) {
-        result.append(QStringLiteral("IP id must start with an alphanumeric character and use only letters, digits, '_', '-' or '.'"));
+        result.append(QStringLiteral("Asset id must start with an alphanumeric character and use only letters, digits, '_', '-' or '.'"));
     }
     if (manifest.name.trimmed().isEmpty()) {
-        result.append(QStringLiteral("IP name is required"));
+        result.append(QStringLiteral("Asset name is required"));
     }
     return result;
 }

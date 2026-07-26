@@ -9,17 +9,17 @@
 
 namespace xips {
 
-struct IpMetadata {
+struct AssetMetadata {
     QString id;
     QString name;
     QString description;
     QStringList tags;
 };
 
-struct ImportIpRequest {
+struct ImportAssetRequest {
     QString libraryRoot;
-    QString sourceDirectory;
-    IpMetadata metadata;
+    QString sourcePath;
+    AssetMetadata metadata;
 };
 
 struct VersionInfo {
@@ -31,15 +31,15 @@ struct VersionInfo {
 
 class AssetLibraryService {
 public:
-    [[nodiscard]] static IpMetadata suggestedMetadata(
-        const QString &sourceDirectory);
+    [[nodiscard]] static AssetMetadata suggestedMetadata(
+        const QString &sourcePath);
     [[nodiscard]] static QString suggestedId(const QString &text);
 
-    bool importIp(const ImportIpRequest &request,
-                  AssetRecord *created = nullptr,
-                  QString *error = nullptr) const;
+    bool importAsset(const ImportAssetRequest &request,
+                     AssetRecord *created = nullptr,
+                     QString *error = nullptr) const;
     bool updateMetadata(const AssetRecord &asset,
-                        const IpMetadata &metadata,
+                        const AssetMetadata &metadata,
                         QString *error = nullptr) const;
 
     [[nodiscard]] QList<VersionInfo> versions(

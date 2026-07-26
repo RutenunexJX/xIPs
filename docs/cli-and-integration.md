@@ -29,7 +29,7 @@ xips-cli --action resolve --library E:\Nutstore\xIPs --asset uart_ip --asset-ver
 }
 ```
 
-`list` 返回 ID、名称、版本、说明、标签、路径、文件数量和资产 URI。`resolve` 额外返回解析版本、目录和按需计算的内容哈希。错误写入标准错误流并返回非零退出码。
+`list` 返回 ID、名称、版本、说明、标签、相对文件列表、路径、文件数量和资产 URI。`resolve` 额外返回解析版本、目录、绝对文件列表和按需计算的内容哈希；只有一个载荷文件时还返回 `resolvedFile`，供 ZeroSlack 等调用方直接定位该文件。错误写入标准错误流并返回非零退出码。
 
 ## URI 与桌面参数
 
