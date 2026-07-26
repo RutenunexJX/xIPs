@@ -12,8 +12,7 @@ namespace xips {
 
 struct ManifestLoadResult {
     std::optional<Manifest> manifest;
-    QList<Diagnostic> diagnostics;
-    bool migrated = false;
+    QStringList errors;
 
     [[nodiscard]] bool ok() const
     {
@@ -34,15 +33,7 @@ public:
     bool write(const QString &manifestPath,
                const Manifest &manifest,
                QString *error = nullptr) const;
-    [[nodiscard]] QList<Diagnostic> validate(
-        const Manifest &manifest,
-        const QString &sourceName = QStringLiteral("<memory>")) const;
-
-private:
-    bool migrate(QJsonObject &object,
-                 int fromVersion,
-                 QList<Diagnostic> &diagnostics,
-                 const QString &sourceName) const;
+    [[nodiscard]] QStringList validate(const Manifest &manifest) const;
 };
 
 } // namespace xips

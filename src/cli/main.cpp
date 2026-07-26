@@ -1,12 +1,11 @@
 #include "assetcore/JsonUtil.h"
-#include "assetindex/AssetScanner.h"
+#include "library/AssetScanner.h"
 #include "integration/IntegrationService.h"
 #include "library/AssetLibraryService.h"
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QCoreApplication>
-#include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -57,7 +56,6 @@ QJsonObject assetJson(const xips::AssetRecord &asset)
         {QStringLiteral("description"), asset.manifest.description},
         {QStringLiteral("tags"), xips::json::toArray(asset.manifest.tags)},
         {QStringLiteral("path"), asset.assetRoot},
-        {QStringLiteral("contentHash"), asset.contentHash},
         {QStringLiteral("fileCount"), static_cast<qint64>(asset.fileCount)},
         {QStringLiteral("uri"),
          xips::IntegrationService::assetUri(asset.manifest.id)
@@ -80,7 +78,7 @@ int main(int argc, char *argv[])
     parser.addVersionOption();
     const QCommandLineOption actionOption(
         QStringLiteral("action"),
-        QStringLiteral("Action: list, resolve, link, or parse-uri."),
+        QStringLiteral("Action: list or resolve."),
         QStringLiteral("name"),
         QStringLiteral("list"));
     const QCommandLineOption libraryOption(
@@ -99,16 +97,11 @@ int main(int argc, char *argv[])
         QStringLiteral("query"),
         QStringLiteral("Search text."),
         QStringLiteral("text"));
-    const QCommandLineOption uriOption(
-        QStringLiteral("uri"),
-        QStringLiteral("xips:// URI to parse."),
-        QStringLiteral("uri"));
     parser.addOption(actionOption);
     parser.addOption(libraryOption);
     parser.addOption(assetOption);
     parser.addOption(versionOption);
     parser.addOption(queryOption);
-    parser.addOption(uriOption);
     if (!parser.parse(application.arguments())) {
         QTextStream(stderr) << parser.errorText() << u'\n';
         return 2;
@@ -125,33 +118,6 @@ int main(int argc, char *argv[])
 
     const QString action = parser.value(actionOption).trimmed().toLower();
     QTextStream output(stdout);
-    if (action == QStringLiteral("link")) {
-        const QString assetId = parser.value(assetOption).trimmed();
-        const QString query = parser.value(queryOption);
-        if (assetId.isEmpty() == query.trimmed().isEmpty()) {
-            return fail(action,
-                        QStringLiteral("link requires exactly one of --asset or --query"));
-        }
-        const QUrl uri = assetId.isEmpty()
-                             ? xips::IntegrationService::searchUri(query)
-                             : xips::IntegrationService::assetUri(assetId);
-        writeJson(success(action,
-                          QJsonObject{
-                              {QStringLiteral("uri"),
-                               uri.toString(QUrl::FullyEncoded)},
-                          }),
-                  output);
-        return 0;
-    }
-    if (action == QStringLiteral("parse-uri")) {
-        const QUrl uri(parser.value(uriOption));
-        const auto request = xips::IntegrationService::parseUri(uri);
-        if (!request) {
-            return fail(action, QStringLiteral("Invalid or unsupported xIPs URI"));
-        }
-        writeJson(success(action, request->toJson()), output);
-        return 0;
-    }
     if (action != QStringLiteral("list")
         && action != QStringLiteral("resolve")) {
         return fail(action, QStringLiteral("Unknown action"));
@@ -171,12 +137,11 @@ int main(int argc, char *argv[])
                     3);
     }
     const xips::ScanResult scan = xips::AssetScanner().scan(library);
-    for (const xips::ScanIssue &issue : scan.issues) {
-        if (issue.severity == xips::Diagnostic::Severity::Error) {
-            return fail(action,
-                        QStringLiteral("Library scan failed: %1").arg(issue.message),
-                        3);
-        }
+    if (!scan.errors.isEmpty()) {
+        return fail(action,
+                    QStringLiteral("Library scan failed: %1")
+                        .arg(scan.errors.first()),
+                    3);
     }
 
     if (action == QStringLiteral("list")) {
@@ -192,7 +157,6 @@ int main(int argc, char *argv[])
                     asset.manifest.version,
                     asset.manifest.description,
                     asset.manifest.tags.join(u' '),
-                    asset.assetRoot,
                 }.join(u' '));
             bool matches = true;
             for (const QString &term : terms) {
@@ -250,7 +214,9 @@ int main(int argc, char *argv[])
     } else {
         data.insert(QStringLiteral("resolvedVersion"), QStringLiteral("working"));
         data.insert(QStringLiteral("resolvedPath"), found->assetRoot);
-        data.insert(QStringLiteral("resolvedContentHash"), found->contentHash);
+        data.insert(QStringLiteral("resolvedContentHash"),
+                    xips::AssetScanner::contentHash(found->manifest,
+                                                    found->assetRoot));
     }
     writeJson(success(action, data), output);
     return 0;

@@ -25,15 +25,10 @@ QVariant AssetTableModel::data(const QModelIndex &index, const int role) const
     const SearchHit &hit = m_hits.at(index.row());
     const AssetRecord &asset = hit.asset;
     if (role == Qt::ToolTipRole) {
-        QString text = QStringLiteral("%1\nID: %2\n%3")
-                           .arg(asset.manifest.description,
-                                asset.manifest.id,
-                                asset.assetRoot);
-        if (!hit.matchedFields.isEmpty()) {
-            text += QStringLiteral("\nMatched: %1")
-                        .arg(hit.matchedFields.join(QStringLiteral(", ")));
-        }
-        return text;
+        return QStringLiteral("%1\nID: %2\n%3")
+            .arg(asset.manifest.description,
+                 asset.manifest.id,
+                 asset.assetRoot);
     }
     if (role == Qt::UserRole) {
         switch (index.column()) {
@@ -56,7 +51,7 @@ QVariant AssetTableModel::data(const QModelIndex &index, const int role) const
     case NameColumn:
         return asset.manifest.name;
     case VersionColumn:
-        return asset.manifest.version.isEmpty() ? QStringLiteral("working")
+        return asset.manifest.version.isEmpty() ? QStringLiteral("-")
                                                 : asset.manifest.version;
     case TagsColumn:
         return asset.manifest.tags.join(QStringLiteral(", "));
@@ -80,7 +75,7 @@ QVariant AssetTableModel::headerData(const int section,
     }
     static const QStringList headers{
         QStringLiteral("IP"),
-        QStringLiteral("Version"),
+        QStringLiteral("Last saved"),
         QStringLiteral("Tags"),
         QStringLiteral("Files"),
         QStringLiteral("Modified"),
@@ -99,44 +94,6 @@ void AssetTableModel::setHits(QList<SearchHit> hits)
 const AssetRecord *AssetTableModel::recordAt(const int row) const
 {
     return row >= 0 && row < m_hits.size() ? &m_hits.at(row).asset : nullptr;
-}
-
-const SearchHit *AssetTableModel::hitAt(const int row) const
-{
-    return row >= 0 && row < m_hits.size() ? &m_hits.at(row) : nullptr;
-}
-
-AssetFilterProxyModel::AssetFilterProxyModel(QObject *parent)
-    : QSortFilterProxyModel(parent)
-{
-    setSortRole(Qt::UserRole);
-    setDynamicSortFilter(true);
-}
-
-void AssetFilterProxyModel::setTagFilter(const QString &tag)
-{
-    beginFilterChange();
-    m_tag = tag;
-    endFilterChange();
-}
-
-bool AssetFilterProxyModel::filterAcceptsRow(
-    const int sourceRow,
-    const QModelIndex &sourceParent) const
-{
-    const auto *model = qobject_cast<const AssetTableModel *>(sourceModel());
-    if (!model) {
-        return true;
-    }
-    const AssetRecord *asset = model->recordAt(sourceRow);
-    if (!asset) {
-        return false;
-    }
-    if (!m_tag.isEmpty()
-        && !asset->manifest.tags.contains(m_tag, Qt::CaseInsensitive)) {
-        return false;
-    }
-    return QSortFilterProxyModel::filterAcceptsRow(sourceRow, sourceParent);
 }
 
 } // namespace xips

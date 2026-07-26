@@ -17,15 +17,16 @@
 
 - `src/CMakeLists.txt`
 - `src/assetcore/Asset.h`
-- `src/assetcore/Asset.cpp`
 - `src/assetcore/JsonUtil.h`
 - `src/assetcore/JsonUtil.cpp`
 - `src/manifest/ManifestService.h`
 - `src/manifest/ManifestService.cpp`
-- `src/assetindex/AssetScanner.h`
-- `src/assetindex/AssetScanner.cpp`
+- `src/library/AssetScanner.h`
+- `src/library/AssetScanner.cpp`
 - `src/library/AssetLibraryService.h`
 - `src/library/AssetLibraryService.cpp`
+- `src/library/FileSystemUtil.h`
+- `src/library/FileSystemUtil.cpp`
 - `src/integration/IntegrationService.h`
 - `src/integration/IntegrationService.cpp`
 - `src/app/AssetTableModel.h`
@@ -58,4 +59,4 @@
 - `tests/tst_core.cpp`
 - `tests/tst_gui_smoke.cpp`
 
-旧的 AssetIndex、Slang、DependencyResolver、ImportService、GitService、DiffService、TestRunner、ManagedAssetService 及五阶段测试源码已删除，不存在隐藏的备用功能路径。
+旧的 AssetIndex、Slang、DependencyResolver、ImportService、GitService、DiffService、TestRunner、ManagedAssetService 及五阶段测试源码已删除。当前仅保留 IP 核心库、Qt Widgets 应用层、桌面程序和只读 CLI。

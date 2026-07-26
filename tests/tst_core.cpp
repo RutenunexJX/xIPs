@@ -1,6 +1,6 @@
-#include "assetindex/AssetScanner.h"
 #include "integration/IntegrationService.h"
 #include "library/AssetLibraryService.h"
+#include "library/AssetScanner.h"
 #include "manifest/ManifestService.h"
 
 #include <QDir>
@@ -44,33 +44,31 @@ class CoreTest final : public QObject {
     Q_OBJECT
 
 private slots:
-    void manifestPreservesUnknownFields();
+    void manifestWritesMinimalSchemaAndPreservesUnknownFields();
     void importCreatesPortableIp();
-    void scannerHashesAllPayloadFiles();
+    void scannerListsPayloadAndHashesOnDemand();
     void metadataKeepsStableId();
     void versionsAreImmutableAndExportable();
-    void activationContractRoundTrips();
+    void activationUrisParse();
     void cliListsAndResolvesAssets();
 };
 
-void CoreTest::manifestPreservesUnknownFields()
+void CoreTest::manifestWritesMinimalSchemaAndPreservesUnknownFields()
 {
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
     const QByteArray json = R"({
         "schemaVersion": 1,
-        "id": "legacy_module",
+        "id": "legacy_ip",
         "type": "module",
-        "name": "Legacy module",
-        "sources": [],
-        "constraints": [],
+        "name": "Legacy IP",
+        "sources": ["rtl/top.sv"],
         "tags": ["legacy"],
         "custom": {"keep": true}
     })";
     ManifestService service;
     ManifestLoadResult loaded = service.parse(json);
     QVERIFY(loaded.ok());
-    QCOMPARE(loaded.manifest->type, AssetType::Module);
     loaded.manifest->name = QStringLiteral("Renamed legacy IP");
     const QString path = temporary.filePath(QStringLiteral(".xips.json"));
     QString error;
@@ -79,7 +77,8 @@ void CoreTest::manifestPreservesUnknownFields()
     QFile file(path);
     QVERIFY(file.open(QIODevice::ReadOnly));
     const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
-    QCOMPARE(object.value(QStringLiteral("type")).toString(), QStringLiteral("module"));
+    QVERIFY(!object.contains(QStringLiteral("type")));
+    QVERIFY(!object.contains(QStringLiteral("sources")));
     QVERIFY(object.value(QStringLiteral("custom")).toObject()
                 .value(QStringLiteral("keep")).toBool());
     QCOMPARE(object.value(QStringLiteral("name")).toString(),
@@ -103,7 +102,6 @@ void CoreTest::importCreatesPortableIp()
                      .metadata = IpMetadata{
                          .id = QStringLiteral("uart_ip"),
                          .name = QStringLiteral("UART IP"),
-                         .version = QStringLiteral("1.0.0"),
                          .description = QStringLiteral("Reusable UART"),
                          .tags = {QStringLiteral("serial"), QStringLiteral("uart")},
                      },
@@ -112,18 +110,23 @@ void CoreTest::importCreatesPortableIp()
                  &error),
              qPrintable(error));
     QCOMPARE(created.manifest.id, QStringLiteral("uart_ip"));
-    QCOMPARE(created.manifest.type, AssetType::Ip);
     QVERIFY(QFileInfo::exists(QDir(created.assetRoot).absoluteFilePath(
         QStringLiteral("rtl/top.sv"))));
     QVERIFY(!QFileInfo::exists(QDir(created.assetRoot).absoluteFilePath(
         QStringLiteral("build/cache.bin"))));
     QVERIFY(QFileInfo::exists(QDir(source).absoluteFilePath(
         QStringLiteral("rtl/top.sv"))));
-    QVERIFY(created.manifest.sources.contains(QStringLiteral("rtl/top.sv")));
-    QVERIFY(created.manifest.documentation.contains(QStringLiteral("README.md")));
+    QVERIFY(created.files.contains(QStringLiteral("rtl/top.sv")));
+    QVERIFY(created.files.contains(QStringLiteral("README.md")));
+    QFile manifestFile(created.manifestPath);
+    QVERIFY(manifestFile.open(QIODevice::ReadOnly));
+    const QJsonObject manifestObject = QJsonDocument::fromJson(
+        manifestFile.readAll()).object();
+    QVERIFY(!manifestObject.contains(QStringLiteral("type")));
+    QVERIFY(!manifestObject.contains(QStringLiteral("sources")));
 }
 
-void CoreTest::scannerHashesAllPayloadFiles()
+void CoreTest::scannerListsPayloadAndHashesOnDemand()
 {
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
@@ -133,18 +136,24 @@ void CoreTest::scannerHashesAllPayloadFiles()
     Manifest manifest;
     manifest.id = QStringLiteral("ip");
     manifest.name = QStringLiteral("IP");
-    manifest.sources = {QStringLiteral("rtl/top.sv")};
     QString error;
     QVERIFY(ManifestService().write(
         QDir(root).absoluteFilePath(QStringLiteral(".xips.json")), manifest, &error));
     const ScanResult before = AssetScanner().scan(temporary.filePath(QStringLiteral("library")));
     QCOMPARE(before.assets.size(), 1);
+    const QString beforeHash = AssetScanner::contentHash(
+        before.assets.first().manifest,
+        before.assets.first().assetRoot);
     QVERIFY(writeFile(QDir(root).absoluteFilePath(QStringLiteral("data/table.mem")),
                       QByteArrayLiteral("00112233\n")));
     const ScanResult after = AssetScanner().scan(temporary.filePath(QStringLiteral("library")));
     QCOMPARE(after.assets.size(), 1);
-    QVERIFY(before.assets.first().contentHash != after.assets.first().contentHash);
+    const QString afterHash = AssetScanner::contentHash(
+        after.assets.first().manifest,
+        after.assets.first().assetRoot);
+    QVERIFY(beforeHash != afterHash);
     QCOMPARE(after.assets.first().fileCount, 2);
+    QVERIFY(after.assets.first().files.contains(QStringLiteral("data/table.mem")));
 }
 
 void CoreTest::metadataKeepsStableId()
@@ -161,7 +170,6 @@ void CoreTest::metadataKeepsStableId()
          .sourceDirectory = source,
          .metadata = {.id = QStringLiteral("stable_ip"),
                       .name = QStringLiteral("Stable IP"),
-                      .version = {},
                       .description = {},
                       .tags = {}}},
         &asset,
@@ -170,17 +178,20 @@ void CoreTest::metadataKeepsStableId()
         asset,
         {.id = QStringLiteral("renamed_id"),
          .name = QStringLiteral("Renamed"),
-         .version = {},
          .description = {},
          .tags = {}},
         &error));
     QVERIFY(error.contains(QStringLiteral("cannot be changed")));
     error.clear();
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   nullptr,
+                                   &error),
+             qPrintable(error));
     QVERIFY2(service.updateMetadata(
                  asset,
                  {.id = QStringLiteral("stable_ip"),
                   .name = QStringLiteral("Updated name"),
-                  .version = QStringLiteral("2.0.0"),
                   .description = QStringLiteral("Updated description"),
                   .tags = {QStringLiteral("updated")}},
                  &error),
@@ -188,8 +199,8 @@ void CoreTest::metadataKeepsStableId()
     const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
     QVERIFY(loaded.ok());
     QCOMPARE(loaded.manifest->id, QStringLiteral("stable_ip"));
-    QCOMPARE(loaded.manifest->type, AssetType::Ip);
     QCOMPARE(loaded.manifest->name, QStringLiteral("Updated name"));
+    QCOMPARE(loaded.manifest->version, QStringLiteral("1.0.0"));
 }
 
 void CoreTest::versionsAreImmutableAndExportable()
@@ -206,7 +217,6 @@ void CoreTest::versionsAreImmutableAndExportable()
                   .sourceDirectory = source,
                   .metadata = {.id = QStringLiteral("versioned_ip"),
                                .name = QStringLiteral("Versioned IP"),
-                               .version = {},
                                .description = {},
                                .tags = {}}},
                  &asset,
@@ -243,7 +253,7 @@ void CoreTest::versionsAreImmutableAndExportable()
         QStringLiteral(".snapshot.json"))));
 }
 
-void CoreTest::activationContractRoundTrips()
+void CoreTest::activationUrisParse()
 {
     const QUrl assetUri = IntegrationService::assetUri(QStringLiteral("uart_ip"));
     QCOMPARE(assetUri.toString(QUrl::FullyEncoded),
@@ -252,11 +262,8 @@ void CoreTest::activationContractRoundTrips()
     QVERIFY(assetRequest.has_value());
     QCOMPARE(assetRequest->action, ActivationAction::OpenAsset);
     QCOMPARE(assetRequest->value, QStringLiteral("uart_ip"));
-    const auto decoded = ActivationRequest::fromJson(assetRequest->toJson());
-    QVERIFY(decoded.has_value());
-    QCOMPARE(decoded->value, QStringLiteral("uart_ip"));
 
-    const QUrl searchUri = IntegrationService::searchUri(QStringLiteral("axi fifo"));
+    const QUrl searchUri(QStringLiteral("xips://search?q=axi%20fifo"));
     const auto searchRequest = IntegrationService::parseUri(searchUri);
     QVERIFY(searchRequest.has_value());
     QCOMPARE(searchRequest->action, ActivationAction::Search);

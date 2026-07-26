@@ -1,23 +1,8 @@
 {
     "schemaVersion": 1,
     "id": "reset_gen",
-    "type": "ip",
     "name": "Reset Generator",
     "description": "Synchronizes an active-low asynchronous reset into a target clock domain.",
-    "version": "1.2.0",
-    "top": "reset_gen",
-    "language": "SystemVerilog",
-    "sources": [
-        "rtl/reset_gen.sv",
-        "rtl/include/reset_config.svh",
-        "tb/reset_gen_tb.sv"
-    ],
-    "constraints": [
-        "constraints/reset_gen.xdc"
-    ],
-    "documentation": [
-        "README.md"
-    ],
     "tags": [
         "cdc",
         "reset"

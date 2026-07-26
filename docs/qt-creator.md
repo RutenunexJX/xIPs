@@ -50,8 +50,8 @@ targets:
 - `xips-cli`: command-line interface; suitable for argument and JSON-contract
   debugging.
 
-The static libraries and `tst_*` executables remain available in the Build
-target list, but they do not create redundant application run configurations.
+The two internal static libraries and `tst_*` executables remain available in
+the Build target list, but they do not create application run configurations.
 CTest and Qt Creator's Tests view can run the `core` and `gui_smoke` suites;
 the latter is configured for Qt's offscreen platform.
 
@@ -73,7 +73,9 @@ For CLI debugging, select `xips-cli` and use an argument set such as:
 
 The desktop target is a Windows GUI executable, so the absence of a separate
 console window is expected and does not prevent GDB debugging. The lean build
-has no Slang, SQLite, Git, Vivado, or external test-runner dependency.
+has no Slang, SQLite, Git, Vivado, or external test-runner dependency. Its
+application build graph consists of `xips_core`, `xips_app`, `xips`, and
+`xips-cli`.
 
 ## Silent command-line equivalent
 

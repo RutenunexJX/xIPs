@@ -6,8 +6,7 @@ target_compile_definitions(tst_core
 )
 target_link_libraries(tst_core
     PRIVATE
-        xips_assetlibrary
-        xips_integration
+        xips_core
         Qt6::Test
 )
 add_dependencies(tst_core xips-cli)

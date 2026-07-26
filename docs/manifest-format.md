@@ -1,73 +1,42 @@
 # `.xips.json` manifest 格式
 
-每个 IP 目录包含一个 `.xips.json`。所有文件路径均应相对 IP 根目录，使整个目录能够在坚果云、移动磁盘或其他电脑之间整体迁移。
+每个 IP 目录包含一个 `.xips.json`。manifest 只描述资产身份和用户元数据，目录中的实际文件始终是载荷事实来源。
 
-## 最小对象
+## 格式
 
 ```json
 {
   "schemaVersion": 1,
   "id": "reset_gen",
-  "type": "ip",
   "name": "Reset Generator",
   "description": "Synchronizes reset into a target clock domain.",
   "version": "1.2.0",
-  "top": "reset_gen",
-  "language": "SystemVerilog",
-  "sources": [
-    "rtl/reset_gen.sv",
-    "rtl/include/reset_config.svh"
-  ],
-  "constraints": [
-    "constraints/reset_gen.xdc"
-  ],
-  "documentation": [
-    "README.md"
-  ],
-  "tools": {
-    "vivado": "2022.2"
-  },
-  "tags": [
-    "cdc",
-    "reset"
-  ]
+  "tags": ["cdc", "reset"]
 }
 ```
 
-必需字段：
-
-| 字段 | 类型 | 含义 |
+| 字段 | 必需 | 含义 |
 | --- | --- | --- |
-| `schemaVersion` | integer | 当前为 `1`。 |
-| `id` | string | 资产库内稳定且唯一的 ID，只使用字母、数字、`_`、`-`、`.`。 |
-| `type` | string | 新资产固定为 `ip`。 |
-| `name` | string | 显示名称。 |
+| `schemaVersion` | 是 | 当前固定为整数 `1`。 |
+| `id` | 是 | 资产库内稳定且唯一的 ID，只使用字母、数字、`_`、`-`、`.`。 |
+| `name` | 是 | 显示名称。 |
+| `description` | 否 | 简要用途。 |
+| `version` | 否 | 最近一次成功保存的快照版本，由 **Save version** 更新。 |
+| `tags` | 否 | 用于搜索的标签数组。 |
 
-可选字段：
+新写入不再生成 `type`、`top`、`language`、`sources`、`constraints`、`documentation` 或 `tools`。读取旧 manifest 时这些字段不会参与业务逻辑；下一次写入会清除它们。其他未知用户字段会保留，避免普通元数据编辑造成无关数据丢失。
 
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `description` | string | 简要用途。 |
-| `version` | string | 当前工作副本的版本标签。 |
-| `top` | string | 顶层对象或包名，仅作为元数据。 |
-| `language` | string | 例如 `SystemVerilog`、`VHDL`、`Mixed`。 |
-| `sources` | string array | HDL、脚本、XCI/DCP 或其他载荷文件。 |
-| `constraints` | string array | XDC、SDC 等约束文件。 |
-| `documentation` | string array | 随 IP 保存的说明文件。 |
-| `tools` | object | 工具及版本说明，不触发工具执行。 |
-| `tags` | string array | 搜索和筛选标签。 |
+## 文件与版本
 
-xIPs 的文件页和内容哈希覆盖 IP 目录中的全部实际载荷，不依赖 `sources` 是否完整；上述列表用于提供可读元数据和缺失文件诊断。
+xIPs 枚举 IP 目录中的全部实际文件，同时排除：
 
-## 兼容与写入
+- `.git`
+- `.xips`
+- `.cache`
+- `.Xil`
+- `ip_user_files`
+- `build` 和 `build-*`
 
-- 旧 `type: "module"` 和 `type: "code-block"` 能够读取；通过精简版界面编辑后写为 `ip`。
-- schema 0 可在内存中迁移：`kind` → `type`、`displayName` → `name`、`files` → `sources`。
-- 未知字段保存在原始 JSON 对象中，编辑基本元数据时不会被静默删除。
-- 缺少 `schemaVersion`、使用未来 schema、无效 ID 或无名称均为错误。
-- manifest 通过 `QSaveFile` 原子替换，不退化为直接覆盖。
-- 路径逃逸 IP 根目录、声明文件缺失和重复 ID 会出现在扫描诊断中。
+版本快照位于 `.xips/versions/<version>`。每个快照包含完整载荷、快照自己的 `.xips.json` 和内部 `.snapshot.json`；后者记录创建时间与 SHA-256 内容哈希。工作副本哈希不包含 `.xips`，因此新增历史版本不会改变工作副本内容身份。
 
-## 版本目录
-
-版本快照位于 `.xips/versions/<version>`。每个快照包含完整载荷、快照自己的 `.xips.json` 和内部 `.snapshot.json`，后者记录创建时间与 SHA-256 内容哈希。`.xips` 不参与工作副本哈希，避免新增历史版本改变当前内容身份。
+manifest 通过 `QSaveFile` 原子替换。无效 JSON、错误 schema、无效 ID、无名称和重复 ID 会导致对应资产被扫描器跳过。

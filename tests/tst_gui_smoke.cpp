@@ -34,7 +34,7 @@ class GuiSmokeTest final : public QObject {
 
 private slots:
     void firstScreenIsACompactIpLibrary();
-    void binaryFilesUseSafePreview();
+    void binaryFilesRemainInventoryEntries();
     void activationSelectsAnIp();
 };
 
@@ -53,11 +53,11 @@ void GuiSmokeTest::firstScreenIsACompactIpLibrary()
     auto *preview = window.findChild<QPlainTextEdit *>(QStringLiteral("sourcePreview"));
     QVERIFY(table);
     QVERIFY(search);
-    QVERIFY(tags);
+    QVERIFY(!tags);
     QVERIFY(tabs);
     QVERIFY(files);
     QVERIFY(versions);
-    QVERIFY(preview);
+    QVERIFY(!preview);
     QCOMPARE(tabs->count(), 2);
     QCOMPARE(table->model()->columnCount(), 5);
     QTRY_VERIFY_WITH_TIMEOUT(table->model()->rowCount() >= 3, 10000);
@@ -79,10 +79,6 @@ void GuiSmokeTest::firstScreenIsACompactIpLibrary()
         }
     }
     QVERIFY(rtlSource);
-    files->setCurrentItem(rtlSource);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        preview->toPlainText().contains(QStringLiteral("module reset_gen")),
-        3000);
     QVERIFY(versions->topLevelItemCount() >= 1);
     QCOMPARE(versions->topLevelItem(0)->text(0), QStringLiteral("Working copy"));
 
@@ -92,7 +88,7 @@ void GuiSmokeTest::firstScreenIsACompactIpLibrary()
     }
 }
 
-void GuiSmokeTest::binaryFilesUseSafePreview()
+void GuiSmokeTest::binaryFilesRemainInventoryEntries()
 {
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
@@ -104,10 +100,6 @@ void GuiSmokeTest::binaryFilesUseSafePreview()
     Manifest manifest;
     manifest.id = QStringLiteral("binary_ip");
     manifest.name = QStringLiteral("Binary IP");
-    manifest.sources = {
-        QStringLiteral("rtl/top.sv"),
-        QStringLiteral("rtl/state.dcp"),
-    };
     QString error;
     QVERIFY2(ManifestService().write(
                  QDir(root).absoluteFilePath(QStringLiteral(".xips.json")),
@@ -121,7 +113,7 @@ void GuiSmokeTest::binaryFilesUseSafePreview()
     auto *files = window.findChild<QTreeWidget *>(QStringLiteral("fileTree"));
     auto *preview = window.findChild<QPlainTextEdit *>(QStringLiteral("sourcePreview"));
     QVERIFY(files);
-    QVERIFY(preview);
+    QVERIFY(!preview);
     QTRY_COMPARE_WITH_TIMEOUT(files->topLevelItemCount(), 2, 10000);
     QTreeWidgetItem *binary = nullptr;
     for (int index = 0; index < files->topLevelItemCount(); ++index) {
@@ -132,10 +124,6 @@ void GuiSmokeTest::binaryFilesUseSafePreview()
         }
     }
     QVERIFY(binary);
-    files->setCurrentItem(binary);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        preview->toPlainText().contains(QStringLiteral("Binary preview unavailable")),
-        3000);
 }
 
 void GuiSmokeTest::activationSelectsAnIp()

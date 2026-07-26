@@ -1,19 +1,13 @@
 #include "app/MainWindow.h"
 
-#include "assetindex/AssetScanner.h"
-
 #include <QAction>
 #include <QApplication>
-#include <QClipboard>
-#include <QComboBox>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
-#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFontDatabase>
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -21,13 +15,11 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMenuBar>
-#include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QSettings>
-#include <QSignalBlocker>
 #include <QShortcut>
+#include <QSortFilterProxyModel>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTableView>
@@ -38,51 +30,10 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
-#include <algorithm>
-
 namespace xips {
 namespace {
 
-constexpr int FilePathRole = Qt::UserRole;
 constexpr int VersionRole = Qt::UserRole;
-
-bool looksBinary(const QByteArray &contents)
-{
-    if (contents.contains('\0')) {
-        return true;
-    }
-    qsizetype controls = 0;
-    for (const char byte : contents) {
-        const auto value = static_cast<unsigned char>(byte);
-        if (value < 0x20 && value != '\t' && value != '\n'
-            && value != '\r' && value != '\f') {
-            ++controls;
-        }
-    }
-    return !contents.isEmpty() && controls * 100 > contents.size();
-}
-
-QString readPreview(const QString &path)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return QStringLiteral("Cannot open %1\n%2").arg(path, file.errorString());
-    }
-    constexpr qint64 limit = 512 * 1024;
-    const QByteArray contents = file.read(limit + 1);
-    const QByteArray preview = contents.first(
-        std::min(contents.size(), static_cast<qsizetype>(limit)));
-    if (looksBinary(preview)) {
-        return QStringLiteral("[Binary preview unavailable]\n\nFile: %1\nSize: %2 bytes")
-            .arg(path)
-            .arg(file.size());
-    }
-    QString text = QString::fromUtf8(preview);
-    if (contents.size() > limit) {
-        text += QStringLiteral("\n\n[Preview truncated at 512 KiB]");
-    }
-    return text;
-}
 
 QString formatBytes(const qint64 bytes)
 {
@@ -119,8 +70,6 @@ bool editMetadata(QWidget *parent,
     id->setEnabled(idEditable);
     auto *name = new QLineEdit(metadata.name, &dialog);
     name->setObjectName(QStringLiteral("ipNameEdit"));
-    auto *version = new QLineEdit(metadata.version, &dialog);
-    version->setPlaceholderText(QStringLiteral("optional, for example 1.0.0"));
     auto *tags = new QLineEdit(metadata.tags.join(QStringLiteral(", ")), &dialog);
     tags->setPlaceholderText(QStringLiteral("comma-separated"));
     auto *description = new QPlainTextEdit(metadata.description, &dialog);
@@ -129,7 +78,6 @@ bool editMetadata(QWidget *parent,
 
     form->addRow(QStringLiteral("ID"), id);
     form->addRow(QStringLiteral("Name"), name);
-    form->addRow(QStringLiteral("Current version"), version);
     form->addRow(QStringLiteral("Tags"), tags);
     form->addRow(QStringLiteral("Description"), description);
     layout->addLayout(form);
@@ -153,7 +101,6 @@ bool editMetadata(QWidget *parent,
     }
     metadata.id = id->text().trimmed();
     metadata.name = name->text().trimmed();
-    metadata.version = version->text().trimmed();
     metadata.description = description->toPlainText().trimmed();
     QString tagText = tags->text();
     tagText.replace(u';', u',');
@@ -172,33 +119,27 @@ MainWindow::MainWindow(QString libraryRoot, QWidget *parent)
     , m_controller(new LibraryController(this))
 {
     buildUi();
-    buildMenus();
     m_controller->setLibraryRoot(m_libraryRoot);
 
-    connect(m_controller, &LibraryController::indexingStarted, this, [this] {
+    connect(m_controller, &LibraryController::refreshStarted, this, [this] {
         statusBar()->showMessage(QStringLiteral("Refreshing IP library..."));
     });
     connect(m_controller,
-            &LibraryController::indexingFinished,
+            &LibraryController::refreshFinished,
             this,
             [this](const QList<AssetRecord> &assets,
-                   const QList<ScanIssue> &issues) {
-                m_assets = assets;
-                m_scanIssues = issues;
-                refreshTagFilter();
+                   const QStringList &errors) {
+                m_loaded = true;
                 runSearch();
-                int errors = 0;
-                int warnings = 0;
-                for (const ScanIssue &issue : issues) {
-                    errors += issue.severity == Diagnostic::Severity::Error ? 1 : 0;
-                    warnings += issue.severity == Diagnostic::Severity::Warning ? 1 : 0;
+                QString status = QStringLiteral("%1 IPs  |  %2")
+                                     .arg(assets.size())
+                                     .arg(QDir::toNativeSeparators(m_libraryRoot));
+                if (!errors.isEmpty()) {
+                    status += QStringLiteral("  |  %1 skipped: %2")
+                                  .arg(errors.size())
+                                  .arg(errors.first());
                 }
-                statusBar()->showMessage(
-                    QStringLiteral("%1 IPs  |  %2 errors  |  %3 warnings  |  %4")
-                        .arg(assets.size())
-                        .arg(errors)
-                        .arg(warnings)
-                        .arg(QDir::toNativeSeparators(m_libraryRoot)));
+                statusBar()->showMessage(status);
                 if (m_pendingActivation) {
                     const ActivationRequest request = *m_pendingActivation;
                     m_pendingActivation.reset();
@@ -206,7 +147,7 @@ MainWindow::MainWindow(QString libraryRoot, QWidget *parent)
                 }
             });
     connect(m_controller,
-            &LibraryController::indexingFailed,
+            &LibraryController::refreshFailed,
             this,
             [this](const QString &message) {
                 statusBar()->showMessage(message);
@@ -223,6 +164,12 @@ void MainWindow::buildUi()
     auto *toolbar = addToolBar(QStringLiteral("IP Library"));
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
+    QAction *libraryAction = toolbar->addAction(QStringLiteral("Library..."));
+    connect(libraryAction,
+            &QAction::triggered,
+            this,
+            &MainWindow::chooseLibrary);
+    toolbar->addSeparator();
     QAction *addAction = toolbar->addAction(QStringLiteral("Add IP"));
     connect(addAction, &QAction::triggered, this, &MainWindow::addIp);
     m_editAction = toolbar->addAction(QStringLiteral("Edit"));
@@ -248,14 +195,9 @@ void MainWindow::buildUi()
     m_searchEdit->setObjectName(QStringLiteral("searchEdit"));
     m_searchEdit->setClearButtonEnabled(true);
     m_searchEdit->setPlaceholderText(
-        QStringLiteral("name, ID, version, tag, description, or path"));
+        QStringLiteral("name, ID, version, tag, or description"));
     m_searchEdit->setMinimumWidth(280);
     toolbar->addWidget(m_searchEdit);
-    toolbar->addWidget(new QLabel(QStringLiteral("Tag"), toolbar));
-    m_tagFilter = new QComboBox(toolbar);
-    m_tagFilter->setObjectName(QStringLiteral("tagFilter"));
-    m_tagFilter->setMinimumContentsLength(12);
-    toolbar->addWidget(m_tagFilter);
     QAction *refreshAction = toolbar->addAction(QStringLiteral("Refresh"));
     connect(refreshAction, &QAction::triggered, m_controller, &LibraryController::rebuild);
 
@@ -266,18 +208,10 @@ void MainWindow::buildUi()
         m_searchTimer->start();
     });
     connect(m_searchTimer, &QTimer::timeout, this, &MainWindow::runSearch);
-    connect(m_tagFilter,
-            &QComboBox::currentTextChanged,
-            this,
-            [this](const QString &tag) {
-                m_proxyModel->setTagFilter(m_tagFilter->currentIndex() <= 0
-                                               ? QString()
-                                               : tag);
-                selectFirstRow();
-            });
-
     m_tableModel = new AssetTableModel(this);
-    m_proxyModel = new AssetFilterProxyModel(this);
+    m_proxyModel = new QSortFilterProxyModel(this);
+    m_proxyModel->setSortRole(Qt::UserRole);
+    m_proxyModel->setDynamicSortFilter(true);
     m_proxyModel->setSourceModel(m_tableModel);
     m_assetTable = new QTableView(this);
     m_assetTable->setObjectName(QStringLiteral("assetTable"));
@@ -328,14 +262,13 @@ void MainWindow::buildUi()
     m_description->setMaximumHeight(90);
     detailsLayout->addWidget(m_description);
 
-    m_tabs = new QTabWidget(details);
-    m_tabs->setObjectName(QStringLiteral("detailTabs"));
-    m_tabs->setDocumentMode(true);
-    auto *filesPage = new QWidget(m_tabs);
+    auto *tabs = new QTabWidget(details);
+    tabs->setObjectName(QStringLiteral("detailTabs"));
+    tabs->setDocumentMode(true);
+    auto *filesPage = new QWidget(tabs);
     auto *filesLayout = new QVBoxLayout(filesPage);
     filesLayout->setContentsMargins(0, 0, 0, 0);
-    auto *filesSplitter = new QSplitter(Qt::Vertical, filesPage);
-    m_fileTree = new QTreeWidget(filesSplitter);
+    m_fileTree = new QTreeWidget(filesPage);
     m_fileTree->setObjectName(QStringLiteral("fileTree"));
     m_fileTree->setHeaderLabels({QStringLiteral("File"), QStringLiteral("Size")});
     m_fileTree->setRootIsDecorated(false);
@@ -343,26 +276,20 @@ void MainWindow::buildUi()
     m_fileTree->header()->setStretchLastSection(false);
     m_fileTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_fileTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_sourcePreview = new QPlainTextEdit(filesSplitter);
-    m_sourcePreview->setObjectName(QStringLiteral("sourcePreview"));
-    m_sourcePreview->setReadOnly(true);
-    m_sourcePreview->setLineWrapMode(QPlainTextEdit::NoWrap);
-    m_sourcePreview->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    filesSplitter->setSizes({190, 250});
-    filesLayout->addWidget(filesSplitter);
+    filesLayout->addWidget(m_fileTree);
 
-    m_versionTree = new QTreeWidget(m_tabs);
+    m_versionTree = new QTreeWidget(tabs);
     m_versionTree->setObjectName(QStringLiteral("versionTree"));
     m_versionTree->setHeaderLabels(
-        {QStringLiteral("Version"), QStringLiteral("Created"), QStringLiteral("Hash")});
+        {QStringLiteral("Version"), QStringLiteral("Created")});
     m_versionTree->setRootIsDecorated(false);
     m_versionTree->setAlternatingRowColors(true);
     m_versionTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_versionTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_versionTree->header()->setStretchLastSection(true);
-    m_tabs->addTab(filesPage, QStringLiteral("Files"));
-    m_tabs->addTab(m_versionTree, QStringLiteral("Versions"));
-    detailsLayout->addWidget(m_tabs, 1);
+    tabs->addTab(filesPage, QStringLiteral("Files"));
+    tabs->addTab(m_versionTree, QStringLiteral("Versions"));
+    detailsLayout->addWidget(tabs, 1);
     mainSplitter->setSizes({560, 620});
     mainSplitter->setCollapsible(0, false);
     mainSplitter->setCollapsible(1, false);
@@ -378,22 +305,10 @@ void MainWindow::buildUi()
                 m_versionAction->setEnabled(selected);
                 m_exportAction->setEnabled(selected);
                 m_openFolderAction->setEnabled(selected);
-                m_copyLinkAction->setEnabled(selected);
                 updateDetails(currentRecord());
             });
     connect(m_assetTable, &QTableView::doubleClicked,
             this, &MainWindow::openCurrentFolder);
-    connect(m_fileTree,
-            &QTreeWidget::currentItemChanged,
-            this,
-            [this](QTreeWidgetItem *current) {
-                if (!current) {
-                    m_sourcePreview->clear();
-                    return;
-                }
-                m_sourcePreview->setPlainText(
-                    readPreview(current->data(0, FilePathRole).toString()));
-            });
     auto *focusSearch = new QShortcut(QKeySequence::Find, this);
     connect(focusSearch, &QShortcut::activated, m_searchEdit, [this] {
         m_searchEdit->setFocus();
@@ -404,37 +319,6 @@ void MainWindow::buildUi()
     m_versionAction->setEnabled(false);
     m_exportAction->setEnabled(false);
     m_openFolderAction->setEnabled(false);
-}
-
-void MainWindow::buildMenus()
-{
-    QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
-    QAction *choose = fileMenu->addAction(QStringLiteral("Choose IP library..."),
-                                          QKeySequence::Open);
-    connect(choose, &QAction::triggered, this, &MainWindow::chooseLibrary);
-    QAction *add = fileMenu->addAction(QStringLiteral("Add IP..."));
-    connect(add, &QAction::triggered, this, &MainWindow::addIp);
-    fileMenu->addAction(m_editAction);
-    fileMenu->addSeparator();
-    fileMenu->addAction(m_exportAction);
-    fileMenu->addSeparator();
-    QAction *quit = fileMenu->addAction(QStringLiteral("Exit"), QKeySequence::Quit);
-    connect(quit, &QAction::triggered, this, &QWidget::close);
-
-    QMenu *assetMenu = menuBar()->addMenu(QStringLiteral("&IP"));
-    assetMenu->addAction(m_versionAction);
-    assetMenu->addAction(m_openFolderAction);
-    m_copyLinkAction = assetMenu->addAction(QStringLiteral("Copy xIPs link"));
-    m_copyLinkAction->setEnabled(false);
-    connect(m_copyLinkAction,
-            &QAction::triggered,
-            this,
-            &MainWindow::copyCurrentLink);
-
-    QMenu *libraryMenu = menuBar()->addMenu(QStringLiteral("&Library"));
-    QAction *refresh = libraryMenu->addAction(QStringLiteral("Refresh"),
-                                              QKeySequence::Refresh);
-    connect(refresh, &QAction::triggered, m_controller, &LibraryController::rebuild);
 }
 
 void MainWindow::runSearch()
@@ -457,37 +341,11 @@ void MainWindow::runSearch()
     }
 }
 
-void MainWindow::refreshTagFilter()
-{
-    const QString selected = m_tagFilter->currentIndex() > 0
-                                 ? m_tagFilter->currentText()
-                                 : QString();
-    QStringList tags;
-    for (const AssetRecord &asset : m_assets) {
-        tags.append(asset.manifest.tags);
-    }
-    tags.removeDuplicates();
-    std::sort(tags.begin(), tags.end(), [](const QString &left, const QString &right) {
-        return QString::compare(left, right, Qt::CaseInsensitive) < 0;
-    });
-
-    const QSignalBlocker blocker(m_tagFilter);
-    m_tagFilter->clear();
-    m_tagFilter->addItem(QStringLiteral("All tags"));
-    m_tagFilter->addItems(tags);
-    const int restored = selected.isEmpty() ? 0 : m_tagFilter->findText(selected);
-    m_tagFilter->setCurrentIndex(std::max(0, restored));
-    m_proxyModel->setTagFilter(m_tagFilter->currentIndex() > 0
-                                   ? m_tagFilter->currentText()
-                                   : QString());
-}
-
 void MainWindow::updateDetails(const AssetRecord *asset)
 {
     m_infoTree->clear();
     m_description->clear();
     m_fileTree->clear();
-    m_sourcePreview->clear();
     m_versionTree->clear();
     if (!asset) {
         m_nameLabel->setText(QStringLiteral("No IP selected"));
@@ -497,22 +355,9 @@ void MainWindow::updateDetails(const AssetRecord *asset)
     m_nameLabel->setText(asset->manifest.name);
     addInfoRow(m_infoTree, QStringLiteral("ID"), asset->manifest.id);
     addInfoRow(m_infoTree,
-               QStringLiteral("Current version"),
-               asset->manifest.version.isEmpty() ? QStringLiteral("working")
+               QStringLiteral("Last saved version"),
+               asset->manifest.version.isEmpty() ? QStringLiteral("None")
                                                  : asset->manifest.version);
-    addInfoRow(m_infoTree, QStringLiteral("Language"), asset->manifest.language);
-    if (!asset->manifest.top.isEmpty()) {
-        addInfoRow(m_infoTree, QStringLiteral("Top"), asset->manifest.top);
-    }
-    if (!asset->manifest.tools.isEmpty()) {
-        QStringList tools;
-        for (const QString &name : asset->manifest.tools.keys()) {
-            tools.append(name + u' ' + asset->manifest.tools.value(name).toVariant().toString());
-        }
-        addInfoRow(m_infoTree,
-                   QStringLiteral("Tools"),
-                   tools.join(QStringLiteral(", ")));
-    }
     addInfoRow(m_infoTree,
                QStringLiteral("Tags"),
                asset->manifest.tags.join(QStringLiteral(", ")));
@@ -528,7 +373,6 @@ void MainWindow::updateDetails(const AssetRecord *asset)
     addInfoRow(m_infoTree,
                QStringLiteral("Path"),
                QDir::toNativeSeparators(asset->assetRoot));
-    addInfoRow(m_infoTree, QStringLiteral("Content hash"), asset->contentHash);
     m_description->setPlainText(asset->manifest.description);
     populateFiles(*asset);
     populateVersions(*asset);
@@ -536,36 +380,26 @@ void MainWindow::updateDetails(const AssetRecord *asset)
 
 void MainWindow::populateFiles(const AssetRecord &asset)
 {
-    const QStringList files = AssetScanner::assetFiles(asset.assetRoot);
-    for (const QString &relative : files) {
+    for (const QString &relative : asset.files) {
         const QString absolute = QDir(asset.assetRoot).absoluteFilePath(relative);
         const QFileInfo info(absolute);
         auto *item = new QTreeWidgetItem(
             m_fileTree,
             {QDir::toNativeSeparators(relative), formatBytes(info.size())});
-        item->setData(0, FilePathRole, absolute);
         item->setToolTip(0, absolute);
     }
     if (m_fileTree->topLevelItemCount() > 0) {
         m_fileTree->setCurrentItem(m_fileTree->topLevelItem(0));
-    } else {
-        m_sourcePreview->setPlainText(QStringLiteral("No payload files."));
     }
 }
 
 void MainWindow::populateVersions(const AssetRecord &asset)
 {
-    const auto shortHash = [](QString hash) {
-        hash.remove(QStringLiteral("sha256:"));
-        return hash.left(16);
-    };
     auto *working = new QTreeWidgetItem(
         m_versionTree,
         {QStringLiteral("Working copy"),
-         asset.lastModified.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm")),
-         shortHash(asset.contentHash)});
+         asset.lastModified.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))});
     working->setData(0, VersionRole, QString());
-    working->setToolTip(2, asset.contentHash);
 
     QString error;
     const QList<VersionInfo> versions = m_libraryService.versions(asset.assetRoot, &error);
@@ -576,10 +410,8 @@ void MainWindow::populateVersions(const AssetRecord &asset)
         auto *item = new QTreeWidgetItem(
             m_versionTree,
             {version.version,
-             version.createdAt.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm")),
-             shortHash(version.contentHash)});
+             version.createdAt.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))});
         item->setData(0, VersionRole, version.version);
-        item->setToolTip(2, version.contentHash);
     }
     m_versionTree->setCurrentItem(working);
 }
@@ -626,6 +458,7 @@ void MainWindow::chooseLibrary()
     }
     m_libraryRoot = QFileInfo(selected).absoluteFilePath();
     m_controller->setLibraryRoot(m_libraryRoot);
+    m_loaded = false;
     saveLibrarySetting();
     m_tableModel->setHits({});
     updateDetails(nullptr);
@@ -677,7 +510,6 @@ void MainWindow::editCurrentIp()
     IpMetadata metadata{
         .id = asset->manifest.id,
         .name = asset->manifest.name,
-        .version = asset->manifest.version,
         .description = asset->manifest.description,
         .tags = asset->manifest.tags,
     };
@@ -768,18 +600,6 @@ void MainWindow::openCurrentFolder()
     }
 }
 
-void MainWindow::copyCurrentLink()
-{
-    const AssetRecord *asset = currentRecord();
-    if (!asset) {
-        return;
-    }
-    const QString link = IntegrationService::assetUri(asset->manifest.id)
-                             .toString(QUrl::FullyEncoded);
-    QApplication::clipboard()->setText(link);
-    statusBar()->showMessage(QStringLiteral("Copied %1").arg(link));
-}
-
 void MainWindow::saveLibrarySetting()
 {
     QSettings().setValue(QStringLiteral("library/root"), m_libraryRoot);
@@ -810,11 +630,10 @@ void MainWindow::applyActivation(const ActivationRequest &request)
         m_searchEdit->setText(request.value);
         runSearch();
     } else if (request.action == ActivationAction::OpenAsset) {
-        if (m_assets.isEmpty() && m_tableModel->rowCount() == 0) {
+        if (!m_loaded) {
             m_pendingActivation = request;
             return;
         }
-        m_tagFilter->setCurrentIndex(0);
         m_searchEdit->setText(request.value);
         runSearch();
         if (!selectAssetById(request.value)) {

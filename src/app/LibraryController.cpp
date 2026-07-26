@@ -1,21 +1,15 @@
 #include "app/LibraryController.h"
 
 #include "assetcore/JsonUtil.h"
-#include "assetindex/AssetScanner.h"
+#include "library/AssetScanner.h"
+#include "library/FileSystemUtil.h"
 
-#include <QDir>
-#include <QFileInfo>
 #include <QtConcurrent>
 
 #include <algorithm>
 
 namespace xips {
 namespace {
-
-QString absolutePath(const QString &path)
-{
-    return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
-}
 
 double fieldScore(const QString &field,
                   const QString &query,
@@ -38,13 +32,6 @@ double fieldScore(const QString &field,
 LibraryController::LibraryController(QObject *parent)
     : QObject(parent)
 {
-    m_refreshTimer.setSingleShot(true);
-    m_refreshTimer.setInterval(350);
-    connect(&m_refreshTimer, &QTimer::timeout, this, &LibraryController::rebuild);
-    connect(&m_fileWatcher, &QFileSystemWatcher::fileChanged,
-            this, &LibraryController::scheduleRefresh);
-    connect(&m_fileWatcher, &QFileSystemWatcher::directoryChanged,
-            this, &LibraryController::scheduleRefresh);
     connect(&m_watcher, &QFutureWatcher<ScanResult>::finished, this, [this] {
         const ScanResult result = m_watcher.result();
         if (m_rebuildQueued) {
@@ -53,12 +40,11 @@ LibraryController::LibraryController(QObject *parent)
             return;
         }
         if (result.cancelled) {
-            emit indexingFailed(QStringLiteral("Library refresh cancelled"));
+            emit refreshFailed(QStringLiteral("Library refresh cancelled"));
             return;
         }
         m_assets = result.assets;
-        configureWatchers();
-        emit indexingFinished(m_assets, result.issues);
+        emit refreshFinished(m_assets, result.errors);
     });
 }
 
@@ -70,17 +56,7 @@ LibraryController::~LibraryController()
 
 void LibraryController::setLibraryRoot(const QString &path)
 {
-    m_libraryRoot = absolutePath(path);
-}
-
-QString LibraryController::libraryRoot() const
-{
-    return m_libraryRoot;
-}
-
-QList<AssetRecord> LibraryController::assets() const
-{
-    return m_assets;
+    m_libraryRoot = files::normalizedAbsolute(path);
 }
 
 void LibraryController::rebuild()
@@ -91,13 +67,13 @@ void LibraryController::rebuild()
         return;
     }
     if (m_libraryRoot.isEmpty()) {
-        emit indexingFailed(QStringLiteral("No IP library is selected"));
+        emit refreshFailed(QStringLiteral("No IP library is selected"));
         return;
     }
     m_cancelled = std::make_shared<std::atomic_bool>(false);
     const auto cancelled = m_cancelled;
     const QString root = m_libraryRoot;
-    emit indexingStarted();
+    emit refreshStarted();
     m_watcher.setFuture(QtConcurrent::run([root, cancelled] {
         return AssetScanner().scan(root, cancelled.get());
     }));
@@ -117,22 +93,19 @@ QList<SearchHit> LibraryController::search(const QString &query,
     const QStringList terms = normalizedQuery.split(u' ', Qt::SkipEmptyParts);
     QList<SearchHit> hits;
     for (const AssetRecord &asset : m_assets) {
-        const QList<QPair<QString, QString>> fields{
-            {QStringLiteral("name"), asset.manifest.name},
-            {QStringLiteral("id"), asset.manifest.id},
-            {QStringLiteral("version"), asset.manifest.version},
-            {QStringLiteral("tags"), asset.manifest.tags.join(u' ')},
-            {QStringLiteral("description"), asset.manifest.description},
-            {QStringLiteral("path"), asset.assetRoot},
+        const QStringList fields{
+            asset.manifest.name,
+            asset.manifest.id,
+            asset.manifest.version,
+            asset.manifest.tags.join(u' '),
+            asset.manifest.description,
         };
         bool matches = true;
-        QStringList matchedFields;
         for (const QString &term : terms) {
             bool termMatched = false;
-            for (const auto &[name, value] : fields) {
+            for (const QString &value : fields) {
                 if (json::normalizeSearchText(value).contains(term)) {
                     termMatched = true;
-                    matchedFields.append(name);
                 }
             }
             if (!termMatched) {
@@ -143,7 +116,6 @@ QList<SearchHit> LibraryController::search(const QString &query,
         if (!matches) {
             continue;
         }
-        matchedFields.removeDuplicates();
         double score = 0.0;
         if (!normalizedQuery.isEmpty()) {
             score += fieldScore(asset.manifest.name, normalizedQuery, 100, 80, 55);
@@ -151,11 +123,8 @@ QList<SearchHit> LibraryController::search(const QString &query,
             score += fieldScore(asset.manifest.tags.join(u' '), normalizedQuery, 45, 40, 35);
             score += fieldScore(asset.manifest.version, normalizedQuery, 30, 25, 20);
             score += fieldScore(asset.manifest.description, normalizedQuery, 20, 15, 10);
-            score += fieldScore(asset.assetRoot, normalizedQuery, 10, 8, 5);
         }
-        hits.append({.asset = asset,
-                     .matchedFields = matchedFields,
-                     .score = score});
+        hits.append({.asset = asset, .score = score});
     }
     std::sort(hits.begin(), hits.end(), [](const SearchHit &left, const SearchHit &right) {
         if (left.score != right.score) {
@@ -169,52 +138,6 @@ QList<SearchHit> LibraryController::search(const QString &query,
         hits.erase(hits.begin() + limit, hits.end());
     }
     return hits;
-}
-
-void LibraryController::configureWatchers()
-{
-    if (!m_fileWatcher.files().isEmpty()) {
-        m_fileWatcher.removePaths(m_fileWatcher.files());
-    }
-    if (!m_fileWatcher.directories().isEmpty()) {
-        m_fileWatcher.removePaths(m_fileWatcher.directories());
-    }
-
-    QStringList directories;
-    QStringList files;
-    if (QFileInfo(m_libraryRoot).isDir()) {
-        directories.append(m_libraryRoot);
-    }
-    for (const AssetRecord &asset : m_assets) {
-        directories.append(asset.assetRoot);
-        files.append(asset.manifestPath);
-        for (const QString &relative : AssetScanner::assetFiles(asset.assetRoot)) {
-            files.append(QDir(asset.assetRoot).absoluteFilePath(relative));
-        }
-        const QString metadata = QDir(asset.assetRoot).absoluteFilePath(
-            QStringLiteral(".xips"));
-        const QString versions = QDir(metadata).absoluteFilePath(
-            QStringLiteral("versions"));
-        if (QFileInfo(metadata).isDir()) {
-            directories.append(metadata);
-        }
-        if (QFileInfo(versions).isDir()) {
-            directories.append(versions);
-        }
-    }
-    directories.removeDuplicates();
-    files.removeDuplicates();
-    if (!directories.isEmpty()) {
-        m_fileWatcher.addPaths(directories);
-    }
-    if (!files.isEmpty()) {
-        m_fileWatcher.addPaths(files);
-    }
-}
-
-void LibraryController::scheduleRefresh()
-{
-    m_refreshTimer.start();
 }
 
 } // namespace xips

@@ -1,6 +1,7 @@
 #include "library/AssetLibraryService.h"
 
-#include "assetindex/AssetScanner.h"
+#include "library/AssetScanner.h"
+#include "library/FileSystemUtil.h"
 #include "manifest/ManifestService.h"
 
 #include <QDir>
@@ -24,92 +25,18 @@ bool fail(QString *error, const QString &message)
     return false;
 }
 
-bool isLinkLike(const QFileInfo &info)
-{
-    if (info.isSymLink()) {
-        return true;
-    }
-#ifdef Q_OS_WIN
-    return info.isJunction();
-#else
-    return false;
-#endif
-}
-
-bool isIgnoredDirectory(const QString &name)
-{
-    const QString value = name.toLower();
-    return value == QStringLiteral(".git")
-           || value == QStringLiteral(".xips")
-           || value == QStringLiteral(".cache")
-           || value == QStringLiteral(".xil")
-           || value == QStringLiteral("ip_user_files")
-           || value == QStringLiteral("build")
-           || value.startsWith(QStringLiteral("build-"))
-           || value.startsWith(QStringLiteral(".xips-create-"));
-}
-
-QString normalizedAbsolute(const QString &path)
-{
-    return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
-}
-
-bool pathIsWithin(const QString &path, const QString &root)
-{
-    const QString candidate = QDir::fromNativeSeparators(normalizedAbsolute(path));
-    const QString boundary = QDir::fromNativeSeparators(normalizedAbsolute(root));
-    return candidate.compare(boundary, Qt::CaseInsensitive) == 0
-           || candidate.startsWith(boundary + u'/', Qt::CaseInsensitive);
-}
-
-bool collectPayload(const QString &directory,
-                    const QString &root,
-                    QStringList &relativeFiles,
-                    QString *error)
-{
-    const QFileInfoList entries = QDir(directory).entryInfoList(
-        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
-        QDir::Name);
-    for (const QFileInfo &entry : entries) {
-        if (isLinkLike(entry)) {
-            return fail(error,
-                        QStringLiteral("Linked files or directories are not portable: %1")
-                            .arg(entry.absoluteFilePath()));
-        }
-        if (entry.isDir()) {
-            if (!isIgnoredDirectory(entry.fileName())
-                && !collectPayload(entry.absoluteFilePath(),
-                                   root,
-                                   relativeFiles,
-                                   error)) {
-                return false;
-            }
-            continue;
-        }
-        if (!entry.isFile()
-            || entry.fileName() == QStringLiteral(".xips.json")
-            || entry.fileName() == QStringLiteral(".snapshot.json")) {
-            continue;
-        }
-        QString relative = QDir(root).relativeFilePath(entry.absoluteFilePath());
-        relative = QDir::cleanPath(relative);
-        relative = QDir::fromNativeSeparators(relative);
-        relativeFiles.append(relative);
-    }
-    return true;
-}
-
 bool copyPayload(const QString &sourceRoot,
                  const QString &destinationRoot,
-                 QStringList *copiedFiles,
                  QString *error)
 {
-    QStringList files;
-    if (!collectPayload(sourceRoot, sourceRoot, files, error)) {
+    QStringList payloadFiles;
+    if (!files::collectPayloadFiles(sourceRoot,
+                                    payloadFiles,
+                                    files::LinkPolicy::Reject,
+                                    error)) {
         return false;
     }
-    std::sort(files.begin(), files.end());
-    for (const QString &relative : files) {
+    for (const QString &relative : payloadFiles) {
         const QString source = QDir(sourceRoot).absoluteFilePath(relative);
         const QString destination = QDir(destinationRoot).absoluteFilePath(relative);
         if (!QDir().mkpath(QFileInfo(destination).absolutePath())) {
@@ -122,9 +49,6 @@ bool copyPayload(const QString &sourceRoot,
                         QStringLiteral("Cannot copy %1 to %2")
                             .arg(source, destination));
         }
-    }
-    if (copiedFiles) {
-        *copiedFiles = files;
     }
     return true;
 }
@@ -142,49 +66,13 @@ QStringList cleanedTags(QStringList tags)
     return tags;
 }
 
-Manifest makeManifest(const IpMetadata &metadata, const QStringList &files)
+Manifest makeManifest(const IpMetadata &metadata)
 {
     Manifest manifest;
     manifest.id = metadata.id.trimmed();
-    manifest.type = AssetType::Ip;
     manifest.name = metadata.name.trimmed();
-    manifest.version = metadata.version.trimmed();
     manifest.description = metadata.description.trimmed();
     manifest.tags = cleanedTags(metadata.tags);
-
-    bool hasSystemVerilog = false;
-    bool hasVerilog = false;
-    bool hasVhdl = false;
-    for (const QString &relative : files) {
-        const QString suffix = QFileInfo(relative).suffix().toLower();
-        if (suffix == QStringLiteral("xdc") || suffix == QStringLiteral("sdc")
-            || suffix == QStringLiteral("ucf")) {
-            manifest.constraints.append(relative);
-        } else if (suffix == QStringLiteral("md") || suffix == QStringLiteral("pdf")
-                   || suffix == QStringLiteral("html") || suffix == QStringLiteral("htm")) {
-            manifest.documentation.append(relative);
-        } else {
-            manifest.sources.append(relative);
-        }
-        hasSystemVerilog |= suffix == QStringLiteral("sv")
-                            || suffix == QStringLiteral("svh");
-        hasVerilog |= suffix == QStringLiteral("v")
-                      || suffix == QStringLiteral("vh");
-        hasVhdl |= suffix == QStringLiteral("vhd")
-                   || suffix == QStringLiteral("vhdl");
-    }
-    const int languageKinds = (hasSystemVerilog ? 1 : 0)
-                              + (hasVerilog ? 1 : 0)
-                              + (hasVhdl ? 1 : 0);
-    if (languageKinds > 1) {
-        manifest.language = QStringLiteral("Mixed");
-    } else if (hasSystemVerilog) {
-        manifest.language = QStringLiteral("SystemVerilog");
-    } else if (hasVerilog) {
-        manifest.language = QStringLiteral("Verilog");
-    } else if (hasVhdl) {
-        manifest.language = QStringLiteral("VHDL");
-    }
     return manifest;
 }
 
@@ -257,7 +145,6 @@ IpMetadata AssetLibraryService::suggestedMetadata(const QString &sourceDirectory
         if (loaded.ok()) {
             metadata.id = loaded.manifest->id;
             metadata.name = loaded.manifest->name;
-            metadata.version = loaded.manifest->version;
             metadata.description = loaded.manifest->description;
             metadata.tags = loaded.manifest->tags;
         }
@@ -269,30 +156,23 @@ bool AssetLibraryService::importIp(const ImportIpRequest &request,
                                    AssetRecord *created,
                                    QString *error) const
 {
-    const QString sourceRoot = normalizedAbsolute(request.sourceDirectory);
-    const QString libraryRoot = normalizedAbsolute(request.libraryRoot);
+    const QString sourceRoot = files::normalizedAbsolute(request.sourceDirectory);
+    const QString libraryRoot = files::normalizedAbsolute(request.libraryRoot);
     if (!QFileInfo(sourceRoot).isDir()) {
         return fail(error, QStringLiteral("Source directory does not exist"));
     }
     if (!QDir().mkpath(libraryRoot)) {
         return fail(error, QStringLiteral("Cannot create the IP library directory"));
     }
-    if (pathIsWithin(libraryRoot, sourceRoot)) {
+    if (files::isWithin(libraryRoot, sourceRoot)) {
         return fail(error,
                     QStringLiteral("The IP library cannot be inside the imported directory"));
     }
 
-    QStringList files;
-    if (!collectPayload(sourceRoot, sourceRoot, files, error)) {
-        return false;
-    }
-    std::sort(files.begin(), files.end());
-    Manifest manifest = makeManifest(request.metadata, files);
-    const QList<Diagnostic> diagnostics = ManifestService().validate(manifest);
-    for (const Diagnostic &entry : diagnostics) {
-        if (entry.severity == Diagnostic::Severity::Error) {
-            return fail(error, entry.message);
-        }
+    Manifest manifest = makeManifest(request.metadata);
+    const QStringList validationErrors = ManifestService().validate(manifest);
+    if (!validationErrors.isEmpty()) {
+        return fail(error, validationErrors.first());
     }
 
     const QString targetRoot = QDir(libraryRoot).absoluteFilePath(manifest.id);
@@ -308,7 +188,7 @@ bool AssetLibraryService::importIp(const ImportIpRequest &request,
     }
 
     QString operationError;
-    if (!copyPayload(sourceRoot, stagingRoot, nullptr, &operationError)
+    if (!copyPayload(sourceRoot, stagingRoot, &operationError)
         || !ManifestService().write(
             QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
             manifest,
@@ -344,9 +224,7 @@ bool AssetLibraryService::updateMetadata(const AssetRecord &asset,
     }
 
     Manifest manifest = *loaded.manifest;
-    manifest.type = AssetType::Ip;
     manifest.name = metadata.name.trimmed();
-    manifest.version = metadata.version.trimmed();
     manifest.description = metadata.description.trimmed();
     manifest.tags = cleanedTags(metadata.tags);
     return ManifestService().write(asset.manifestPath, manifest, error);
@@ -443,12 +321,11 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
     }
 
     QString operationError;
-    if (!copyPayload(asset.assetRoot, stagingRoot, nullptr, &operationError)) {
+    if (!copyPayload(asset.assetRoot, stagingRoot, &operationError)) {
         QDir(stagingRoot).removeRecursively();
         return fail(error, operationError);
     }
     Manifest snapshotManifest = *loaded.manifest;
-    snapshotManifest.type = AssetType::Ip;
     snapshotManifest.version = cleanVersion;
     const QString snapshotManifestPath = QDir(stagingRoot).absoluteFilePath(
         QStringLiteral(".xips.json"));
@@ -473,7 +350,6 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
     }
 
     Manifest currentManifest = *loaded.manifest;
-    currentManifest.type = AssetType::Ip;
     currentManifest.version = cleanVersion;
     if (!ManifestService().write(asset.manifestPath,
                                  currentManifest,
@@ -522,12 +398,12 @@ bool AssetLibraryService::exportVersion(const AssetRecord &asset,
         sourceRoot = found->path;
     }
 
-    const QString targetRoot = normalizedAbsolute(destination);
+    const QString targetRoot = files::normalizedAbsolute(destination);
     if (QFileInfo::exists(targetRoot)) {
         return fail(error,
                     QStringLiteral("Export destination already exists: %1").arg(targetRoot));
     }
-    if (pathIsWithin(targetRoot, asset.assetRoot)) {
+    if (files::isWithin(targetRoot, asset.assetRoot)) {
         return fail(error,
                     QStringLiteral("Export destination cannot be inside the source IP"));
     }
@@ -544,7 +420,7 @@ bool AssetLibraryService::exportVersion(const AssetRecord &asset,
     }
 
     QString operationError;
-    if (!copyPayload(sourceRoot, stagingRoot, nullptr, &operationError)) {
+    if (!copyPayload(sourceRoot, stagingRoot, &operationError)) {
         QDir(stagingRoot).removeRecursively();
         return fail(error, operationError);
     }

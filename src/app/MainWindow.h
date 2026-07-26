@@ -10,12 +10,11 @@
 #include <optional>
 
 class QAction;
-class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
+class QSortFilterProxyModel;
 class QTableView;
-class QTabWidget;
 class QTimer;
 class QTreeWidget;
 
@@ -30,9 +29,7 @@ public:
 
 private:
     void buildUi();
-    void buildMenus();
     void runSearch();
-    void refreshTagFilter();
     void updateDetails(const AssetRecord *asset);
     void populateFiles(const AssetRecord &asset);
     void populateVersions(const AssetRecord &asset);
@@ -45,7 +42,6 @@ private:
     void createCurrentVersion();
     void exportCurrentVersion();
     void openCurrentFolder();
-    void copyCurrentLink();
     void saveLibrarySetting();
 
     [[nodiscard]] const AssetRecord *currentRecord() const;
@@ -55,29 +51,23 @@ private:
     LibraryController *m_controller = nullptr;
     AssetLibraryService m_libraryService;
     std::optional<ActivationRequest> m_pendingActivation;
+    bool m_loaded = false;
 
     QLineEdit *m_searchEdit = nullptr;
-    QComboBox *m_tagFilter = nullptr;
     QTableView *m_assetTable = nullptr;
     AssetTableModel *m_tableModel = nullptr;
-    AssetFilterProxyModel *m_proxyModel = nullptr;
+    QSortFilterProxyModel *m_proxyModel = nullptr;
     QLabel *m_nameLabel = nullptr;
     QTreeWidget *m_infoTree = nullptr;
     QPlainTextEdit *m_description = nullptr;
     QTreeWidget *m_fileTree = nullptr;
-    QPlainTextEdit *m_sourcePreview = nullptr;
     QTreeWidget *m_versionTree = nullptr;
-    QTabWidget *m_tabs = nullptr;
     QTimer *m_searchTimer = nullptr;
 
     QAction *m_editAction = nullptr;
     QAction *m_versionAction = nullptr;
     QAction *m_exportAction = nullptr;
     QAction *m_openFolderAction = nullptr;
-    QAction *m_copyLinkAction = nullptr;
-
-    QList<AssetRecord> m_assets;
-    QList<ScanIssue> m_scanIssues;
 };
 
 } // namespace xips

@@ -18,9 +18,6 @@ QString defaultLibraryPath()
 {
     QSettings settings;
     QString saved = settings.value(QStringLiteral("library/root")).toString();
-    if (saved.isEmpty()) {
-        saved = settings.value(QStringLiteral("library/primary")).toString();
-    }
     if (QFileInfo(saved).isDir()) {
         return QFileInfo(saved).absoluteFilePath();
     }

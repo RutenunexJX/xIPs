@@ -1,4 +1,4 @@
 # Reset Generator
 
-The example demonstrates a relocatable Module asset with RTL, constraints,
-testbench metadata, tool constraints, and an optional package dependency.
+The example is a portable IP directory containing RTL, a testbench,
+constraints, and documentation. xIPs treats every payload file uniformly.

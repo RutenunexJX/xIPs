@@ -3,7 +3,6 @@
 #include "assetcore/Asset.h"
 
 #include <QAbstractTableModel>
-#include <QSortFilterProxyModel>
 
 namespace xips {
 
@@ -32,25 +31,9 @@ public:
 
     void setHits(QList<SearchHit> hits);
     [[nodiscard]] const AssetRecord *recordAt(int row) const;
-    [[nodiscard]] const SearchHit *hitAt(int row) const;
 
 private:
     QList<SearchHit> m_hits;
-};
-
-class AssetFilterProxyModel final : public QSortFilterProxyModel {
-    Q_OBJECT
-
-public:
-    explicit AssetFilterProxyModel(QObject *parent = nullptr);
-    void setTagFilter(const QString &tag);
-
-protected:
-    bool filterAcceptsRow(int sourceRow,
-                          const QModelIndex &sourceParent) const override;
-
-private:
-    QString m_tag;
 };
 
 } // namespace xips

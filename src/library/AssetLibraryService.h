@@ -12,7 +12,6 @@ namespace xips {
 struct IpMetadata {
     QString id;
     QString name;
-    QString version;
     QString description;
     QStringList tags;
 };
