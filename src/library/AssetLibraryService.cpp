@@ -83,6 +83,135 @@ Manifest makeManifest(const AssetMetadata &metadata)
     return manifest;
 }
 
+struct SourcePayload {
+    QString root;
+    QStringList files;
+    bool singleFile = false;
+};
+
+bool resolveSourcePayload(const QString &sourcePath,
+                          SourcePayload &payload,
+                          QString *error)
+{
+    const QString absolute = files::normalizedAbsolute(sourcePath);
+    const QFileInfo info(absolute);
+    if ((!info.isFile() && !info.isDir()) || files::isLinkLike(info)) {
+        return fail(error,
+                    QStringLiteral("Source must be a regular file or directory"));
+    }
+    if (info.isFile()) {
+        if (info.fileName() == QStringLiteral(".xips.json")
+            || info.fileName() == QStringLiteral(".snapshot.json")) {
+            return fail(error,
+                        QStringLiteral("xIPs metadata files cannot be used as payload"));
+        }
+        payload.root = info.absolutePath();
+        payload.files = {info.fileName()};
+        payload.singleFile = true;
+        return true;
+    }
+    payload.root = absolute;
+    if (!files::collectPayloadFiles(payload.root,
+                                    payload.files,
+                                    files::LinkPolicy::Reject,
+                                    error)) {
+        return false;
+    }
+    if (payload.files.isEmpty()) {
+        return fail(error, QStringLiteral("Source directory has no payload files"));
+    }
+    return true;
+}
+
+bool filesEqual(const QString &leftPath, const QString &rightPath)
+{
+    const QFileInfo leftInfo(leftPath);
+    const QFileInfo rightInfo(rightPath);
+    if (!leftInfo.isFile() || !rightInfo.isFile()
+        || leftInfo.size() != rightInfo.size()) {
+        return false;
+    }
+    QFile left(leftPath);
+    QFile right(rightPath);
+    if (!left.open(QIODevice::ReadOnly) || !right.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    while (!left.atEnd() && !right.atEnd()) {
+        if (left.read(1024 * 1024) != right.read(1024 * 1024)) {
+            return false;
+        }
+    }
+    return left.atEnd() && right.atEnd();
+}
+
+bool validateAssetRecord(const AssetRecord &asset,
+                         Manifest *manifest,
+                         QString *error)
+{
+    const QString root = files::normalizedAbsolute(asset.assetRoot);
+    const QString expectedManifest = QDir(root).absoluteFilePath(
+        QStringLiteral(".xips.json"));
+    if (!QFileInfo(root).isDir()
+        || files::normalizedAbsolute(asset.manifestPath) != expectedManifest) {
+        return fail(error, QStringLiteral("Selected asset path is invalid"));
+    }
+    const ManifestLoadResult loaded = ManifestService().load(expectedManifest);
+    if (!loaded.ok() || loaded.manifest->id != asset.manifest.id) {
+        return fail(error, QStringLiteral("Selected asset manifest does not match"));
+    }
+    if (manifest) {
+        *manifest = *loaded.manifest;
+    }
+    return true;
+}
+
+QString safeCopyName(QString name, const QString &fallback)
+{
+    static const QRegularExpression invalid(
+        QStringLiteral("[<>:\"/\\\\|?*\\x00-\\x1f]"));
+    name = name.trimmed();
+    name.replace(invalid, QStringLiteral("_"));
+    while (name.endsWith(u'.') || name.endsWith(u' ')) {
+        name.chop(1);
+    }
+    if (name.isEmpty()) {
+        name = fallback;
+    }
+    static const QSet<QString> reserved{
+        QStringLiteral("CON"), QStringLiteral("PRN"), QStringLiteral("AUX"),
+        QStringLiteral("NUL"), QStringLiteral("COM1"), QStringLiteral("COM2"),
+        QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"),
+        QStringLiteral("COM6"), QStringLiteral("COM7"), QStringLiteral("COM8"),
+        QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
+        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"),
+        QStringLiteral("LPT6"), QStringLiteral("LPT7"), QStringLiteral("LPT8"),
+        QStringLiteral("LPT9"),
+    };
+    if (reserved.contains(name.section(u'.', 0, 0).toUpper())) {
+        name.prepend(u'_');
+    }
+    return name;
+}
+
+bool removeDirectory(const QString &path,
+                     const RemovalMode mode,
+                     QString *removedPath)
+{
+    if (mode == RemovalMode::MoveToTrash) {
+        QString trashPath;
+        const bool removed = QFile::moveToTrash(path, &trashPath);
+        if (removed && removedPath) {
+            *removedPath = trashPath;
+        }
+        return removed;
+    }
+    const bool removed = QDir(path).removeRecursively();
+    if (removed && removedPath) {
+        removedPath->clear();
+    }
+    return removed;
+}
+
 AssetMetadata withAvailableIdentity(AssetMetadata metadata,
                                     const QString &libraryRoot,
                                     const QSet<QString> &existingIds)
@@ -326,6 +455,212 @@ bool AssetLibraryService::updateMetadata(const AssetRecord &asset,
     manifest.description = metadata.description.trimmed();
     manifest.tags = cleanedTags(metadata.tags);
     return ManifestService().write(asset.manifestPath, manifest, error);
+}
+
+UpdatePreview AssetLibraryService::previewUpdate(
+    const AssetRecord &asset,
+    const QString &sourcePath) const
+{
+    UpdatePreview preview;
+    QString validationError;
+    if (!validateAssetRecord(asset, nullptr, &validationError)) {
+        preview.error = validationError;
+        return preview;
+    }
+    SourcePayload source;
+    if (!resolveSourcePayload(sourcePath, source, &validationError)) {
+        preview.error = validationError;
+        return preview;
+    }
+    const QString absoluteSource = files::normalizedAbsolute(sourcePath);
+    const QString assetRoot = files::normalizedAbsolute(asset.assetRoot);
+    if (files::isWithin(absoluteSource, assetRoot)
+        || (QFileInfo(absoluteSource).isDir()
+            && files::isWithin(assetRoot, absoluteSource))) {
+        preview.error = QStringLiteral(
+            "Update source and selected asset cannot contain each other");
+        return preview;
+    }
+
+    const QStringList currentFiles = AssetScanner::assetFiles(assetRoot);
+    if (source.singleFile && currentFiles.size() != 1) {
+        preview.error = QStringLiteral(
+            "A single file can only update an asset with one payload file");
+        return preview;
+    }
+    const QSet<QString> currentSet(currentFiles.cbegin(), currentFiles.cend());
+    const QSet<QString> sourceSet(source.files.cbegin(), source.files.cend());
+    for (const QString &relative : source.files) {
+        if (!currentSet.contains(relative)) {
+            preview.addedFiles.append(relative);
+            continue;
+        }
+        const QString currentPath = QDir(assetRoot).absoluteFilePath(relative);
+        const QString replacementPath = QDir(source.root).absoluteFilePath(relative);
+        if (filesEqual(currentPath, replacementPath)) {
+            ++preview.unchangedCount;
+        } else {
+            preview.replacedFiles.append(relative);
+        }
+    }
+    for (const QString &relative : currentFiles) {
+        if (!sourceSet.contains(relative)) {
+            preview.removedFiles.append(relative);
+        }
+    }
+    return preview;
+}
+
+bool AssetLibraryService::updateAsset(const AssetRecord &asset,
+                                      const QString &sourcePath,
+                                      const RemovalMode recoveryMode,
+                                      UpdateAssetResult *result,
+                                      QString *error) const
+{
+    const UpdatePreview preview = previewUpdate(asset, sourcePath);
+    if (!preview.ok()) {
+        return fail(error, preview.error);
+    }
+    Manifest manifest;
+    if (!validateAssetRecord(asset, &manifest, error)) {
+        return false;
+    }
+    SourcePayload source;
+    if (!resolveSourcePayload(sourcePath, source, error)) {
+        return false;
+    }
+
+    const QString assetRoot = files::normalizedAbsolute(asset.assetRoot);
+    const QString parent = QFileInfo(assetRoot).absolutePath();
+    const QString assetName = QFileInfo(assetRoot).fileName();
+    const QString operationId = QUuid::createUuid().toString(
+        QUuid::WithoutBraces);
+    const QString stagingName = QStringLiteral(".xips-create-update-%1")
+                                    .arg(operationId);
+    const QString backupName = QStringLiteral(".xips-create-recovery-%1")
+                                   .arg(operationId);
+    const QString stagingRoot = QDir(parent).absoluteFilePath(stagingName);
+    const QString backupRoot = QDir(parent).absoluteFilePath(backupName);
+    if (!QDir().mkpath(stagingRoot)) {
+        return fail(error, QStringLiteral("Cannot create the update staging directory"));
+    }
+
+    QString operationError;
+    bool copied = false;
+    if (source.singleFile) {
+        copied = QFile::copy(
+            QDir(source.root).absoluteFilePath(source.files.first()),
+            QDir(stagingRoot).absoluteFilePath(source.files.first()));
+        if (!copied) {
+            operationError = QStringLiteral("Cannot copy the replacement file");
+        }
+    } else {
+        copied = copyPayload(source.root, stagingRoot, &operationError);
+    }
+    if (!copied
+        || !ManifestService().write(
+            QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
+            manifest,
+            &operationError)) {
+        QDir(stagingRoot).removeRecursively();
+        return fail(error, operationError);
+    }
+
+    QDir parentDirectory(parent);
+    if (!parentDirectory.rename(assetName, backupName)) {
+        QDir(stagingRoot).removeRecursively();
+        return fail(error, QStringLiteral("Cannot stage the existing working copy"));
+    }
+    const QString backupInternal = QDir(backupRoot).absoluteFilePath(
+        QStringLiteral(".xips"));
+    const QString stagingInternal = QDir(stagingRoot).absoluteFilePath(
+        QStringLiteral(".xips"));
+    const bool hadInternal = QFileInfo(backupInternal).isDir();
+    if (hadInternal && !QDir().rename(backupInternal, stagingInternal)) {
+        const bool rolledBack = parentDirectory.rename(backupName, assetName);
+        QDir(stagingRoot).removeRecursively();
+        return fail(error,
+                    rolledBack
+                        ? QStringLiteral("Cannot preserve saved versions during update")
+                        : QStringLiteral("Cannot preserve saved versions and rollback failed; recovery is at %1")
+                              .arg(backupRoot));
+    }
+    if (!parentDirectory.rename(stagingName, assetName)) {
+        bool internalRolledBack = true;
+        if (hadInternal) {
+            internalRolledBack = QDir().rename(stagingInternal, backupInternal);
+        }
+        const bool rootRolledBack = parentDirectory.rename(backupName, assetName);
+        if (internalRolledBack) {
+            QDir(stagingRoot).removeRecursively();
+        }
+        if (internalRolledBack && rootRolledBack) {
+            return fail(error,
+                        QStringLiteral("Cannot publish the updated working copy"));
+        }
+        QStringList recoveryLocations;
+        if (!rootRolledBack) {
+            recoveryLocations.append(backupRoot);
+        }
+        if (!internalRolledBack) {
+            recoveryLocations.append(stagingInternal);
+        }
+        return fail(
+            error,
+            QStringLiteral("Cannot publish or fully rollback the update; recovery data remains at %1")
+                .arg(recoveryLocations.join(QStringLiteral(", "))));
+    }
+
+    UpdateAssetResult completed;
+    completed.preview = preview;
+    const ScanResult scan = AssetScanner().scan(assetRoot);
+    if (!scan.assets.isEmpty()) {
+        completed.updated = scan.assets.first();
+    } else {
+        completed.updated = asset;
+        completed.updated.files = source.files;
+        completed.updated.fileCount = source.files.size();
+        completed.warning = QStringLiteral(
+            "Updated files were published but the asset could not be rescanned");
+    }
+    QString removedPath;
+    if (!removeDirectory(backupRoot, recoveryMode, &removedPath)) {
+        completed.recoveryPath = backupRoot;
+        completed.warning = QStringLiteral(
+            "Updated files were published; the previous working copy remains at %1")
+                                .arg(backupRoot);
+    } else {
+        completed.recoveryPath = removedPath;
+    }
+    if (result) {
+        *result = completed;
+    }
+    return true;
+}
+
+bool AssetLibraryService::deleteAsset(const QString &libraryRoot,
+                                      const AssetRecord &asset,
+                                      const RemovalMode mode,
+                                      QString *removedPath,
+                                      QString *error) const
+{
+    const QString library = files::normalizedAbsolute(libraryRoot);
+    const QString assetRoot = files::normalizedAbsolute(asset.assetRoot);
+    const QFileInfo rootInfo(assetRoot);
+    if (!QFileInfo(library).isDir() || assetRoot == library
+        || !files::isWithin(assetRoot, library) || files::isLinkLike(rootInfo)) {
+        return fail(error, QStringLiteral("Selected asset is outside the library"));
+    }
+    if (!validateAssetRecord(asset, nullptr, error)) {
+        return false;
+    }
+    if (!removeDirectory(assetRoot, mode, removedPath)) {
+        return fail(error,
+                    mode == RemovalMode::MoveToTrash
+                        ? QStringLiteral("Cannot move the asset to the recycle bin")
+                        : QStringLiteral("Cannot delete the asset"));
+    }
+    return true;
 }
 
 bool AssetLibraryService::changeGroupMembership(
@@ -587,7 +922,7 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
 
 bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
                                         const QString &version,
-                                        const VersionDeleteMode mode,
+                                        const RemovalMode mode,
                                         QString *error) const
 {
     const QString cleanVersion = version.trimmed();
@@ -629,7 +964,7 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
     }
 
     bool removed = false;
-    if (mode == VersionDeleteMode::MoveToTrash) {
+    if (mode == RemovalMode::MoveToTrash) {
         removed = QFile::moveToTrash(found->path);
     } else {
         removed = QDir(found->path).removeRecursively();
@@ -642,90 +977,107 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
                                     &rollbackError);
         }
         return fail(error,
-                    mode == VersionDeleteMode::MoveToTrash
+                    mode == RemovalMode::MoveToTrash
                         ? QStringLiteral("Cannot move the saved version to the trash")
                         : QStringLiteral("Cannot delete the saved version"));
     }
     return true;
 }
 
-bool AssetLibraryService::copyVersionPayload(
-    const AssetRecord &asset,
-    const QString &version,
-    const QString &destinationDirectory,
-    QString *copiedPath,
-    QString *error) const
+CopyPlan AssetLibraryService::copyPlan(const AssetRecord &asset,
+                                       const QString &version) const
 {
-    QString sourceRoot = asset.assetRoot;
-    if (!version.trimmed().isEmpty()) {
+    CopyPlan plan;
+    plan.version = version.trimmed();
+    plan.sourceRoot = asset.assetRoot;
+    if (!plan.version.isEmpty()) {
         QString versionsError;
         const QList<VersionInfo> available = versions(asset.assetRoot,
                                                        &versionsError);
         if (!versionsError.isEmpty()) {
-            return fail(error, versionsError);
+            plan.error = versionsError;
+            return plan;
         }
         const auto found = std::find_if(
-            available.cbegin(), available.cend(), [&version](const VersionInfo &entry) {
-                return entry.version == version.trimmed();
+            available.cbegin(), available.cend(), [&plan](const VersionInfo &entry) {
+                return entry.version == plan.version;
             });
         if (found == available.cend()) {
-            return fail(error,
-                        QStringLiteral("Version not found: %1")
-                            .arg(version.trimmed()));
+            plan.error = QStringLiteral("Version not found: %1").arg(plan.version);
+            return plan;
         }
-        sourceRoot = found->path;
+        plan.sourceRoot = found->path;
+    } else {
+        QString validationError;
+        if (!validateAssetRecord(asset, nullptr, &validationError)) {
+            plan.error = validationError;
+            return plan;
+        }
     }
+    plan.files = AssetScanner::assetFiles(plan.sourceRoot);
+    if (plan.files.isEmpty()) {
+        plan.error = QStringLiteral("The selected asset has no payload files");
+        return plan;
+    }
+    plan.suggestedName = plan.isSingleFile()
+                             ? QFileInfo(plan.files.first()).fileName()
+                             : safeCopyName(asset.manifest.name,
+                                            asset.manifest.id);
+    return plan;
+}
 
-    const QString destinationRoot = files::normalizedAbsolute(
-        destinationDirectory);
-    if (!QFileInfo(destinationRoot).isDir()) {
-        return fail(error, QStringLiteral("Copy destination is not a directory"));
+bool AssetLibraryService::copyVersionPayload(
+    const AssetRecord &asset,
+    const QString &version,
+    const QString &destinationPath,
+    QString *copiedPath,
+    QString *error) const
+{
+    const CopyPlan plan = copyPlan(asset, version);
+    if (!plan.ok()) {
+        return fail(error, plan.error);
     }
-    if (files::isWithin(destinationRoot, sourceRoot)) {
+    const QString targetPath = files::normalizedAbsolute(destinationPath);
+    if (files::isWithin(targetPath, plan.sourceRoot)) {
         return fail(error,
                     QStringLiteral("Copy destination cannot be inside the source asset"));
     }
-    const QStringList payload = AssetScanner::assetFiles(sourceRoot);
-    if (payload.isEmpty()) {
-        return fail(error, QStringLiteral("The selected asset has no payload files"));
+    if (QFileInfo::exists(targetPath)) {
+        return fail(error,
+                    QStringLiteral("Copy destination already exists: %1")
+                        .arg(targetPath));
+    }
+    const QString parent = QFileInfo(targetPath).absolutePath();
+    const QString targetName = QFileInfo(targetPath).fileName();
+    if (!QFileInfo(parent).isDir() || targetName.isEmpty()) {
+        return fail(error,
+                    QStringLiteral("Copy destination parent is not a directory"));
     }
 
-    if (payload.size() == 1) {
-        const QString source = QDir(sourceRoot).absoluteFilePath(payload.first());
-        const QString target = QDir(destinationRoot).absoluteFilePath(
-            QFileInfo(payload.first()).fileName());
-        if (QFileInfo::exists(target)) {
+    if (plan.isSingleFile()) {
+        const QString source = QDir(plan.sourceRoot).absoluteFilePath(
+            plan.files.first());
+        if (!QFile::copy(source, targetPath)) {
             return fail(error,
-                        QStringLiteral("Copy destination already exists: %1")
-                            .arg(target));
-        }
-        if (!QFile::copy(source, target)) {
-            return fail(error,
-                        QStringLiteral("Cannot copy %1 to %2").arg(source, target));
+                        QStringLiteral("Cannot copy %1 to %2")
+                            .arg(source, targetPath));
         }
         if (copiedPath) {
-            *copiedPath = target;
+            *copiedPath = targetPath;
         }
         return true;
     }
 
-    const QString targetRoot = QDir(destinationRoot).absoluteFilePath(
-        asset.manifest.id);
-    if (QFileInfo::exists(targetRoot)) {
-        return fail(error,
-                    QStringLiteral("Copy destination already exists: %1")
-                        .arg(targetRoot));
-    }
     const QString stagingName = QStringLiteral(".xips-copy-%1")
                                     .arg(QUuid::createUuid().toString(
                                         QUuid::WithoutBraces));
-    const QString stagingRoot = QDir(destinationRoot).absoluteFilePath(stagingName);
+    const QString stagingRoot = QDir(parent).absoluteFilePath(stagingName);
     if (!QDir().mkpath(stagingRoot)) {
         return fail(error, QStringLiteral("Cannot create the copy staging directory"));
     }
     QString copyError;
-    if (!copyPayload(sourceRoot, stagingRoot, &copyError)
-        || !QDir(destinationRoot).rename(stagingName, asset.manifest.id)) {
+    if (!copyPayload(plan.sourceRoot, stagingRoot, &copyError)
+        || !QDir(parent).rename(stagingName, targetName)) {
         QDir(stagingRoot).removeRecursively();
         return fail(error,
                     copyError.isEmpty()
@@ -733,7 +1085,7 @@ bool AssetLibraryService::copyVersionPayload(
                         : copyError);
     }
     if (copiedPath) {
-        *copiedPath = targetRoot;
+        *copiedPath = targetPath;
     }
     return true;
 }

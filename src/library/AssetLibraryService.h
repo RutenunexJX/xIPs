@@ -41,7 +41,35 @@ struct WorkingCopyState {
     QString error;
 };
 
-enum class VersionDeleteMode {
+struct UpdatePreview {
+    QStringList addedFiles;
+    QStringList replacedFiles;
+    QStringList removedFiles;
+    qsizetype unchangedCount = 0;
+    QString error;
+
+    [[nodiscard]] bool ok() const { return error.isEmpty(); }
+};
+
+struct UpdateAssetResult {
+    AssetRecord updated;
+    UpdatePreview preview;
+    QString recoveryPath;
+    QString warning;
+};
+
+struct CopyPlan {
+    QString version;
+    QString sourceRoot;
+    QStringList files;
+    QString suggestedName;
+    QString error;
+
+    [[nodiscard]] bool ok() const { return error.isEmpty(); }
+    [[nodiscard]] bool isSingleFile() const { return files.size() == 1; }
+};
+
+enum class RemovalMode {
     MoveToTrash,
     Permanent
 };
@@ -64,6 +92,19 @@ public:
     bool updateMetadata(const AssetRecord &asset,
                         const AssetMetadata &metadata,
                         QString *error = nullptr) const;
+    [[nodiscard]] UpdatePreview previewUpdate(
+        const AssetRecord &asset,
+        const QString &sourcePath) const;
+    bool updateAsset(const AssetRecord &asset,
+                     const QString &sourcePath,
+                     RemovalMode recoveryMode = RemovalMode::MoveToTrash,
+                     UpdateAssetResult *result = nullptr,
+                     QString *error = nullptr) const;
+    bool deleteAsset(const QString &libraryRoot,
+                     const AssetRecord &asset,
+                     RemovalMode mode = RemovalMode::MoveToTrash,
+                     QString *removedPath = nullptr,
+                     QString *error = nullptr) const;
     bool changeGroupMembership(const QList<AssetRecord> &assets,
                                const QString &oldGroup,
                                const QString &newGroup,
@@ -81,11 +122,13 @@ public:
         const AssetRecord &asset) const;
     bool deleteVersion(const AssetRecord &asset,
                        const QString &version,
-                       VersionDeleteMode mode = VersionDeleteMode::MoveToTrash,
+                       RemovalMode mode = RemovalMode::MoveToTrash,
                        QString *error = nullptr) const;
+    [[nodiscard]] CopyPlan copyPlan(const AssetRecord &asset,
+                                    const QString &version) const;
     bool copyVersionPayload(const AssetRecord &asset,
                             const QString &version,
-                            const QString &destinationDirectory,
+                            const QString &destinationPath,
                             QString *copiedPath = nullptr,
                             QString *error = nullptr) const;
 };

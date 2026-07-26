@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -12,6 +13,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QFutureWatcher>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -19,11 +21,13 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMessageBox>
 #include <QMenu>
 #include <QMimeData>
 #include <QMap>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QSet>
 #include <QSettings>
 #include <QShortcut>
@@ -43,6 +47,7 @@
 #include <QHBoxLayout>
 #include <QtConcurrent>
 
+#include <algorithm>
 #include <utility>
 
 namespace xips {
@@ -56,19 +61,6 @@ struct GroupSummary {
     QString name;
     int count = 0;
 };
-
-QString formatBytes(const qint64 bytes)
-{
-    if (bytes < 1024) {
-        return QStringLiteral("%1 B").arg(bytes);
-    }
-    if (bytes < 1024 * 1024) {
-        return QStringLiteral("%1 KiB").arg(
-            static_cast<double>(bytes) / 1024.0, 0, 'f', 1);
-    }
-    return QStringLiteral("%1 MiB").arg(
-        static_cast<double>(bytes) / (1024.0 * 1024.0), 0, 'f', 1);
-}
 
 void addInfoRow(QTreeWidget *tree, const QString &field, const QString &value)
 {
@@ -87,6 +79,7 @@ bool hasGroup(const AssetRecord &asset, const QString &group)
 
 bool editMetadata(QWidget *parent,
                   const QString &title,
+                  const QStringList &availableGroups,
                   AssetMetadata &metadata)
 {
     QDialog dialog(parent);
@@ -98,15 +91,26 @@ bool editMetadata(QWidget *parent,
 
     auto *name = new QLineEdit(metadata.name, &dialog);
     name->setObjectName(QStringLiteral("ipNameEdit"));
-    auto *tags = new QLineEdit(metadata.tags.join(QStringLiteral(", ")), &dialog);
-    tags->setObjectName(QStringLiteral("groupEdit"));
-    tags->setPlaceholderText(QStringLiteral("comma-separated, for example AXI, UART"));
+    auto *groups = new QListWidget(&dialog);
+    groups->setObjectName(QStringLiteral("groupChecklist"));
+    groups->setMaximumHeight(130);
+    for (const QString &group : availableGroups) {
+        auto *item = new QListWidgetItem(group, groups);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(metadata.tags.contains(group, Qt::CaseInsensitive)
+                                ? Qt::Checked
+                                : Qt::Unchecked);
+    }
+    auto *newGroup = new QLineEdit(&dialog);
+    newGroup->setObjectName(QStringLiteral("newGroupEdit"));
+    newGroup->setPlaceholderText(QStringLiteral("Optional new group"));
     auto *description = new QPlainTextEdit(metadata.description, &dialog);
     description->setPlaceholderText(QStringLiteral("What this asset provides"));
     description->setMaximumBlockCount(100);
 
     form->addRow(QStringLiteral("Name"), name);
-    form->addRow(QStringLiteral("Groups"), tags);
+    form->addRow(QStringLiteral("Groups"), groups);
+    form->addRow(QStringLiteral("New group"), newGroup);
     form->addRow(QStringLiteral("Description"), description);
     layout->addLayout(form);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok
@@ -129,23 +133,73 @@ bool editMetadata(QWidget *parent,
     }
     metadata.name = name->text().trimmed();
     metadata.description = description->toPlainText().trimmed();
-    QString tagText = tags->text();
-    tagText.replace(u';', u',');
-    metadata.tags = tagText.split(u',', Qt::SkipEmptyParts);
-    for (QString &tag : metadata.tags) {
-        tag = tag.trimmed();
+    metadata.tags.clear();
+    for (int index = 0; index < groups->count(); ++index) {
+        const QListWidgetItem *item = groups->item(index);
+        if (item->checkState() == Qt::Checked) {
+            metadata.tags.append(item->text());
+        }
+    }
+    const QString createdGroup = newGroup->text().trimmed();
+    if (!createdGroup.isEmpty()
+        && !metadata.tags.contains(createdGroup, Qt::CaseInsensitive)) {
+        metadata.tags.append(createdGroup);
     }
     return true;
 }
 
+QStringList groupNames(const QList<AssetRecord> &assets)
+{
+    QStringList groups;
+    for (const AssetRecord &asset : assets) {
+        for (const QString &rawGroup : asset.manifest.tags) {
+            const QString group = rawGroup.trimmed();
+            if (!group.isEmpty()
+                && !groups.contains(group, Qt::CaseInsensitive)) {
+                groups.append(group);
+            }
+        }
+    }
+    std::sort(groups.begin(), groups.end(), [](const QString &left,
+                                                const QString &right) {
+        return QString::compare(left, right, Qt::CaseInsensitive) < 0;
+    });
+    return groups;
+}
+
+QString updatePreviewText(const UpdatePreview &preview)
+{
+    QString text = QStringLiteral("Add %1  |  Replace %2  |  Remove %3  |  Unchanged %4")
+                       .arg(preview.addedFiles.size())
+                       .arg(preview.replacedFiles.size())
+                       .arg(preview.removedFiles.size())
+                       .arg(preview.unchangedCount);
+    if (!preview.removedFiles.isEmpty()) {
+        QStringList examples = preview.removedFiles.mid(0, 4);
+        for (QString &path : examples) {
+            path = QDir::toNativeSeparators(path);
+        }
+        text += QStringLiteral("\nFiles removed from the working copy: %1")
+                    .arg(examples.join(QStringLiteral(", ")));
+        if (preview.removedFiles.size() > examples.size()) {
+            text += QStringLiteral(" and %1 more")
+                        .arg(preview.removedFiles.size() - examples.size());
+        }
+    }
+    return text;
+}
+
 } // namespace
 
-MainWindow::MainWindow(QString libraryRoot, QWidget *parent)
+MainWindow::MainWindow(QString libraryRoot,
+                       QWidget *parent,
+                       const RemovalMode removalMode)
     : QMainWindow(parent)
     , m_libraryRoot(libraryRoot.trimmed().isEmpty()
                         ? QString()
                         : QFileInfo(libraryRoot).absoluteFilePath())
     , m_controller(new LibraryController(this))
+    , m_removalMode(removalMode)
 {
     buildUi();
 
@@ -171,6 +225,22 @@ MainWindow::MainWindow(QString libraryRoot, QWidget *parent)
                                   .arg(m_lastProblems.size());
                 }
                 statusBar()->showMessage(status);
+                if (!m_undoImportAssets.isEmpty()) {
+                    QString message = QStringLiteral("Added %1 asset(s) to the library")
+                                          .arg(m_undoImportAssets.size());
+                    if (!errors.isEmpty()) {
+                        message += QStringLiteral("; %1 item(s) were skipped")
+                                       .arg(errors.size());
+                    }
+                    showNotice(message,
+                               QStringLiteral("Undo"),
+                               [this] { undoLastImport(); });
+                } else if (!errors.isEmpty()) {
+                    showNotice(QStringLiteral("%1 library problem(s) need review")
+                                   .arg(errors.size()),
+                               QStringLiteral("Review"),
+                               [this] { showProblems(); });
+                }
                 if (m_pendingActivation) {
                     const ActivationRequest request = *m_pendingActivation;
                     m_pendingActivation.reset();
@@ -186,6 +256,9 @@ MainWindow::MainWindow(QString libraryRoot, QWidget *parent)
                 }
                 m_problemAction->setEnabled(true);
                 statusBar()->showMessage(message);
+                showNotice(message,
+                           QStringLiteral("Review"),
+                           [this] { showProblems(); });
             });
     if (m_libraryRoot.isEmpty()) {
         setLibraryReady(false);
@@ -220,7 +293,7 @@ void MainWindow::buildUi()
     addButton->setMenu(addMenu);
     toolbar->addWidget(addButton);
 
-    m_copyAction = toolbar->addAction(QStringLiteral("Copy to..."));
+    m_copyAction = toolbar->addAction(QStringLiteral("Copy working copy..."));
     m_copyAction->setObjectName(QStringLiteral("copyAction"));
     connect(m_copyAction,
             &QAction::triggered,
@@ -234,6 +307,10 @@ void MainWindow::buildUi()
         QStringLiteral("Search assets, groups, or file names"));
     m_searchEdit->setMinimumWidth(340);
     toolbar->addWidget(m_searchEdit);
+    m_searchScopeLabel = new QLabel(QStringLiteral("Scope: All assets"), toolbar);
+    m_searchScopeLabel->setObjectName(QStringLiteral("searchScopeLabel"));
+    m_searchScopeLabel->setMinimumWidth(110);
+    toolbar->addWidget(m_searchScopeLabel);
 
     auto *moreButton = new QToolButton(toolbar);
     moreButton->setObjectName(QStringLiteral("moreButton"));
@@ -247,6 +324,19 @@ void MainWindow::buildUi()
             &QAction::triggered,
             m_controller,
             &LibraryController::rebuild);
+    moreMenu->addSeparator();
+    m_updateAction = moreMenu->addAction(QStringLiteral("Update selected asset from..."));
+    m_updateAction->setObjectName(QStringLiteral("updateAssetAction"));
+    connect(m_updateAction,
+            &QAction::triggered,
+            this,
+            &MainWindow::updateCurrentAsset);
+    m_deleteAssetAction = moreMenu->addAction(QStringLiteral("Delete selected asset..."));
+    m_deleteAssetAction->setObjectName(QStringLiteral("deleteAssetAction"));
+    connect(m_deleteAssetAction,
+            &QAction::triggered,
+            this,
+            &MainWindow::deleteCurrentAsset);
     moreMenu->addSeparator();
     m_problemAction = moreMenu->addAction(QStringLiteral("Problems..."));
     m_problemAction->setObjectName(QStringLiteral("problemAction"));
@@ -271,13 +361,19 @@ void MainWindow::buildUi()
     m_searchTimer = new QTimer(this);
     m_searchTimer->setSingleShot(true);
     m_searchTimer->setInterval(120);
-    connect(m_searchEdit, &QLineEdit::textChanged, this, [this] {
+    connect(m_searchEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
+        const bool empty = text.trimmed().isEmpty();
+        if (m_searchWasEmpty && !empty && !currentGroup().isEmpty()
+            && m_groupTree->topLevelItemCount() > 0) {
+            m_groupTree->setCurrentItem(m_groupTree->topLevelItem(0));
+        }
+        m_searchWasEmpty = empty;
         m_searchTimer->start();
     });
     connect(m_searchTimer, &QTimer::timeout, this, &MainWindow::runSearch);
     m_tableModel = new AssetTableModel(this);
     m_proxyModel = new QSortFilterProxyModel(this);
-    m_proxyModel->setSortRole(Qt::UserRole);
+    m_proxyModel->setSortRole(AssetTableModel::SortRole);
     m_proxyModel->setDynamicSortFilter(true);
     m_proxyModel->setSourceModel(m_tableModel);
     m_assetTable = new QTableView(this);
@@ -289,11 +385,12 @@ void MainWindow::buildUi()
     m_assetTable->sortByColumn(AssetTableModel::NameColumn, Qt::AscendingOrder);
     m_assetTable->setAlternatingRowColors(true);
     m_assetTable->setShowGrid(false);
-    m_assetTable->setWordWrap(false);
+    m_assetTable->setWordWrap(true);
     m_assetTable->verticalHeader()->hide();
     m_assetTable->verticalHeader()->setDefaultSectionSize(25);
     m_assetTable->horizontalHeader()->setStretchLastSection(true);
     m_assetTable->setColumnWidth(AssetTableModel::NameColumn, 240);
+    m_assetTable->setColumnWidth(AssetTableModel::GroupsColumn, 130);
     m_assetTable->setColumnWidth(AssetTableModel::VersionColumn, 100);
 
     auto *mainSplitter = new QSplitter(Qt::Horizontal, this);
@@ -312,7 +409,7 @@ void MainWindow::buildUi()
     m_groupTree->setMinimumWidth(150);
     m_groupTree->setMaximumWidth(240);
     m_groupTree->setToolTip(
-        QStringLiteral("Groups are created from the comma-separated Groups field."));
+        QStringLiteral("Select a group to filter assets. Starting a new search uses all assets."));
     m_groupTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_groupTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     groupLayout->addWidget(m_groupTree, 1);
@@ -342,7 +439,20 @@ void MainWindow::buildUi()
     groupButton->setMenu(groupMenu);
     groupLayout->addWidget(groupButton);
     mainSplitter->addWidget(groupPane);
-    mainSplitter->addWidget(m_assetTable);
+    auto *resultsPane = new QWidget(mainSplitter);
+    auto *resultsLayout = new QVBoxLayout(resultsPane);
+    resultsLayout->setContentsMargins(0, 0, 0, 0);
+    m_resultsStack = new QStackedWidget(resultsPane);
+    m_resultsStack->setObjectName(QStringLiteral("resultsStack"));
+    m_emptyResultsLabel = new QLabel(resultsPane);
+    m_emptyResultsLabel->setObjectName(QStringLiteral("emptyResultsLabel"));
+    m_emptyResultsLabel->setAlignment(Qt::AlignCenter);
+    m_emptyResultsLabel->setWordWrap(true);
+    m_emptyResultsLabel->setText(QStringLiteral("No assets in this library"));
+    m_resultsStack->addWidget(m_assetTable);
+    m_resultsStack->addWidget(m_emptyResultsLabel);
+    resultsLayout->addWidget(m_resultsStack);
+    mainSplitter->addWidget(resultsPane);
     auto *details = new QWidget(mainSplitter);
     auto *detailsLayout = new QVBoxLayout(details);
     detailsLayout->setContentsMargins(8, 4, 0, 0);
@@ -372,7 +482,7 @@ void MainWindow::buildUi()
     m_infoTree->setHeaderLabels({QStringLiteral("Field"), QStringLiteral("Value")});
     m_infoTree->setRootIsDecorated(false);
     m_infoTree->setAlternatingRowColors(true);
-    m_infoTree->setMaximumHeight(190);
+    m_infoTree->setMaximumHeight(150);
     m_infoTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_infoTree->header()->setStretchLastSection(true);
     detailsLayout->addWidget(m_infoTree);
@@ -392,12 +502,12 @@ void MainWindow::buildUi()
     filesLayout->setContentsMargins(0, 0, 0, 0);
     m_fileTree = new QTreeWidget(filesPage);
     m_fileTree->setObjectName(QStringLiteral("fileTree"));
-    m_fileTree->setHeaderLabels({QStringLiteral("File"), QStringLiteral("Size")});
+    m_fileTree->setColumnCount(1);
+    m_fileTree->setHeaderLabels({QStringLiteral("File")});
     m_fileTree->setRootIsDecorated(false);
     m_fileTree->setAlternatingRowColors(true);
-    m_fileTree->header()->setStretchLastSection(false);
+    m_fileTree->header()->setStretchLastSection(true);
     m_fileTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_fileTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     filesLayout->addWidget(m_fileTree);
 
     auto *versionsPage = new QWidget(tabs);
@@ -421,6 +531,7 @@ void MainWindow::buildUi()
             this,
             &MainWindow::deleteSelectedVersion);
     auto *deleteVersionButton = new QToolButton(versionsPage);
+    deleteVersionButton->setObjectName(QStringLiteral("deleteVersionButton"));
     deleteVersionButton->setDefaultAction(m_deleteVersionAction);
     versionsLayout->addWidget(deleteVersionButton, 0, Qt::AlignLeft);
     tabs->addTab(filesPage, QStringLiteral("Files"));
@@ -461,7 +572,41 @@ void MainWindow::buildUi()
     welcomeLayout->addStretch(1);
     m_contentStack->addWidget(m_welcomePage);
     m_contentStack->addWidget(m_libraryPage);
-    setCentralWidget(m_contentStack);
+    auto *central = new QWidget(this);
+    auto *centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+    m_noticeFrame = new QFrame(central);
+    m_noticeFrame->setObjectName(QStringLiteral("noticeBanner"));
+    m_noticeFrame->setFrameShape(QFrame::StyledPanel);
+    auto *noticeLayout = new QHBoxLayout(m_noticeFrame);
+    noticeLayout->setContentsMargins(10, 5, 6, 5);
+    m_noticeLabel = new QLabel(m_noticeFrame);
+    m_noticeLabel->setObjectName(QStringLiteral("noticeLabel"));
+    m_noticeLabel->setWordWrap(true);
+    noticeLayout->addWidget(m_noticeLabel, 1);
+    m_noticeActionButton = new QToolButton(m_noticeFrame);
+    m_noticeActionButton->setObjectName(QStringLiteral("noticeActionButton"));
+    noticeLayout->addWidget(m_noticeActionButton);
+    auto *dismissNotice = new QToolButton(m_noticeFrame);
+    dismissNotice->setObjectName(QStringLiteral("dismissNoticeButton"));
+    dismissNotice->setText(QStringLiteral("Close"));
+    noticeLayout->addWidget(dismissNotice);
+    connect(m_noticeActionButton, &QToolButton::clicked, this, [this] {
+        std::function<void()> callback = std::move(m_noticeCallback);
+        clearNotice();
+        if (callback) {
+            callback();
+        }
+    });
+    connect(dismissNotice, &QToolButton::clicked, this, [this] {
+        m_undoImportAssets.clear();
+        clearNotice();
+    });
+    m_noticeFrame->hide();
+    centralLayout->addWidget(m_noticeFrame);
+    centralLayout->addWidget(m_contentStack, 1);
+    setCentralWidget(central);
     statusBar()->setSizeGripEnabled(true);
 
     connect(m_assetTable->selectionModel(),
@@ -473,6 +618,8 @@ void MainWindow::buildUi()
                 m_versionAction->setEnabled(selected);
                 m_copyAction->setEnabled(selected);
                 m_openAction->setEnabled(selected);
+                m_updateAction->setEnabled(selected);
+                m_deleteAssetAction->setEnabled(selected);
                 updateDetails(currentRecord());
             });
     connect(m_assetTable, &QTableView::doubleClicked,
@@ -483,7 +630,12 @@ void MainWindow::buildUi()
             &QTreeWidget::currentItemChanged,
             this,
             [this](QTreeWidgetItem *, QTreeWidgetItem *) {
-                m_deleteVersionAction->setEnabled(!selectedVersion().isEmpty());
+                const QString version = selectedVersion();
+                m_deleteVersionAction->setEnabled(!version.isEmpty());
+                m_copyAction->setText(
+                    version.isEmpty()
+                        ? QStringLiteral("Copy working copy...")
+                        : QStringLiteral("Copy version %1...").arg(version));
             });
     connect(m_groupTree,
             &QTreeWidget::currentItemChanged,
@@ -510,7 +662,10 @@ void MainWindow::buildUi()
     m_versionAction->setEnabled(false);
     m_copyAction->setEnabled(false);
     m_openAction->setEnabled(false);
+    m_updateAction->setEnabled(false);
+    m_deleteAssetAction->setEnabled(false);
     m_deleteVersionAction->setEnabled(false);
+    m_deleteVersionAction->setVisible(false);
 }
 
 void MainWindow::runSearch()
@@ -518,6 +673,7 @@ void MainWindow::runSearch()
     const AssetRecord *selected = currentRecord();
     const QString selectedId = selected ? selected->manifest.id : QString();
     const bool hasQuery = !m_searchEdit->text().trimmed().isEmpty();
+    const QString query = m_searchEdit->text().trimmed();
     if (hasQuery) {
         m_assetTable->setSortingEnabled(false);
         m_proxyModel->sort(-1);
@@ -536,7 +692,35 @@ void MainWindow::runSearch()
         }
         hits.swap(grouped);
     }
+    m_searchScopeLabel->setText(
+        group.isEmpty()
+            ? QStringLiteral("Scope: All assets")
+            : QStringLiteral("Scope: %1").arg(group));
+    const bool hasResults = !hits.isEmpty();
     m_tableModel->setHits(std::move(hits));
+    m_assetTable->verticalHeader()->setDefaultSectionSize(hasQuery ? 44 : 25);
+    if (hasQuery && hasResults) {
+        m_assetTable->resizeRowsToContents();
+    }
+    if (hasResults) {
+        m_resultsStack->setCurrentWidget(m_assetTable);
+    } else {
+        QString emptyText;
+        if (hasQuery) {
+            emptyText = group.isEmpty()
+                            ? QStringLiteral("No assets match ‘%1’ in all assets")
+                                  .arg(query)
+                            : QStringLiteral("No assets match ‘%1’ in group %2")
+                                  .arg(query, group);
+        } else if (!group.isEmpty()) {
+            emptyText = QStringLiteral("No assets in group %1").arg(group);
+        } else {
+            emptyText = QStringLiteral(
+                "No assets in this library\nUse Add to copy a file or folder into it");
+        }
+        m_emptyResultsLabel->setText(emptyText);
+        m_resultsStack->setCurrentWidget(m_emptyResultsLabel);
+    }
     if (!hasQuery) {
         m_assetTable->sortByColumn(AssetTableModel::NameColumn, Qt::AscendingOrder);
     }
@@ -600,25 +784,24 @@ void MainWindow::updateDetails(const AssetRecord *asset)
     m_versionTree->clear();
     if (!asset) {
         m_nameLabel->setText(QStringLiteral("No asset selected"));
+        m_openAction->setText(QStringLiteral("Open"));
+        m_copyAction->setText(QStringLiteral("Copy working copy..."));
+        m_deleteVersionAction->setVisible(false);
         return;
     }
 
     m_nameLabel->setText(asset->manifest.name);
-    addInfoRow(m_infoTree,
-               QStringLiteral("Last saved version"),
-               asset->manifest.version.isEmpty() ? QStringLiteral("None")
-                                                 : asset->manifest.version);
+    m_openAction->setText(asset->files.size() == 1
+                              ? QStringLiteral("Open file")
+                              : QStringLiteral("Open folder"));
     m_workingStateItem = new QTreeWidgetItem(
         m_infoTree,
         {QStringLiteral("Working copy"), QStringLiteral("Checking...")});
     addInfoRow(m_infoTree,
                QStringLiteral("Groups"),
-               asset->manifest.tags.join(QStringLiteral(", ")));
-    addInfoRow(m_infoTree,
-               QStringLiteral("Files"),
-               QStringLiteral("%1 (%2)")
-                   .arg(asset->fileCount)
-                   .arg(formatBytes(asset->totalBytes)));
+               asset->manifest.tags.isEmpty()
+                   ? QStringLiteral("None")
+                   : asset->manifest.tags.join(QStringLiteral(", ")));
     addInfoRow(m_infoTree,
                QStringLiteral("Modified"),
                asset->lastModified.toLocalTime().toString(
@@ -665,10 +848,9 @@ void MainWindow::populateFiles(const AssetRecord &asset)
 {
     for (const QString &relative : asset.files) {
         const QString absolute = QDir(asset.assetRoot).absoluteFilePath(relative);
-        const QFileInfo info(absolute);
         auto *item = new QTreeWidgetItem(
             m_fileTree,
-            {QDir::toNativeSeparators(relative), formatBytes(info.size())});
+            {QDir::toNativeSeparators(relative)});
         item->setToolTip(0, absolute);
         item->setData(0, FilePathRole, absolute);
     }
@@ -679,16 +861,16 @@ void MainWindow::populateFiles(const AssetRecord &asset)
 
 void MainWindow::populateVersions(const AssetRecord &asset)
 {
-    auto *working = new QTreeWidgetItem(
-        m_versionTree,
-        {QStringLiteral("Working copy"),
-         asset.lastModified.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))});
-    working->setData(0, VersionRole, QString());
-
     QString error;
     const QList<VersionInfo> versions = m_libraryService.versions(asset.assetRoot, &error);
     if (!error.isEmpty()) {
-        statusBar()->showMessage(error);
+        if (!m_lastProblems.contains(error)) {
+            m_lastProblems.append(error);
+        }
+        m_problemAction->setEnabled(true);
+        showNotice(error,
+                   QStringLiteral("Review"),
+                   [this] { showProblems(); });
     }
     for (const VersionInfo &version : versions) {
         auto *item = new QTreeWidgetItem(
@@ -697,7 +879,10 @@ void MainWindow::populateVersions(const AssetRecord &asset)
              version.createdAt.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))});
         item->setData(0, VersionRole, version.version);
     }
-    m_versionTree->setCurrentItem(working);
+    m_versionTree->setCurrentItem(nullptr);
+    m_deleteVersionAction->setVisible(!versions.isEmpty());
+    m_deleteVersionAction->setEnabled(false);
+    m_copyAction->setText(QStringLiteral("Copy working copy..."));
 }
 
 void MainWindow::selectFirstRow()
@@ -744,6 +929,8 @@ void MainWindow::chooseLibrary()
     m_controller->setLibraryRoot(m_libraryRoot);
     m_loaded = false;
     m_lastProblems.clear();
+    m_undoImportAssets.clear();
+    clearNotice();
     m_problemAction->setEnabled(false);
     saveLibrarySetting();
     setLibraryReady(true);
@@ -788,8 +975,9 @@ void MainWindow::importPaths(const QStringList &sourcePaths)
         m_libraryRoot,
         sourcePaths,
         group.isEmpty() ? QStringList{} : QStringList{group});
-    m_lastProblems = result.errors;
-    m_problemAction->setEnabled(!result.errors.isEmpty());
+    m_lastProblems.append(result.errors);
+    m_lastProblems.removeDuplicates();
+    m_problemAction->setEnabled(!m_lastProblems.isEmpty());
     if (result.created.isEmpty()) {
         QMessageBox::critical(
             this,
@@ -803,12 +991,58 @@ void MainWindow::importPaths(const QStringList &sourcePaths)
         .action = ActivationAction::OpenAsset,
         .value = result.created.first().manifest.id,
     };
+    m_undoImportAssets = result.created;
     QString status = QStringLiteral("Added %1 asset(s)").arg(result.created.size());
     if (!result.errors.isEmpty()) {
-        status += QStringLiteral("; %1 skipped — More > Problems")
+        status += QStringLiteral("; %1 skipped; open More > Problems")
                       .arg(result.errors.size());
     }
     statusBar()->showMessage(status);
+    m_controller->rebuild();
+}
+
+void MainWindow::undoLastImport()
+{
+    const QList<AssetRecord> imported = std::exchange(m_undoImportAssets, {});
+    if (imported.isEmpty()) {
+        return;
+    }
+    int removed = 0;
+    QStringList errors;
+    for (const AssetRecord &asset : imported) {
+        QString error;
+        if (m_libraryService.deleteAsset(m_libraryRoot,
+                                         asset,
+                                         m_removalMode,
+                                         nullptr,
+                                         &error)) {
+            ++removed;
+        } else {
+            errors.append(QStringLiteral("%1: %2")
+                              .arg(asset.manifest.name, error));
+        }
+    }
+    if (!errors.isEmpty()) {
+        m_lastProblems.append(errors);
+        m_lastProblems.removeDuplicates();
+        m_problemAction->setEnabled(true);
+    }
+    if (!errors.isEmpty()) {
+        showNotice(
+            QStringLiteral("Removed %1 imported asset(s); %2 could not be removed")
+                .arg(removed)
+                .arg(errors.size()),
+            QStringLiteral("Review"),
+            [this] { showProblems(); });
+    } else if (removed > 0) {
+        showNotice(
+            QStringLiteral("Removed %1 imported asset(s); source files were unchanged")
+                .arg(removed));
+    } else {
+        showNotice(QStringLiteral("The import could not be undone"),
+                   QStringLiteral("Review"),
+                   [this] { showProblems(); });
+    }
     m_controller->rebuild();
 }
 
@@ -824,7 +1058,10 @@ void MainWindow::editCurrentAsset()
         .description = asset->manifest.description,
         .tags = asset->manifest.tags,
     };
-    if (!editMetadata(this, QStringLiteral("Edit details"), metadata)) {
+    if (!editMetadata(this,
+                      QStringLiteral("Edit details"),
+                      groupNames(m_controller->assets()),
+                      metadata)) {
         return;
     }
     QString error;
@@ -836,6 +1073,190 @@ void MainWindow::editCurrentAsset()
         .action = ActivationAction::OpenAsset,
         .value = asset->manifest.id,
     };
+    m_controller->rebuild();
+}
+
+void MainWindow::updateCurrentAsset()
+{
+    const AssetRecord *asset = currentRecord();
+    if (!asset) {
+        return;
+    }
+    const AssetRecord selectedAsset = *asset;
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("updateAssetDialog"));
+    dialog.setWindowTitle(QStringLiteral("Update working copy"));
+    dialog.resize(650, 260);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *explanation = new QLabel(
+        QStringLiteral("Choose a file or folder that should replace the working copy. "
+                       "Asset details and saved versions remain unchanged."),
+        &dialog);
+    explanation->setWordWrap(true);
+    layout->addWidget(explanation);
+
+    auto *sourceRow = new QHBoxLayout;
+    auto *source = new QLineEdit(&dialog);
+    source->setObjectName(QStringLiteral("updateSourceEdit"));
+    source->setPlaceholderText(QStringLiteral("Replacement file or folder"));
+    sourceRow->addWidget(source, 1);
+    auto *browseFile = new QToolButton(&dialog);
+    browseFile->setObjectName(QStringLiteral("updateBrowseFileButton"));
+    browseFile->setText(QStringLiteral("File..."));
+    sourceRow->addWidget(browseFile);
+    auto *browseFolder = new QToolButton(&dialog);
+    browseFolder->setObjectName(QStringLiteral("updateBrowseFolderButton"));
+    browseFolder->setText(QStringLiteral("Folder..."));
+    sourceRow->addWidget(browseFolder);
+    layout->addLayout(sourceRow);
+
+    auto *preview = new QLabel(
+        QStringLiteral("Choose a replacement source to preview the change."),
+        &dialog);
+    preview->setObjectName(QStringLiteral("updatePreviewLabel"));
+    preview->setWordWrap(true);
+    preview->setMinimumHeight(70);
+    layout->addWidget(preview);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok
+                                            | QDialogButtonBox::Cancel,
+                                        &dialog);
+    buttons->setObjectName(QStringLiteral("updateDialogButtons"));
+    QPushButton *updateButton = buttons->button(QDialogButtonBox::Ok);
+    updateButton->setText(QStringLiteral("Update"));
+    updateButton->setEnabled(false);
+    layout->addWidget(buttons);
+
+    const auto refreshPreview = [&] {
+        const QString path = source->text().trimmed();
+        if (path.isEmpty()) {
+            preview->setText(
+                QStringLiteral("Choose a replacement source to preview the change."));
+            updateButton->setEnabled(false);
+            return;
+        }
+        const UpdatePreview change = m_libraryService.previewUpdate(selectedAsset,
+                                                                    path);
+        if (!change.ok()) {
+            preview->setText(QStringLiteral("Cannot use this source: %1")
+                                 .arg(change.error));
+            updateButton->setEnabled(false);
+            return;
+        }
+        const bool changed = !change.addedFiles.isEmpty()
+                             || !change.replacedFiles.isEmpty()
+                             || !change.removedFiles.isEmpty();
+        preview->setText(changed
+                             ? updatePreviewText(change)
+                             : QStringLiteral("No file changes were found."));
+        updateButton->setEnabled(changed);
+    };
+    connect(source, &QLineEdit::textChanged, &dialog, refreshPreview);
+    connect(browseFile, &QToolButton::clicked, &dialog, [&] {
+        const QString selected = QFileDialog::getOpenFileName(
+            &dialog,
+            QStringLiteral("Choose replacement file"),
+            QDir::homePath(),
+            QStringLiteral("FPGA files (*.v *.vh *.sv *.svh *.vhd *.vhdl *.xdc *.sdc *.tcl *.qsf *.qip *.mif *.mem *.coe);;All files (*)"));
+        if (!selected.isEmpty()) {
+            source->setText(QFileInfo(selected).absoluteFilePath());
+        }
+    });
+    connect(browseFolder, &QToolButton::clicked, &dialog, [&] {
+        const QString selected = QFileDialog::getExistingDirectory(
+            &dialog,
+            QStringLiteral("Choose replacement folder"),
+            QDir::homePath());
+        if (!selected.isEmpty()) {
+            source->setText(QFileInfo(selected).absoluteFilePath());
+        }
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    UpdateAssetResult result;
+    QString error;
+    if (!m_libraryService.updateAsset(selectedAsset,
+                                      source->text().trimmed(),
+                                      m_removalMode,
+                                      &result,
+                                      &error)) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot update asset"),
+                              error);
+        return;
+    }
+    m_undoImportAssets.clear();
+    m_pendingActivation = ActivationRequest{
+        .action = ActivationAction::OpenAsset,
+        .value = selectedAsset.manifest.id,
+    };
+    const QString message = QStringLiteral(
+                                "Updated %1: %2 added, %3 replaced, %4 removed")
+                                .arg(selectedAsset.manifest.name)
+                                .arg(result.preview.addedFiles.size())
+                                .arg(result.preview.replacedFiles.size())
+                                .arg(result.preview.removedFiles.size());
+    if (!result.warning.isEmpty()) {
+        if (!m_lastProblems.contains(result.warning)) {
+            m_lastProblems.append(result.warning);
+        }
+        m_problemAction->setEnabled(true);
+        showNotice(message,
+                   QStringLiteral("Review"),
+                   [this] { showProblems(); });
+    } else {
+        showNotice(message);
+    }
+    m_controller->rebuild();
+}
+
+void MainWindow::deleteCurrentAsset()
+{
+    const AssetRecord *asset = currentRecord();
+    if (!asset) {
+        return;
+    }
+    const AssetRecord selectedAsset = *asset;
+    QString versionsError;
+    const qsizetype savedVersions = m_libraryService.versions(
+        selectedAsset.assetRoot,
+        &versionsError).size();
+    if (!versionsError.isEmpty()) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot inspect asset"),
+                              versionsError);
+        return;
+    }
+    if (QMessageBox::question(
+            this,
+            QStringLiteral("Delete asset"),
+            QStringLiteral("Move '%1' to the recycle bin?\n\n"
+                           "This removes %2 working file(s) and %3 saved version(s) "
+                           "from the library. Original import sources are not changed.")
+                .arg(selectedAsset.manifest.name)
+                .arg(selectedAsset.fileCount)
+                .arg(savedVersions)) != QMessageBox::Yes) {
+        return;
+    }
+    QString error;
+    if (!m_libraryService.deleteAsset(m_libraryRoot,
+                                      selectedAsset,
+                                      m_removalMode,
+                                      nullptr,
+                                      &error)) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot delete asset"),
+                              error);
+        return;
+    }
+    m_undoImportAssets.clear();
+    m_assetTable->clearSelection();
+    updateDetails(nullptr);
+    showNotice(QStringLiteral("Moved '%1' and its saved versions to the recycle bin")
+                   .arg(selectedAsset.manifest.name));
     m_controller->rebuild();
 }
 
@@ -878,24 +1299,171 @@ void MainWindow::copyCurrentVersion()
     if (!asset) {
         return;
     }
-    const QString version = selectedVersion();
-    const QString parent = QFileDialog::getExistingDirectory(
-        this,
-        QStringLiteral("Copy asset files to"),
-        QDir::homePath());
-    if (parent.isEmpty()) {
+    const AssetRecord selectedAsset = *asset;
+    QString versionsError;
+    const QList<VersionInfo> savedVersions = m_libraryService.versions(
+        selectedAsset.assetRoot,
+        &versionsError);
+    if (!versionsError.isEmpty()) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot inspect versions"),
+                              versionsError);
         return;
     }
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("copyDialog"));
+    dialog.setWindowTitle(QStringLiteral("Copy asset files"));
+    dialog.resize(650, 280);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *form = new QFormLayout;
+    auto *version = new QComboBox(&dialog);
+    version->setObjectName(QStringLiteral("copyVersionCombo"));
+    version->addItem(QStringLiteral("Working copy"), QString());
+    for (const VersionInfo &saved : savedVersions) {
+        version->addItem(QStringLiteral("Saved version %1").arg(saved.version),
+                         saved.version);
+    }
+    const QString requestedVersion = selectedVersion();
+    const int requestedIndex = version->findData(requestedVersion);
+    if (requestedIndex >= 0) {
+        version->setCurrentIndex(requestedIndex);
+    }
+    form->addRow(QStringLiteral("Source"), version);
+
+    auto *destinationRow = new QWidget(&dialog);
+    auto *destinationLayout = new QHBoxLayout(destinationRow);
+    destinationLayout->setContentsMargins(0, 0, 0, 0);
+    auto *destination = new QLineEdit(QDir::homePath(), destinationRow);
+    destination->setObjectName(QStringLiteral("copyDestinationEdit"));
+    destinationLayout->addWidget(destination, 1);
+    auto *browse = new QToolButton(destinationRow);
+    browse->setObjectName(QStringLiteral("copyBrowseButton"));
+    browse->setText(QStringLiteral("Browse..."));
+    destinationLayout->addWidget(browse);
+    form->addRow(QStringLiteral("Destination folder"), destinationRow);
+
+    auto *name = new QLineEdit(&dialog);
+    name->setObjectName(QStringLiteral("copyNameEdit"));
+    form->addRow(QStringLiteral("Final name"), name);
+    layout->addLayout(form);
+    auto *finalPath = new QLabel(&dialog);
+    finalPath->setObjectName(QStringLiteral("copyFinalPathLabel"));
+    finalPath->setWordWrap(true);
+    finalPath->setMinimumHeight(60);
+    layout->addWidget(finalPath);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok
+                                            | QDialogButtonBox::Cancel,
+                                        &dialog);
+    buttons->setObjectName(QStringLiteral("copyDialogButtons"));
+    QPushButton *copyButton = buttons->button(QDialogButtonBox::Ok);
+    copyButton->setText(QStringLiteral("Copy"));
+    layout->addWidget(buttons);
+
+    const auto refreshCopy = [&] {
+        const QString versionName = version->currentData().toString();
+        const CopyPlan plan = m_libraryService.copyPlan(selectedAsset,
+                                                        versionName);
+        const QString folder = destination->text().trimmed();
+        const QString outputName = name->text().trimmed();
+        if (!plan.ok()) {
+            finalPath->setText(QStringLiteral("Cannot copy this source: %1")
+                                   .arg(plan.error));
+            copyButton->setEnabled(false);
+            return;
+        }
+        if (!QFileInfo(folder).isDir()) {
+            finalPath->setText(QStringLiteral("Choose an existing destination folder."));
+            copyButton->setEnabled(false);
+            return;
+        }
+        if (outputName.isEmpty() || outputName == QStringLiteral(".")
+            || outputName == QStringLiteral("..")
+            || outputName.contains(u'/') || outputName.contains(u'\\')) {
+            finalPath->setText(QStringLiteral("Enter one file or folder name."));
+            copyButton->setEnabled(false);
+            return;
+        }
+        const QString target = QDir(folder).absoluteFilePath(outputName);
+        const QString sourceText = versionName.isEmpty()
+                                       ? QStringLiteral("working copy")
+                                       : QStringLiteral("saved version %1")
+                                             .arg(versionName);
+        if (QFileInfo::exists(target)) {
+            finalPath->setText(
+                QStringLiteral("Source: %1\nAlready exists: %2")
+                    .arg(sourceText, QDir::toNativeSeparators(target)));
+            copyButton->setEnabled(false);
+            return;
+        }
+        finalPath->setText(QStringLiteral("Source: %1\nFinal path: %2")
+                               .arg(sourceText,
+                                    QDir::toNativeSeparators(target)));
+        copyButton->setEnabled(true);
+    };
+    const auto resetSuggestedName = [&] {
+        const CopyPlan plan = m_libraryService.copyPlan(
+            selectedAsset,
+            version->currentData().toString());
+        name->setText(plan.ok() ? plan.suggestedName : QString());
+        refreshCopy();
+    };
+    connect(version,
+            &QComboBox::currentIndexChanged,
+            &dialog,
+            resetSuggestedName);
+    connect(destination, &QLineEdit::textChanged, &dialog, refreshCopy);
+    connect(name, &QLineEdit::textChanged, &dialog, refreshCopy);
+    connect(browse, &QToolButton::clicked, &dialog, [&] {
+        const QString selected = QFileDialog::getExistingDirectory(
+            &dialog,
+            QStringLiteral("Choose copy destination"),
+            destination->text().trimmed().isEmpty()
+                ? QDir::homePath()
+                : destination->text().trimmed());
+        if (!selected.isEmpty()) {
+            destination->setText(QFileInfo(selected).absoluteFilePath());
+        }
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    resetSuggestedName();
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString versionName = version->currentData().toString();
+    const QString targetPath = QDir(destination->text().trimmed())
+                                   .absoluteFilePath(name->text().trimmed());
     QString error;
     QString copiedPath;
     if (!m_libraryService.copyVersionPayload(
-            *asset, version, parent, &copiedPath, &error)) {
+            selectedAsset, versionName, targetPath, &copiedPath, &error)) {
         QMessageBox::critical(this, QStringLiteral("Cannot copy asset"), error);
         return;
     }
+    m_undoImportAssets.clear();
     statusBar()->showMessage(
         QStringLiteral("Copied to %1")
             .arg(QDir::toNativeSeparators(copiedPath)));
+    const QString destinationToOpen = QFileInfo(copiedPath).isDir()
+                                          ? copiedPath
+                                          : QFileInfo(copiedPath).absolutePath();
+    showNotice(QStringLiteral("Copied %1 to %2")
+                   .arg(versionName.isEmpty()
+                            ? QStringLiteral("working copy")
+                            : QStringLiteral("version %1").arg(versionName),
+                        QDir::toNativeSeparators(copiedPath)),
+               QStringLiteral("Open destination"),
+               [this, destinationToOpen] {
+                   if (!QDesktopServices::openUrl(
+                           QUrl::fromLocalFile(destinationToOpen))) {
+                       QMessageBox::warning(
+                           this,
+                           QStringLiteral("Cannot open destination"),
+                           QDir::toNativeSeparators(destinationToOpen));
+                   }
+               });
 }
 
 void MainWindow::deleteSelectedVersion()
@@ -916,7 +1484,7 @@ void MainWindow::deleteSelectedVersion()
     QString error;
     if (!m_libraryService.deleteVersion(*asset,
                                         version,
-                                        VersionDeleteMode::MoveToTrash,
+                                        m_removalMode,
                                         &error)) {
         QMessageBox::critical(this,
                               QStringLiteral("Cannot delete saved version"),
@@ -927,7 +1495,8 @@ void MainWindow::deleteSelectedVersion()
         .action = ActivationAction::OpenAsset,
         .value = asset->manifest.id,
     };
-    statusBar()->showMessage(
+    m_undoImportAssets.clear();
+    showNotice(
         QStringLiteral("Moved saved version %1 to the recycle bin").arg(version));
     m_controller->rebuild();
 }
@@ -1066,6 +1635,25 @@ void MainWindow::showProblems()
     m_problemAction->setEnabled(false);
 }
 
+void MainWindow::showNotice(const QString &message,
+                            const QString &actionText,
+                            std::function<void()> action)
+{
+    m_noticeLabel->setText(message);
+    m_noticeCallback = std::move(action);
+    const bool hasAction = !actionText.isEmpty()
+                           && static_cast<bool>(m_noticeCallback);
+    m_noticeActionButton->setText(actionText);
+    m_noticeActionButton->setVisible(hasAction);
+    m_noticeFrame->show();
+}
+
+void MainWindow::clearNotice()
+{
+    m_noticeCallback = {};
+    m_noticeFrame->hide();
+}
+
 void MainWindow::setLibraryReady(const bool ready)
 {
     m_contentStack->setCurrentWidget(ready ? m_libraryPage : m_welcomePage);
@@ -1078,6 +1666,8 @@ void MainWindow::setLibraryReady(const bool ready)
         m_versionAction->setEnabled(false);
         m_copyAction->setEnabled(false);
         m_openAction->setEnabled(false);
+        m_updateAction->setEnabled(false);
+        m_deleteAssetAction->setEnabled(false);
         m_deleteVersionAction->setEnabled(false);
     }
 }

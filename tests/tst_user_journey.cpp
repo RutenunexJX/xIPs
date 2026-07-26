@@ -2,15 +2,24 @@
 #include "library/AssetLibraryService.h"
 #include "library/AssetScanner.h"
 
+#include <QAction>
 #include <QApplication>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
 #include <QLineEdit>
+#include <QLabel>
+#include <QMessageBox>
 #include <QMimeData>
+#include <QPushButton>
 #include <QTableView>
 #include <QTemporaryDir>
+#include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QtTest>
 
@@ -79,15 +88,28 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
                           QStringLiteral("doc/usage.md")),
                       QByteArrayLiteral("Packet router usage\n")));
 
-    MainWindow window(library);
+    MainWindow window(library, nullptr, RemovalMode::Permanent);
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
     auto *table = window.findChild<QTableView *>(QStringLiteral("assetTable"));
     auto *search = window.findChild<QLineEdit *>(QStringLiteral("searchEdit"));
     auto *groups = window.findChild<QTreeWidget *>(QStringLiteral("groupTree"));
+    auto *updateAction = window.findChild<QAction *>(
+        QStringLiteral("updateAssetAction"));
+    auto *copyAction = window.findChild<QAction *>(QStringLiteral("copyAction"));
+    auto *deleteAssetAction = window.findChild<QAction *>(
+        QStringLiteral("deleteAssetAction"));
+    auto *noticeAction = window.findChild<QToolButton *>(
+        QStringLiteral("noticeActionButton"));
+    auto *noticeLabel = window.findChild<QLabel *>(QStringLiteral("noticeLabel"));
     QVERIFY(table);
     QVERIFY(search);
     QVERIFY(groups);
+    QVERIFY(updateAction);
+    QVERIFY(copyAction);
+    QVERIFY(deleteAssetAction);
+    QVERIFY(noticeAction);
+    QVERIFY(noticeLabel);
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 0, 5000);
 
     QMimeData mimeData;
@@ -108,14 +130,24 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QApplication::sendEvent(&window, &drop);
     QVERIFY(drop.isAccepted());
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 2, 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
+    QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
     QVERIFY(QFileInfo::exists(singleSource));
     QVERIFY(QFileInfo::exists(QDir(folderSource).absoluteFilePath(
         QStringLiteral("rtl/packet_router.sv"))));
 
     search->setText(QStringLiteral("packet_router.sv"));
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 1, 3000);
-    QCOMPARE(table->model()->index(0, 0).data().toString(),
+    QCOMPARE(table->model()
+                 ->index(0, 0)
+                 .data(AssetTableModel::AssetNameRole)
+                 .toString(),
              QStringLiteral("packet_router"));
+    QVERIFY(table->model()
+                ->index(0, 0)
+                .data()
+                .toString()
+                .contains(QStringLiteral("Matched:")));
     QVERIFY(table->model()
                 ->index(0, 0)
                 .data(Qt::ToolTipRole)
@@ -144,7 +176,51 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
         QStringLiteral("uart_rx.sv"));
     const QByteArray secondRevision = QByteArrayLiteral(
         "module uart_rx; localparam REV = 2; endmodule\n");
-    QVERIFY(writeFile(workingFile, secondRevision));
+    const QString updateSource = temporary.filePath(
+        QStringLiteral("revision-2/uart_rx.sv"));
+    QVERIFY(writeFile(updateSource, secondRevision));
+
+    window.applyActivation({
+        .action = ActivationAction::OpenAsset,
+        .value = QStringLiteral("uart_rx_sv"),
+    });
+    QTRY_COMPARE_WITH_TIMEOUT(
+        table->currentIndex()
+            .siblingAtColumn(AssetTableModel::NameColumn)
+            .data(AssetTableModel::AssetNameRole)
+            .toString(),
+        QStringLiteral("uart_rx.sv"),
+        3000);
+    bool updateCompleted = false;
+    QTimer::singleShot(0, &window, [&] {
+        QDialog *dialog = window.findChild<QDialog *>(
+            QStringLiteral("updateAssetDialog"));
+        if (!dialog) {
+            return;
+        }
+        auto *sourceEdit = dialog->findChild<QLineEdit *>(
+            QStringLiteral("updateSourceEdit"));
+        auto *preview = dialog->findChild<QLabel *>(
+            QStringLiteral("updatePreviewLabel"));
+        auto *buttons = dialog->findChild<QDialogButtonBox *>(
+            QStringLiteral("updateDialogButtons"));
+        if (!sourceEdit || !preview || !buttons) {
+            dialog->reject();
+            return;
+        }
+        sourceEdit->setText(updateSource);
+        updateCompleted = preview->text().contains(QStringLiteral("Replace 1"))
+                          && buttons->button(QDialogButtonBox::Ok)->isEnabled();
+        buttons->button(QDialogButtonBox::Ok)->click();
+    });
+    updateAction->trigger();
+    QVERIFY(updateCompleted);
+    QFile updatedWorking(workingFile);
+    QVERIFY(updatedWorking.open(QIODevice::ReadOnly));
+    QCOMPARE(updatedWorking.readAll(), secondRevision);
+    QFile unchangedUpdateSource(updateSource);
+    QVERIFY(unchangedUpdateSource.open(QIODevice::ReadOnly));
+    QCOMPARE(unchangedUpdateSource.readAll(), secondRevision);
     state = service.workingCopyState(*single);
     QVERIFY(state.changed);
     QCOMPARE(service.suggestedNextVersion(state.latestVersion),
@@ -152,18 +228,52 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
 
     const QString copyDirectory = temporary.filePath(QStringLiteral("project/rtl"));
     QVERIFY(QDir().mkpath(copyDirectory));
-    QString copiedPath;
-    QVERIFY2(service.copyVersionPayload(*single,
-                                        QStringLiteral("1.0.0"),
-                                        copyDirectory,
-                                        &copiedPath,
-                                        &error),
-             qPrintable(error));
-    QFile copied(copiedPath);
+    const QString requestedTarget = QDir(copyDirectory).absoluteFilePath(
+        QStringLiteral("uart_rx_from_1_0_0.sv"));
+    QTRY_VERIFY_WITH_TIMEOUT(copyAction->isEnabled(), 3000);
+    bool copyCompleted = false;
+    QTimer::singleShot(0, &window, [&] {
+        QDialog *dialog = window.findChild<QDialog *>(QStringLiteral("copyDialog"));
+        if (!dialog) {
+            return;
+        }
+        auto *version = dialog->findChild<QComboBox *>(
+            QStringLiteral("copyVersionCombo"));
+        auto *destination = dialog->findChild<QLineEdit *>(
+            QStringLiteral("copyDestinationEdit"));
+        auto *name = dialog->findChild<QLineEdit *>(
+            QStringLiteral("copyNameEdit"));
+        auto *path = dialog->findChild<QLabel *>(
+            QStringLiteral("copyFinalPathLabel"));
+        auto *buttons = dialog->findChild<QDialogButtonBox *>(
+            QStringLiteral("copyDialogButtons"));
+        if (!version || !destination || !name || !path || !buttons) {
+            dialog->reject();
+            return;
+        }
+        version->setCurrentIndex(version->findData(QStringLiteral("1.0.0")));
+        destination->setText(copyDirectory);
+        name->setText(QStringLiteral("uart_rx_from_1_0_0.sv"));
+        copyCompleted = path->text().contains(
+                            QDir::toNativeSeparators(requestedTarget))
+                        && buttons->button(QDialogButtonBox::Ok)->isEnabled();
+        buttons->button(QDialogButtonBox::Ok)->click();
+    });
+    copyAction->trigger();
+    QVERIFY(copyCompleted);
+    QFile copied(requestedTarget);
     QVERIFY(copied.open(QIODevice::ReadOnly));
     QCOMPARE(copied.readAll(), firstRevision);
+    QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
+    QCOMPARE(noticeAction->text(), QStringLiteral("Open destination"));
+    QVERIFY(noticeLabel->text().contains(
+        QStringLiteral("uart_rx_from_1_0_0.sv")));
     QVERIFY(!QFileInfo(QDir(copyDirectory).absoluteFilePath(
         QStringLiteral(".xips.json"))).exists());
+
+    scan = AssetScanner().scan(library);
+    single = findAsset(scan, QStringLiteral("uart_rx_sv"));
+    QVERIFY(single);
     QVERIFY2(service.createVersion(*single,
                                    QStringLiteral("1.0.1"),
                                    nullptr,
@@ -187,31 +297,97 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
              qPrintable(error));
     QCOMPARE(changed, 2);
 
-    const QString syncedSource = temporary.filePath(
-        QStringLiteral("other-device/common_defs.svh"));
-    QVERIFY(writeFile(syncedSource, QByteArrayLiteral("`define BUS_WIDTH 32\n")));
-    QCOMPARE(service.importAssets(library, {syncedSource}).created.size(), 1);
     search->clear();
     QEvent activate(QEvent::WindowActivate);
     QApplication::sendEvent(&window, &activate);
-    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 3, 10000);
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 2, 10000);
     QTRY_VERIFY_WITH_TIMEOUT(hasGroup(groups,
                                       QStringLiteral("Serial"),
                                       QStringLiteral("2")),
                              5000);
+
+    const QString undoSource = temporary.filePath(
+        QStringLiteral("incoming/temp_defs.svh"));
+    QVERIFY(writeFile(undoSource, QByteArrayLiteral("`define TEMP_WIDTH 16\n")));
+    QMimeData undoMime;
+    undoMime.setUrls({QUrl::fromLocalFile(undoSource)});
+    QDragEnterEvent undoDragEnter(QPoint(10, 10),
+                                  Qt::CopyAction,
+                                  &undoMime,
+                                  Qt::LeftButton,
+                                  Qt::NoModifier);
+    QApplication::sendEvent(&window, &undoDragEnter);
+    QVERIFY(undoDragEnter.isAccepted());
+    QDropEvent undoDrop(QPointF(10.0, 10.0),
+                        Qt::CopyAction,
+                        &undoMime,
+                        Qt::LeftButton,
+                        Qt::NoModifier);
+    QApplication::sendEvent(&window, &undoDrop);
+    QVERIFY(undoDrop.isAccepted());
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 3, 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
+    QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    noticeAction->click();
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 2, 10000);
+    QVERIFY(QFileInfo::exists(undoSource));
+    QVERIFY(!findAsset(AssetScanner().scan(library),
+                       QStringLiteral("temp_defs_svh")));
+    QVERIFY(noticeLabel->text().contains(
+        QStringLiteral("source files were unchanged")));
+
+    const QString syncedSource = temporary.filePath(
+        QStringLiteral("other-device/common_defs.svh"));
+    QVERIFY(writeFile(syncedSource, QByteArrayLiteral("`define BUS_WIDTH 32\n")));
+    QCOMPARE(service.importAssets(library, {syncedSource}).created.size(), 1);
+    QEvent syncedActivate(QEvent::WindowActivate);
+    QApplication::sendEvent(&window, &syncedActivate);
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 3, 10000);
 
     scan = AssetScanner().scan(library);
     single = findAsset(scan, QStringLiteral("uart_rx_sv"));
     QVERIFY(single);
     QVERIFY2(service.deleteVersion(*single,
                                    QStringLiteral("1.0.1"),
-                                   VersionDeleteMode::Permanent,
+                                   RemovalMode::Permanent,
                                    &error),
              qPrintable(error));
     QFile working(workingFile);
     QVERIFY(working.open(QIODevice::ReadOnly));
     QCOMPARE(working.readAll(), secondRevision);
     QCOMPARE(service.versions(single->assetRoot, &error).size(), 1);
+
+    window.applyActivation({
+        .action = ActivationAction::OpenAsset,
+        .value = QStringLiteral("packet_router"),
+    });
+    QTRY_COMPARE_WITH_TIMEOUT(
+        table->currentIndex()
+            .siblingAtColumn(AssetTableModel::NameColumn)
+            .data(AssetTableModel::AssetNameRole)
+            .toString(),
+        QStringLiteral("packet_router"),
+        3000);
+    bool deletionConfirmed = false;
+    QTimer::singleShot(0, &window, [&] {
+        QMessageBox *confirmation = window.findChild<QMessageBox *>();
+        if (!confirmation) {
+            return;
+        }
+        deletionConfirmed = confirmation->text().contains(
+                                QStringLiteral("working file(s)"))
+                            && confirmation->text().contains(
+                                QStringLiteral("Original import sources are not changed"));
+        confirmation->button(QMessageBox::Yes)->click();
+    });
+    deleteAssetAction->trigger();
+    QVERIFY(deletionConfirmed);
+    QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 2, 10000);
+    QVERIFY(QFileInfo::exists(QDir(folderSource).absoluteFilePath(
+        QStringLiteral("rtl/packet_router.sv"))));
+    const ScanResult finalScan = AssetScanner().scan(library);
+    QVERIFY(!findAsset(finalScan, QStringLiteral("packet_router")));
+    QVERIFY(noticeLabel->text().contains(QStringLiteral("recycle bin")));
 }
 
 QTEST_MAIN(UserJourneyTest)

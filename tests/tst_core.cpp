@@ -50,6 +50,8 @@ private slots:
     void batchImportRecoversCollisionsAndAssignsGroups();
     void scannerListsPayloadAndHashesOnDemand();
     void metadataKeepsStableId();
+    void updateReplacesWorkingCopyAndPreservesSavedVersions();
+    void assetDeletionIsBoundedAndLeavesSourcesUntouched();
     void versionsAreImmutableAndCopyable();
     void versionStateCopyToAndDeletionFormASafeWorkflow();
     void groupChangesApplyAcrossAssets();
@@ -308,6 +310,134 @@ void CoreTest::metadataKeepsStableId()
     QCOMPARE(loaded.manifest->version, QStringLiteral("1.0.0"));
 }
 
+void CoreTest::updateReplacesWorkingCopyAndPreservesSavedVersions()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString original = createSourceIp(temporary.path());
+    QVERIFY(!original.isEmpty());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = original,
+                  .metadata = {.id = QStringLiteral("update_ip"),
+                               .name = QStringLiteral("Update IP"),
+                               .description = QStringLiteral("Before update"),
+                               .tags = {QStringLiteral("UART")}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   nullptr,
+                                   &error),
+             qPrintable(error));
+
+    const QString replacement = temporary.filePath(
+        QStringLiteral("project/replacement"));
+    const QByteArray revised = QByteArrayLiteral(
+        "module top; localparam REV = 2; endmodule\n");
+    QVERIFY(writeFile(QDir(replacement).absoluteFilePath(
+                          QStringLiteral("rtl/top.sv")),
+                      revised));
+    QVERIFY(writeFile(QDir(replacement).absoluteFilePath(
+                          QStringLiteral("doc/guide.md")),
+                      QByteArrayLiteral("Updated guide\n")));
+
+    const UpdatePreview preview = service.previewUpdate(asset, replacement);
+    QVERIFY2(preview.ok(), qPrintable(preview.error));
+    QCOMPARE(preview.addedFiles,
+             QStringList{QStringLiteral("doc/guide.md")});
+    QCOMPARE(preview.replacedFiles,
+             QStringList{QStringLiteral("rtl/top.sv")});
+    QCOMPARE(preview.removedFiles,
+             QStringList{QStringLiteral("README.md")});
+
+    UpdateAssetResult updated;
+    QVERIFY2(service.updateAsset(asset,
+                                 replacement,
+                                 RemovalMode::Permanent,
+                                 &updated,
+                                 &error),
+             qPrintable(error));
+    QVERIFY(updated.warning.isEmpty());
+    QCOMPARE(updated.updated.manifest.id, QStringLiteral("update_ip"));
+    QCOMPARE(updated.updated.manifest.name, QStringLiteral("Update IP"));
+    QCOMPARE(updated.updated.manifest.tags,
+             QStringList{QStringLiteral("UART")});
+    QCOMPARE(updated.updated.manifest.version, QStringLiteral("1.0.0"));
+    QVERIFY(!QFileInfo(QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("README.md"))).exists());
+    QFile working(QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("rtl/top.sv")));
+    QVERIFY(working.open(QIODevice::ReadOnly));
+    QCOMPARE(working.readAll(), revised);
+    QVERIFY(QFileInfo(QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("doc/guide.md"))).isFile());
+    QCOMPARE(service.versions(asset.assetRoot, &error).size(), 1);
+    const WorkingCopyState state = service.workingCopyState(updated.updated);
+    QVERIFY(state.changed);
+    QVERIFY(QFileInfo(QDir(original).absoluteFilePath(
+        QStringLiteral("README.md"))).isFile());
+    QVERIFY(!service.updateAsset(updated.updated,
+                                 asset.assetRoot,
+                                 RemovalMode::Permanent,
+                                 nullptr,
+                                 &error));
+    QVERIFY(error.contains(QStringLiteral("cannot contain")));
+}
+
+void CoreTest::assetDeletionIsBoundedAndLeavesSourcesUntouched()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("delete_me.sv"));
+    QVERIFY(writeFile(source, QByteArrayLiteral("module delete_me; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = service.suggestedMetadata(source)},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    QVERIFY(!service.deleteAsset(asset.assetRoot,
+                                 asset,
+                                 RemovalMode::Permanent,
+                                 nullptr,
+                                 &error));
+    QVERIFY(QFileInfo(asset.assetRoot).isDir());
+
+    AssetRecord forged = asset;
+    forged.assetRoot = library;
+    forged.manifestPath = QDir(library).absoluteFilePath(
+        QStringLiteral(".xips.json"));
+    QVERIFY(!service.deleteAsset(library,
+                                 forged,
+                                 RemovalMode::Permanent,
+                                 nullptr,
+                                 &error));
+    QVERIFY(QFileInfo(library).isDir());
+
+    QString removedPath;
+    QVERIFY2(service.deleteAsset(library,
+                                 asset,
+                                 RemovalMode::Permanent,
+                                 &removedPath,
+                                 &error),
+             qPrintable(error));
+    QVERIFY(!QFileInfo::exists(asset.assetRoot));
+    QVERIFY(QFileInfo(source).isFile());
+    QVERIFY(QFileInfo(library).isDir());
+    QVERIFY(removedPath.isEmpty());
+}
+
 void CoreTest::versionsAreImmutableAndCopyable()
 {
     QTemporaryDir temporary;
@@ -343,12 +473,25 @@ void CoreTest::versionsAreImmutableAndCopyable()
     QCOMPARE(versions.size(), 2);
     QVERIFY(!service.createVersion(asset, QStringLiteral("1.0.0"), nullptr, &error));
 
+    const CopyPlan workingPlan = service.copyPlan(asset, QString());
+    QVERIFY2(workingPlan.ok(), qPrintable(workingPlan.error));
+    QCOMPARE(workingPlan.version, QString());
+    QCOMPARE(workingPlan.sourceRoot, asset.assetRoot);
+    QCOMPARE(workingPlan.suggestedName, QStringLiteral("Versioned IP"));
+    const CopyPlan savedPlan = service.copyPlan(asset, QStringLiteral("1.0.0"));
+    QVERIFY2(savedPlan.ok(), qPrintable(savedPlan.error));
+    QCOMPARE(savedPlan.version, QStringLiteral("1.0.0"));
+    QCOMPARE(savedPlan.sourceRoot, first.path);
+    QCOMPARE(savedPlan.suggestedName, QStringLiteral("Versioned IP"));
+
     const QString copyDirectory = temporary.filePath(QStringLiteral("copy-to"));
     QVERIFY(QDir().mkpath(copyDirectory));
+    const QString requestedTarget = QDir(copyDirectory).absoluteFilePath(
+        QStringLiteral("versioned_ip"));
     QString copiedRoot;
     QVERIFY2(service.copyVersionPayload(asset,
                                         QStringLiteral("1.0.0"),
-                                        copyDirectory,
+                                        requestedTarget,
                                         &copiedRoot,
                                         &error),
              qPrintable(error));
@@ -410,12 +553,21 @@ void CoreTest::versionStateCopyToAndDeletionFormASafeWorkflow()
                                    &error),
              qPrintable(error));
 
+    const CopyPlan singleFilePlan = service.copyPlan(
+        asset,
+        QStringLiteral("1.0.0"));
+    QVERIFY2(singleFilePlan.ok(), qPrintable(singleFilePlan.error));
+    QVERIFY(singleFilePlan.isSingleFile());
+    QCOMPARE(singleFilePlan.suggestedName, QStringLiteral("uart_rx.sv"));
+
     const QString destination = temporary.filePath(QStringLiteral("copy-to"));
     QVERIFY(QDir().mkpath(destination));
+    const QString requestedTarget = QDir(destination).absoluteFilePath(
+        QStringLiteral("uart_rx.sv"));
     QString copiedPath;
     QVERIFY2(service.copyVersionPayload(asset,
                                         QStringLiteral("1.0.0"),
-                                        destination,
+                                        requestedTarget,
                                         &copiedPath,
                                         &error),
              qPrintable(error));
@@ -427,13 +579,13 @@ void CoreTest::versionStateCopyToAndDeletionFormASafeWorkflow()
     QVERIFY(copied.readAll().contains(QByteArrayLiteral("V = 1")));
     QVERIFY(!service.copyVersionPayload(asset,
                                         QStringLiteral("1.0.0"),
-                                        destination,
+                                        requestedTarget,
                                         nullptr,
                                         &error));
 
     QVERIFY2(service.deleteVersion(asset,
                                    QStringLiteral("1.0.1"),
-                                   VersionDeleteMode::Permanent,
+                                   RemovalMode::Permanent,
                                    &error),
              qPrintable(error));
     QCOMPARE(service.versions(asset.assetRoot, &error).size(), 1);
@@ -442,7 +594,7 @@ void CoreTest::versionStateCopyToAndDeletionFormASafeWorkflow()
     QCOMPARE(loaded.manifest->version, QStringLiteral("1.0.0"));
     QVERIFY(!service.deleteVersion(asset,
                                    QString(),
-                                   VersionDeleteMode::Permanent,
+                                   RemovalMode::Permanent,
                                    &error));
 }
 

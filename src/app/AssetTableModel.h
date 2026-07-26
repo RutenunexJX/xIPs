@@ -12,9 +12,15 @@ class AssetTableModel final : public QAbstractTableModel {
 public:
     enum Column {
         NameColumn,
+        GroupsColumn,
         VersionColumn,
-        ModifiedColumn,
         ColumnCount
+    };
+
+    enum Role {
+        SortRole = Qt::UserRole,
+        AssetNameRole,
+        MatchedFileRole
     };
 
     explicit AssetTableModel(QObject *parent = nullptr);
