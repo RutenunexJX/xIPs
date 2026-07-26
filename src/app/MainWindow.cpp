@@ -635,7 +635,10 @@ void MainWindow::buildUi()
         }
     });
     connect(m_noticeDismissButton, &QToolButton::clicked, this, [this] {
-        if (clearNotice()) {
+        m_allowChangedLiveForNoticeDismiss = true;
+        const bool cleared = clearNotice();
+        m_allowChangedLiveForNoticeDismiss = false;
+        if (cleared) {
             m_undoImportAssets.clear();
         }
     });
@@ -1338,7 +1341,10 @@ void MainWindow::deleteCurrentAsset()
                               deleteQuestion) != QMessageBox::Yes) {
         return;
     }
-    if (!clearNotice()) {
+    m_allowChangedLiveForNoticeDismiss = true;
+    const bool noticeCleared = clearNotice();
+    m_allowChangedLiveForNoticeDismiss = false;
+    if (!noticeCleared) {
         statusBar()->showMessage(
             QStringLiteral("Cannot retire the current Undo backup; asset was not deleted"));
         return;
@@ -1368,13 +1374,21 @@ void MainWindow::createCurrentVersion()
     if (!asset) {
         return;
     }
+    QString currentVersion = asset->manifest.version;
+    QString versionsError;
+    const QList<VersionInfo> savedVersions = m_libraryService.versions(
+        asset->assetRoot,
+        &versionsError);
+    if (versionsError.isEmpty() && !savedVersions.isEmpty()) {
+        currentVersion = savedVersions.first().version;
+    }
     bool accepted = false;
     const QString version = QInputDialog::getText(
         this,
         QStringLiteral("Save version"),
         QStringLiteral("Version name:"),
         QLineEdit::Normal,
-        AssetLibraryService::suggestedNextVersion(asset->manifest.version),
+        AssetLibraryService::suggestedNextVersion(currentVersion),
         &accepted).trimmed();
     if (!accepted || version.isEmpty()) {
         return;
@@ -1396,8 +1410,20 @@ void MainWindow::createCurrentVersion()
         .action = ActivationAction::OpenAsset,
         .value = assetId,
     };
-    statusBar()->showMessage(
-        QStringLiteral("Saved immutable version %1").arg(created.version));
+    const QString savedMessage = QStringLiteral("Saved immutable version %1")
+                                     .arg(created.version);
+    statusBar()->showMessage(savedMessage);
+    if (!created.warning.isEmpty()) {
+        const QString problem = QStringLiteral("%1: %2")
+                                    .arg(asset->manifest.name,
+                                         created.warning);
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+        m_problemAction->setEnabled(true);
+        showPassiveReview(savedMessage
+                          + QStringLiteral("; open Problems to review the version-marker warning"));
+    }
     m_controller->rebuild();
 }
 
@@ -1607,21 +1633,74 @@ void MainWindow::deleteSelectedVersion()
     }
     m_undoImportAssets.clear();
     QString error;
+    DeleteVersionResult deleted;
     if (!m_libraryService.deleteVersion(*asset,
                                         version,
                                         m_removalMode,
+                                        &deleted,
                                         &error)) {
+        for (const QString &path : deleted.retainedPaths) {
+            const QString problem = QStringLiteral(
+                "%1: saved-version recovery data remains at %2")
+                                        .arg(asset->manifest.name,
+                                             QDir::toNativeSeparators(path));
+            if (!m_lastProblems.contains(problem)) {
+                m_lastProblems.append(problem);
+            }
+        }
+        if (!deleted.warning.isEmpty()) {
+            const QString problem = QStringLiteral("%1: %2")
+                                        .arg(asset->manifest.name,
+                                             deleted.warning);
+            if (!m_lastProblems.contains(problem)) {
+                m_lastProblems.append(problem);
+            }
+        }
+        if (!deleted.retainedPaths.isEmpty()
+            || !deleted.warning.isEmpty()) {
+            m_problemAction->setEnabled(true);
+        }
         QMessageBox::critical(this,
                               QStringLiteral("Cannot delete saved version"),
                               error);
         return;
     }
+    for (const QString &path : deleted.retainedPaths) {
+        const QString problem = QStringLiteral(
+            "%1: saved-version transaction data remains at %2")
+                                    .arg(asset->manifest.name,
+                                         QDir::toNativeSeparators(path));
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+    }
+    if (!deleted.warning.isEmpty()) {
+        const QString problem = QStringLiteral("%1: %2")
+                                    .arg(asset->manifest.name,
+                                         deleted.warning);
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+    }
+    if (!deleted.retainedPaths.isEmpty() || !deleted.warning.isEmpty()) {
+        m_problemAction->setEnabled(true);
+    }
     m_pendingActivation = ActivationRequest{
         .action = ActivationAction::OpenAsset,
         .value = asset->manifest.id,
     };
-    showNotice(
-        QStringLiteral("Moved saved version %1 to the recycle bin").arg(version));
+    const QString deletedMessage =
+        m_removalMode == RemovalMode::MoveToTrash
+            ? QStringLiteral("Moved saved version %1 to the recycle bin")
+                  .arg(version)
+            : QStringLiteral("Deleted saved version %1").arg(version);
+    if (!deleted.retainedPaths.isEmpty() || !deleted.warning.isEmpty()) {
+        showPassiveReview(
+            deletedMessage
+            + QStringLiteral("; open Problems to review transaction data"));
+    } else {
+        showNotice(deletedMessage);
+    }
     m_controller->rebuild();
 }
 
@@ -1697,9 +1776,12 @@ void MainWindow::restoreSelectedVersion()
         .action = ActivationAction::OpenAsset,
         .value = selectedAsset.manifest.id,
     };
-    const QString message = QStringLiteral(
+    QString message = QStringLiteral(
         "Restored version %1 to the working copy; saved versions were kept")
                                 .arg(version);
+    if (!restored.publishedAsIntended || !restored.warning.isEmpty()) {
+        message += QStringLiteral("; review Problems before using the result");
+    }
     statusBar()->showMessage(message);
     offerWorkingCopyUndo(selectedAsset, restored, message);
     m_controller->rebuild();
@@ -1954,7 +2036,8 @@ void MainWindow::undoWorkingCopyChange(const AssetRecord &asset,
     if (!m_libraryService.undoWorkingCopyChange(asset,
                                                 token,
                                                 &undone,
-                                                &error)) {
+                                                &error,
+                                                m_removalMode)) {
         recordUpdateProblems(asset, undone);
         const QString problem = QStringLiteral(
             "Cannot undo %1: %2. Recovery remains at %3")
@@ -1999,11 +2082,21 @@ bool MainWindow::discardWorkingCopyRecovery(
                                                     token,
                                                     m_removalMode,
                                                     &discarded,
-                                                    &error)) {
-        if (!discarded.warning.isEmpty()) {
+                                                    &error,
+                                                    m_allowChangedLiveForNoticeDismiss
+                                                        ? WorkingCopyDiscardPolicy::AllowVerifiedCurrentCopy
+                                                        : WorkingCopyDiscardPolicy::RequirePublishedCopy)) {
+        if (!discarded.warning.isEmpty()
+            || !discarded.retainedPath.isEmpty()) {
+            const QString detail = !discarded.warning.isEmpty()
+                                       ? discarded.warning
+                                       : QStringLiteral(
+                                             "Recovery data remains at %1")
+                                             .arg(QDir::toNativeSeparators(
+                                                 discarded.retainedPath));
             const QString problem = QStringLiteral("%1: %2")
                                         .arg(asset.manifest.name,
-                                             discarded.warning);
+                                             detail);
             if (!m_lastProblems.contains(problem)) {
                 m_lastProblems.append(problem);
             }

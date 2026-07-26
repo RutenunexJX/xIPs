@@ -111,6 +111,7 @@ private:
     QList<AssetRecord> m_undoImportAssets;
     std::function<void()> m_noticeCallback;
     std::function<bool()> m_noticeDismissCallback;
+    bool m_allowChangedLiveForNoticeDismiss = false;
 
     QStackedWidget *m_contentStack = nullptr;
     QWidget *m_libraryPage = nullptr;

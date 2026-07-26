@@ -65,13 +65,19 @@ QJsonObject assetJson(const xips::AssetRecord &asset)
     };
 }
 
-QJsonArray resolvedFiles(const QString &root)
+QJsonArray resolvedFiles(const QString &root,
+                         const QStringList &relativeFiles)
 {
     QJsonArray result;
-    for (const QString &relative : xips::AssetScanner::assetFiles(root)) {
+    for (const QString &relative : relativeFiles) {
         result.append(QDir(root).absoluteFilePath(relative));
     }
     return result;
+}
+
+QJsonArray resolvedFiles(const QString &root)
+{
+    return resolvedFiles(root, xips::AssetScanner::assetFiles(root));
 }
 
 } // namespace
@@ -205,26 +211,22 @@ int main(int argc, char *argv[])
     QJsonObject data = assetJson(*found);
     const QString requestedVersion = parser.value(versionOption).trimmed();
     QString resolvedPath;
+    xips::CopyPlan savedPlan;
     if (!requestedVersion.isEmpty()) {
-        QString versionError;
-        const QList<xips::VersionInfo> versions =
-            xips::AssetLibraryService().versions(found->assetRoot, &versionError);
-        if (!versionError.isEmpty()) {
-            return fail(action, versionError, 3);
-        }
-        const auto selected = std::find_if(
-            versions.cbegin(), versions.cend(), [&requestedVersion](const xips::VersionInfo &entry) {
-                return entry.version == requestedVersion;
-            });
-        if (selected == versions.cend()) {
+        savedPlan = xips::AssetLibraryService().copyPlan(*found,
+                                                         requestedVersion);
+        if (!savedPlan.ok()) {
             return fail(action,
-                        QStringLiteral("Version not found: %1").arg(requestedVersion),
-                        4);
+                        savedPlan.error,
+                        savedPlan.error.startsWith(
+                            QStringLiteral("Version not found:"))
+                            ? 4
+                            : 3);
         }
-        resolvedPath = selected->path;
-        data.insert(QStringLiteral("resolvedVersion"), selected->version);
+        resolvedPath = savedPlan.sourceRoot;
+        data.insert(QStringLiteral("resolvedVersion"), savedPlan.version);
         data.insert(QStringLiteral("resolvedPath"), resolvedPath);
-        data.insert(QStringLiteral("resolvedContentHash"), selected->contentHash);
+        data.insert(QStringLiteral("resolvedContentHash"), savedPlan.contentHash);
     } else {
         resolvedPath = found->assetRoot;
         data.insert(QStringLiteral("resolvedVersion"), QStringLiteral("working"));
@@ -233,10 +235,31 @@ int main(int argc, char *argv[])
                     xips::AssetScanner::contentHash(found->manifest,
                                                     found->assetRoot));
     }
-    const QJsonArray files = resolvedFiles(resolvedPath);
+    const QJsonArray files = requestedVersion.isEmpty()
+                                 ? resolvedFiles(resolvedPath)
+                                 : resolvedFiles(resolvedPath, savedPlan.files);
     data.insert(QStringLiteral("resolvedFiles"), files);
     if (files.size() == 1) {
         data.insert(QStringLiteral("resolvedFile"), files.at(0));
+    }
+    if (!requestedVersion.isEmpty()) {
+        const xips::CopyPlan confirmed = xips::AssetLibraryService().copyPlan(
+            *found,
+            requestedVersion);
+        if (!confirmed.ok()
+            || confirmed.sourceRoot != savedPlan.sourceRoot
+            || confirmed.files != savedPlan.files
+            || confirmed.contentHash != savedPlan.contentHash
+            || confirmed.strictContentHash != savedPlan.strictContentHash
+            || confirmed.payloadFingerprint != savedPlan.payloadFingerprint
+            || confirmed.proofFingerprint != savedPlan.proofFingerprint) {
+            return fail(action,
+                        confirmed.ok()
+                            ? QStringLiteral(
+                                  "Saved version changed while resolve output was prepared")
+                            : confirmed.error,
+                        3);
+        }
     }
     writeJson(success(action, data), output);
     return 0;

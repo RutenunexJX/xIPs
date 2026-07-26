@@ -129,6 +129,8 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     auto *dismissNotice = window.findChild<QToolButton *>(
         QStringLiteral("dismissNoticeButton"));
     auto *noticeLabel = window.findChild<QLabel *>(QStringLiteral("noticeLabel"));
+    auto *noticeBanner = window.findChild<QWidget *>(
+        QStringLiteral("noticeBanner"));
     QVERIFY(table);
     QVERIFY(search);
     QVERIFY(groups);
@@ -144,6 +146,7 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QVERIFY(noticeAction);
     QVERIFY(dismissNotice);
     QVERIFY(noticeLabel);
+    QVERIFY(noticeBanner);
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 0, 5000);
 
     QMimeData mimeData;
@@ -219,11 +222,13 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
                  QStringLiteral("uart_rx.sv"))));
 
     QString error;
+    VersionInfo firstSavedResult;
     QVERIFY2(service.createVersion(*single,
                                    QStringLiteral("1.0.0"),
-                                   nullptr,
+                                   &firstSavedResult,
                                    &error),
              qPrintable(error));
+    QCOMPARE(firstSavedResult.version, QStringLiteral("1.0.0"));
     WorkingCopyState state = service.workingCopyState(*single);
     QVERIFY(state.hasSavedVersion);
     QVERIFY(!state.changed);
@@ -409,11 +414,13 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     scan = AssetScanner().scan(library);
     single = findAsset(scan, QStringLiteral("uart_rx_sv"));
     QVERIFY(single);
+    VersionInfo secondSavedResult;
     QVERIFY2(service.createVersion(*single,
                                    QStringLiteral("1.0.1"),
-                                   nullptr,
+                                   &secondSavedResult,
                                    &error),
              qPrintable(error));
+    QCOMPARE(secondSavedResult.version, QStringLiteral("1.0.1"));
 
     QEvent versionRefresh(QEvent::WindowActivate);
     QApplication::sendEvent(&window, &versionRefresh);
@@ -590,11 +597,14 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     scan = AssetScanner().scan(library);
     single = findAsset(scan, QStringLiteral("uart_rx_sv"));
     QVERIFY(single);
+    DeleteVersionResult deletedVersion;
     QVERIFY2(service.deleteVersion(*single,
                                    QStringLiteral("1.0.1"),
                                    RemovalMode::Permanent,
+                                   &deletedVersion,
                                    &error),
              qPrintable(error));
+    QVERIFY(deletedVersion.snapshotRemoved);
     QFile working(workingFile);
     QVERIFY(working.open(QIODevice::ReadOnly));
     QCOMPARE(working.readAll(), secondRevision);
@@ -696,6 +706,142 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
                 QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
                 .isEmpty());
     QVERIFY(noticeLabel->text().contains(QStringLiteral("recycle bin")));
+
+    working.close();
+    window.applyActivation({
+        .action = ActivationAction::OpenAsset,
+        .value = QStringLiteral("uart_rx_sv"),
+    });
+    QTRY_COMPARE_WITH_TIMEOUT(
+        table->currentIndex()
+            .siblingAtColumn(AssetTableModel::NameColumn)
+            .data(AssetTableModel::AssetNameRole)
+            .toString(),
+        QStringLiteral("uart_rx.sv"),
+        3000);
+
+    const QByteArray thirdRevision = QByteArrayLiteral(
+        "module uart_rx; localparam REV = 3; endmodule\n");
+    const QString tamperedUpdateSource = temporary.filePath(
+        QStringLiteral("incoming-v3/uart_rx.sv"));
+    QVERIFY(writeFile(tamperedUpdateSource, thirdRevision));
+    bool tamperedUpdateCompleted = false;
+    QTimer::singleShot(0, &window, [&] {
+        QDialog *dialog = window.findChild<QDialog *>(
+            QStringLiteral("updateAssetDialog"));
+        if (!dialog) {
+            return;
+        }
+        auto *sourceEdit = dialog->findChild<QLineEdit *>(
+            QStringLiteral("updateSourceEdit"));
+        auto *buttons = dialog->findChild<QDialogButtonBox *>(
+            QStringLiteral("updateDialogButtons"));
+        if (!sourceEdit || !buttons) {
+            dialog->reject();
+            return;
+        }
+        sourceEdit->setText(tamperedUpdateSource);
+        QPushButton *updateButton = buttons->button(QDialogButtonBox::Ok);
+        tamperedUpdateCompleted = updateButton && updateButton->isEnabled();
+        if (updateButton) {
+            updateButton->click();
+        }
+    });
+    updateAction->trigger();
+    QVERIFY(tamperedUpdateCompleted);
+    QTRY_VERIFY_WITH_TIMEOUT(noticeBanner->isVisible(), 3000);
+    QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    const QStringList recoveryEntries = QDir(library).entryList(
+        {QStringLiteral(".xips-create-recovery-*")},
+        QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+    QCOMPARE(recoveryEntries.size(), 1);
+    const QString invalidRecoveryPath = QDir(library).absoluteFilePath(
+        recoveryEntries.first());
+    const QString invalidRecoveryFile = QDir(invalidRecoveryPath)
+                                            .absoluteFilePath(
+                                                QStringLiteral("uart_rx.sv"));
+    const QByteArray tamperedRecoveryBytes = QByteArrayLiteral(
+        "module uart_rx; localparam RECOVERY_TAMPERED = 1; endmodule\n");
+    QVERIFY(writeFile(invalidRecoveryFile, tamperedRecoveryBytes));
+
+    noticeAction->click();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        noticeLabel->text().contains(QStringLiteral("Undo was not applied")),
+        3000);
+    QVERIFY(noticeBanner->isVisible());
+    QCOMPARE(dismissNotice->text(), QStringLiteral("Discard Undo"));
+    dismissNotice->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!noticeBanner->isVisible(), 3000);
+    QVERIFY(QFileInfo(invalidRecoveryFile).isFile());
+    QFile retainedRecovery(invalidRecoveryFile);
+    QVERIFY(retainedRecovery.open(QIODevice::ReadOnly));
+    QCOMPARE(retainedRecovery.readAll(), tamperedRecoveryBytes);
+    retainedRecovery.close();
+    QVERIFY(problemAction->isEnabled());
+
+    bool retainedPathReported = false;
+    QTimer::singleShot(0, &window, [&] {
+        QMessageBox *message = window.findChild<QMessageBox *>();
+        if (!message) {
+            return;
+        }
+        retainedPathReported = message->text().contains(
+            QDir::toNativeSeparators(invalidRecoveryPath));
+        message->accept();
+    });
+    problemAction->trigger();
+    QVERIFY(retainedPathReported);
+
+    const QByteArray fourthRevision = QByteArrayLiteral(
+        "module uart_rx; localparam REV = 4; endmodule\n");
+    const QString followupUpdateSource = temporary.filePath(
+        QStringLiteral("incoming-v4/uart_rx.sv"));
+    QVERIFY(writeFile(followupUpdateSource, fourthRevision));
+    bool followupUpdateCompleted = false;
+    QTimer::singleShot(0, &window, [&] {
+        QDialog *dialog = window.findChild<QDialog *>(
+            QStringLiteral("updateAssetDialog"));
+        if (!dialog) {
+            return;
+        }
+        auto *sourceEdit = dialog->findChild<QLineEdit *>(
+            QStringLiteral("updateSourceEdit"));
+        auto *buttons = dialog->findChild<QDialogButtonBox *>(
+            QStringLiteral("updateDialogButtons"));
+        if (!sourceEdit || !buttons) {
+            dialog->reject();
+            return;
+        }
+        sourceEdit->setText(followupUpdateSource);
+        QPushButton *updateButton = buttons->button(QDialogButtonBox::Ok);
+        followupUpdateCompleted = updateButton && updateButton->isEnabled();
+        if (updateButton) {
+            updateButton->click();
+        }
+    });
+    updateAction->trigger();
+    QVERIFY(followupUpdateCompleted);
+    QFile followedUpWorking(workingFile);
+    QVERIFY(followedUpWorking.open(QIODevice::ReadOnly));
+    QCOMPARE(followedUpWorking.readAll(), fourthRevision);
+    followedUpWorking.close();
+    QTRY_VERIFY_WITH_TIMEOUT(noticeBanner->isVisible(), 3000);
+    QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    QCOMPARE(QDir(library)
+                 .entryList({QStringLiteral(".xips-create-recovery-*")},
+                            QDir::Dirs | QDir::Hidden
+                                | QDir::NoDotAndDotDot)
+                 .size(),
+             2);
+    dismissNotice->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!noticeBanner->isVisible(), 3000);
+    const QStringList retainedRecoveries = QDir(library).entryList(
+        {QStringLiteral(".xips-create-recovery-*")},
+        QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+    QCOMPARE(retainedRecoveries.size(), 1);
+    QCOMPARE(QDir(library).absoluteFilePath(retainedRecoveries.first()),
+             invalidRecoveryPath);
+    QVERIFY(QFileInfo(invalidRecoveryFile).isFile());
 }
 
 QTEST_MAIN(UserJourneyTest)

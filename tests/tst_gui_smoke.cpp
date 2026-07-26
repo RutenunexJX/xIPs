@@ -93,6 +93,23 @@ void GuiSmokeTest::startupReportsUnfinishedOperationPaths()
         QStringLiteral("rtl/retained.sv"));
     QVERIFY(writeFile(retainedFile,
                       QByteArrayLiteral("module retained; endmodule\n")));
+    const QString assetRoot = QDir(library).absoluteFilePath(
+        QStringLiteral("staged_asset"));
+    const QString manifestPath = QDir(assetRoot).absoluteFilePath(
+        QStringLiteral(".xips.json"));
+    QVERIFY(writeFile(
+        manifestPath,
+        QByteArrayLiteral(
+            R"({"schemaVersion":1,"id":"staged_asset","name":"Staged asset"})")));
+    QVERIFY(writeFile(
+        QDir(assetRoot).absoluteFilePath(QStringLiteral("rtl/live.sv")),
+        QByteArrayLiteral("module live; endmodule\n")));
+    const QString versionStaging = QDir(assetRoot).absoluteFilePath(
+        QStringLiteral(".xips/versions/.staging-22222222"));
+    const QString stagedFile = QDir(versionStaging).absoluteFilePath(
+        QStringLiteral("rtl/staged.sv"));
+    QVERIFY(writeFile(stagedFile,
+                      QByteArrayLiteral("module staged; endmodule\n")));
 
     {
         MainWindow window(library, nullptr, RemovalMode::Permanent);
@@ -109,22 +126,25 @@ void GuiSmokeTest::startupReportsUnfinishedOperationPaths()
             notice->text().contains(QStringLiteral("unfinished xIPs operation")),
             3000);
 
-        bool exactPathReported = false;
+        bool exactPathsReported = false;
         QTimer::singleShot(0, &window, [&] {
             QMessageBox *message = window.findChild<QMessageBox *>();
             if (!message) {
                 return;
             }
-            exactPathReported = message->text().contains(
-                QDir::toNativeSeparators(orphan));
+            exactPathsReported =
+                message->text().contains(QDir::toNativeSeparators(orphan))
+                && message->text().contains(
+                    QDir::toNativeSeparators(versionStaging));
             message->accept();
         });
         problems->trigger();
-        QVERIFY(exactPathReported);
+        QVERIFY(exactPathsReported);
         QVERIFY(!problems->isEnabled());
     }
 
     QVERIFY(QFileInfo(retainedFile).isFile());
+    QVERIFY(QFileInfo(stagedFile).isFile());
 }
 
 void GuiSmokeTest::firstScreenIsACompactAssetLibrary()

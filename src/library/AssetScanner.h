@@ -21,6 +21,10 @@ public:
         const QString &libraryRoot);
     [[nodiscard]] static QString contentHash(const Manifest &manifest,
                                              const QString &assetRoot);
+    static bool verifiedContentHash(const Manifest &manifest,
+                                    const QString &assetRoot,
+                                    QString *contentHash,
+                                    QString *error = nullptr);
     static bool strictContentHash(const Manifest &manifest,
                                   const QString &assetRoot,
                                   QString *contentHash,

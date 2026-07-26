@@ -1,4 +1,4 @@
-# xIPs 1.3.0 implementation status
+# xIPs 1.4.0 implementation status
 
 ## User workflow
 
@@ -15,6 +15,7 @@ Status: complete.
 9. Assign, rename, and remove user groups; edit an asset by checking existing groups or entering one new group.
 10. Delete a saved version without touching the working copy, or delete the complete selected asset after a bounded confirmation without touching import sources.
 11. Refresh on startup and window activation for a Jianguoyun-backed library; surface retained problems in a non-modal action banner.
+12. Refuse to publish or delete when a working copy, saved snapshot, manifest, or operation staging changes after verification; preserve every unrecognized path for explicit review.
 
 ## Interface boundary
 
@@ -28,7 +29,7 @@ Status: complete.
 
 ## Excluded scope
 
-HDL parsing, source preview, dependency analysis, Git integration, simulation, synthesis, cloud accounts, installers, Windows URI registration, single-instance IPC, and ZeroSlack embedding are outside 1.3.
+HDL parsing, source preview, dependency analysis, Git integration, simulation, synthesis, cloud accounts, installers, Windows URI registration, single-instance IPC, and ZeroSlack embedding are outside 1.4.
 
 ## Acceptance
 

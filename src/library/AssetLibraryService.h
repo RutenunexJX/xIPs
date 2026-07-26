@@ -27,10 +27,13 @@ struct ImportAssetRequest {
 };
 
 struct VersionInfo {
+    int schemaVersion = 1;
     QString version;
     QDateTime createdAt;
     QString contentHash;
+    QString strictContentHash;
     QString path;
+    QString warning;
 };
 
 struct ImportBatchResult {
@@ -80,8 +83,23 @@ struct UpdateAssetResult {
     bool publishedAsIntended = false;
 };
 
+enum class RecoveryDiscardOutcome {
+    Rejected,
+    PendingUndoPreserved,
+    TokenRetired
+};
+
 struct RecoveryDiscardResult {
+    RecoveryDiscardOutcome outcome = RecoveryDiscardOutcome::Rejected;
     QString retainedPath;
+    QString warning;
+};
+
+struct DeleteVersionResult {
+    bool snapshotRemoved = false;
+    bool markerUpdated = false;
+    QString removedPath;
+    QStringList retainedPaths;
     QString warning;
 };
 
@@ -89,6 +107,10 @@ struct CopyPlan {
     QString version;
     QString sourceRoot;
     QStringList files;
+    QString contentHash;
+    QString strictContentHash;
+    QString payloadFingerprint;
+    QString proofFingerprint;
     QString suggestedName;
     QString error;
 
@@ -107,10 +129,26 @@ enum class WorkingCopyRecoveryMode {
     Permanent
 };
 
+enum class WorkingCopyDiscardPolicy {
+    RequirePublishedCopy,
+    AllowVerifiedCurrentCopy
+};
+
 #ifdef XIPS_ENABLE_TEST_HOOKS
 enum class WorkingCopyTestPoint {
     StagingVerifiedBeforePublish,
-    RecoveryVerifiedBeforeDiscardIsolation
+    RecoveryVerifiedBeforeDiscardIsolation,
+    RecoveryIsolatedBeforeLiveReverification,
+    VersionStagingVerifiedBeforePublish,
+    VersionStagingPreparedBeforeInitialVerification,
+    SavedVersionCopiedBeforeVerification,
+    CopyStagingPreparedBeforeInitialVerification,
+    RestoreStagingPreparedBeforeInitialVerification,
+    RestoreStagingVerifiedBeforeUpdateAsset,
+    DeleteVersionVerifiedBeforeIsolation,
+    DeleteVersionIsolatedBeforeMarkerCas,
+    DeleteVersionMarkerPublishedBeforeFinalProof,
+    DeleteVersionVerifiedBeforeRemoval
 };
 
 using WorkingCopyTestHook = std::function<void(WorkingCopyTestPoint,
@@ -126,7 +164,8 @@ public:
         const QString &currentVersion);
 
 #ifdef XIPS_ENABLE_TEST_HOOKS
-    void setWorkingCopyTestHook(WorkingCopyTestHook hook);
+    void setWorkingCopyTestHook(WorkingCopyTestPoint point,
+                                WorkingCopyTestHook hook);
 #endif
 
     bool importAsset(const ImportAssetRequest &request,
@@ -150,7 +189,9 @@ public:
                      WorkingCopyRecoveryMode recoveryMode = WorkingCopyRecoveryMode::MoveToTrash,
                      UpdateAssetResult *result = nullptr,
                      QString *error = nullptr,
-                     const QString &expectedCurrentHash = {}) const;
+                     const QString &expectedCurrentHash = {},
+                     const QStringList &expectedSourceFiles = {},
+                     const QString &expectedSourcePayloadFingerprint = {}) const;
     bool restoreVersion(const AssetRecord &asset,
                         const QString &version,
                         WorkingCopyRecoveryMode recoveryMode = WorkingCopyRecoveryMode::MoveToTrash,
@@ -159,12 +200,14 @@ public:
     bool undoWorkingCopyChange(const AssetRecord &asset,
                                const WorkingCopyUndoToken &token,
                                UpdateAssetResult *result,
-                               QString *error = nullptr) const;
+                               QString *error = nullptr,
+                               RemovalMode cleanupMode = RemovalMode::MoveToTrash) const;
     bool discardWorkingCopyRecovery(const AssetRecord &asset,
                                     const WorkingCopyUndoToken &token,
                                     RemovalMode mode,
                                     RecoveryDiscardResult *result,
-                                    QString *error = nullptr) const;
+                                    QString *error = nullptr,
+                                    WorkingCopyDiscardPolicy policy = WorkingCopyDiscardPolicy::RequirePublishedCopy) const;
     bool deleteAsset(const QString &libraryRoot,
                      const AssetRecord &asset,
                      RemovalMode mode = RemovalMode::MoveToTrash,
@@ -181,13 +224,14 @@ public:
         QString *error = nullptr) const;
     bool createVersion(const AssetRecord &asset,
                        const QString &version,
-                       VersionInfo *created = nullptr,
+                       VersionInfo *created,
                        QString *error = nullptr) const;
     [[nodiscard]] WorkingCopyState workingCopyState(
         const AssetRecord &asset) const;
     bool deleteVersion(const AssetRecord &asset,
                        const QString &version,
                        RemovalMode mode = RemovalMode::MoveToTrash,
+                       DeleteVersionResult *result = nullptr,
                        QString *error = nullptr) const;
     [[nodiscard]] CopyPlan copyPlan(const AssetRecord &asset,
                                     const QString &version) const;
@@ -202,6 +246,9 @@ private:
     void invokeWorkingCopyTestHook(WorkingCopyTestPoint point,
                                    const QString &path) const;
 
+    mutable WorkingCopyTestPoint m_workingCopyTestPoint =
+        WorkingCopyTestPoint::StagingVerifiedBeforePublish;
+    mutable bool m_hasWorkingCopyTestHook = false;
     mutable WorkingCopyTestHook m_workingCopyTestHook;
 #endif
 };

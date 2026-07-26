@@ -6,13 +6,14 @@
 #include "manifest/ManifestService.h"
 
 #include <QDir>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
-#include <QTemporaryDir>
 #include <QUuid>
 
 #include <algorithm>
@@ -147,6 +148,99 @@ bool filesEqual(const QString &leftPath, const QString &rightPath)
     return left.atEnd() && right.atEnd();
 }
 
+bool strictPayloadFingerprint(const QString &root,
+                              const QStringList *expectedFiles,
+                              QStringList *verifiedFiles,
+                              QString *fingerprint,
+                              QString *error)
+{
+    if (verifiedFiles) {
+        verifiedFiles->clear();
+    }
+    if (fingerprint) {
+        fingerprint->clear();
+    }
+    QStringList filesAtStart;
+    if (!files::collectPayloadFiles(root,
+                                    filesAtStart,
+                                    files::LinkPolicy::Reject,
+                                    error)) {
+        return false;
+    }
+    if (filesAtStart.isEmpty()) {
+        return fail(error, QStringLiteral("The selected asset has no payload files"));
+    }
+    if (expectedFiles && filesAtStart != *expectedFiles) {
+        return fail(error,
+                    QStringLiteral("The payload file list changed during the operation"));
+    }
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(QByteArrayView("xips-payload-v1\0", 16));
+    const auto addSizedData = [&hash](const QByteArray &data) {
+        hash.addData(QByteArray::number(static_cast<qlonglong>(data.size())));
+        hash.addData(QByteArrayView(":", 1));
+        hash.addData(data);
+    };
+    for (const QString &relative : filesAtStart) {
+        hash.addData(QByteArrayView("\0path\0", 6));
+        addSizedData(relative.toUtf8());
+        QFile file(QDir(root).absoluteFilePath(relative));
+        if (!file.open(QIODevice::ReadOnly)) {
+            return fail(error,
+                        QStringLiteral("Cannot read payload file for verification: %1")
+                            .arg(file.fileName()));
+        }
+        const qint64 expectedSize = file.size();
+        const QDateTime expectedModified = file.fileTime(
+            QFileDevice::FileModificationTime);
+        if (expectedSize < 0) {
+            return fail(error,
+                        QStringLiteral("Cannot determine payload file size: %1")
+                            .arg(file.fileName()));
+        }
+        hash.addData(QByteArrayView("\0data\0", 6));
+        hash.addData(QByteArray::number(expectedSize));
+        hash.addData(QByteArrayView(":", 1));
+        qint64 bytesRead = 0;
+        while (!file.atEnd()) {
+            const QByteArray chunk = file.read(1024 * 1024);
+            if (chunk.isEmpty() && file.error() != QFileDevice::NoError) {
+                return fail(error,
+                            QStringLiteral("Cannot finish reading payload file: %1")
+                                .arg(file.fileName()));
+            }
+            hash.addData(chunk);
+            bytesRead += static_cast<qint64>(chunk.size());
+        }
+        if (file.error() != QFileDevice::NoError
+            || bytesRead != expectedSize || file.size() != expectedSize
+            || file.fileTime(QFileDevice::FileModificationTime)
+                   != expectedModified) {
+            return fail(error,
+                        QStringLiteral("Payload file changed while it was being verified: %1")
+                            .arg(file.fileName()));
+        }
+    }
+    QStringList filesAtEnd;
+    if (!files::collectPayloadFiles(root,
+                                    filesAtEnd,
+                                    files::LinkPolicy::Reject,
+                                    error)
+        || filesAtEnd != filesAtStart) {
+        return fail(error,
+                    QStringLiteral("The payload file list changed while it was being verified"));
+    }
+    if (verifiedFiles) {
+        *verifiedFiles = filesAtEnd;
+    }
+    if (fingerprint) {
+        *fingerprint = QStringLiteral("sha256:")
+                       + QString::fromLatin1(hash.result().toHex());
+    }
+    return true;
+}
+
 UpdatePreview comparePayload(const QString &assetRoot,
                              const SourcePayload &source)
 {
@@ -245,6 +339,58 @@ bool strictFingerprintAtRoot(const QString &root,
     }
     if (fingerprint) {
         *fingerprint = hash;
+    }
+    return true;
+}
+
+bool strictNonEmptyAssetFingerprintAtRoot(const QString &root,
+                                          const QString &expectedAssetId,
+                                          Manifest *manifest,
+                                          QStringList *files,
+                                          QString *contentFingerprint,
+                                          QString *payloadFingerprint,
+                                          QString *error)
+{
+    QStringList initialFiles;
+    QString initialPayloadFingerprint;
+    if (!strictPayloadFingerprint(root,
+                                  nullptr,
+                                  &initialFiles,
+                                  &initialPayloadFingerprint,
+                                  error)) {
+        return false;
+    }
+    Manifest verifiedManifest;
+    QString verifiedContentFingerprint;
+    if (!strictFingerprintAtRoot(root,
+                                 expectedAssetId,
+                                 &verifiedManifest,
+                                 &verifiedContentFingerprint,
+                                 error)) {
+        return false;
+    }
+    QStringList confirmedFiles;
+    QString confirmedPayloadFingerprint;
+    if (!strictPayloadFingerprint(root,
+                                  &initialFiles,
+                                  &confirmedFiles,
+                                  &confirmedPayloadFingerprint,
+                                  error)
+        || confirmedPayloadFingerprint != initialPayloadFingerprint) {
+        return fail(error,
+                    QStringLiteral("The asset payload changed while it was being verified"));
+    }
+    if (manifest) {
+        *manifest = verifiedManifest;
+    }
+    if (files) {
+        *files = confirmedFiles;
+    }
+    if (contentFingerprint) {
+        *contentFingerprint = verifiedContentFingerprint;
+    }
+    if (payloadFingerprint) {
+        *payloadFingerprint = confirmedPayloadFingerprint;
     }
     return true;
 }
@@ -449,16 +595,39 @@ bool validFingerprint(const QString &fingerprint)
     return pattern.match(fingerprint).hasMatch();
 }
 
+bool validateWorkingCopyUndoTokenEnvelope(const AssetRecord &asset,
+                                          const WorkingCopyUndoToken &token,
+                                          QString *error)
+{
+    const QString assetRoot = files::normalizedAbsolute(asset.assetRoot);
+    const QString recovery = files::normalizedAbsolute(token.recoveryPath);
+    const QFileInfo recoveryInfo(recovery);
+    const QString recoveryParent = files::normalizedAbsolute(
+        recoveryInfo.absolutePath());
+    const QString assetParent = files::normalizedAbsolute(
+        QFileInfo(assetRoot).absolutePath());
+    static const QRegularExpression recoveryName(
+        QStringLiteral(
+            "^\\.xips-create-recovery-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (!token.isValid() || token.assetId != asset.manifest.id
+        || !samePath(token.assetRoot, asset.assetRoot)
+        || !validFingerprint(token.publishedFingerprint)
+        || !validFingerprint(token.recoveryFingerprint)
+        || !samePath(recoveryParent, assetParent)
+        || !recoveryName.match(recoveryInfo.fileName()).hasMatch()) {
+        return fail(error,
+                    QStringLiteral("The working-copy Undo token is invalid"));
+    }
+    return true;
+}
+
 bool validateWorkingCopyUndoToken(const AssetRecord &asset,
                                   const WorkingCopyUndoToken &token,
                                   QString *error)
 {
-    if (!token.isValid() || token.assetId != asset.manifest.id
-        || !samePath(token.assetRoot, asset.assetRoot)
-        || !validFingerprint(token.publishedFingerprint)
-        || !validFingerprint(token.recoveryFingerprint)) {
-        return fail(error,
-                    QStringLiteral("The working-copy Undo token is invalid"));
+    if (!validateWorkingCopyUndoTokenEnvelope(asset, token, error)) {
+        return false;
     }
     return validateWorkingCopyRecovery(asset,
                                        token.recoveryPath,
@@ -556,10 +725,11 @@ bool writeSnapshotMetadata(const QString &path,
                         .arg(file.errorString()));
     }
     const QJsonObject object{
-        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("schemaVersion"), 2},
         {QStringLiteral("version"), version.version},
         {QStringLiteral("createdAt"), version.createdAt.toUTC().toString(Qt::ISODateWithMs)},
         {QStringLiteral("contentHash"), version.contentHash},
+        {QStringLiteral("strictContentHash"), version.strictContentHash},
     };
     const QByteArray data = QJsonDocument(object).toJson(QJsonDocument::Indented);
     if (file.write(data) != data.size() || !file.commit()) {
@@ -570,11 +740,960 @@ bool writeSnapshotMetadata(const QString &path,
     return true;
 }
 
+struct SnapshotProof {
+    VersionInfo info;
+    Manifest manifest;
+    QStringList files;
+    QString payloadFingerprint;
+    QString proofFingerprint;
+    QByteArray metadataCanonical;
+    QByteArray manifestCanonical;
+};
+
+bool readStableFile(const QString &path, QByteArray *contents, QString *error)
+{
+    if (contents) {
+        contents->clear();
+    }
+    const QFileInfo before(path);
+    if (!before.isFile() || files::isLinkLike(before)) {
+        return fail(error,
+                    QStringLiteral("Required snapshot file is missing or linked: %1")
+                        .arg(files::normalizedAbsolute(path)));
+    }
+    QFile file(before.absoluteFilePath());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return fail(error,
+                    QStringLiteral("Cannot read snapshot file: %1")
+                        .arg(before.absoluteFilePath()));
+    }
+    const QByteArray data = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        return fail(error,
+                    QStringLiteral("Cannot finish reading snapshot file: %1")
+                        .arg(before.absoluteFilePath()));
+    }
+    const QFileInfo after(path);
+    if (!after.isFile() || files::isLinkLike(after)
+        || after.size() != before.size()
+        || after.lastModified() != before.lastModified()
+        || data.size() != before.size()) {
+        return fail(error,
+                    QStringLiteral("Snapshot file changed while it was being read: %1")
+                        .arg(before.absoluteFilePath()));
+    }
+    if (contents) {
+        *contents = data;
+    }
+    return true;
+}
+
+bool readSnapshotMetadataStable(const QString &path,
+                                VersionInfo *version,
+                                QByteArray *canonical,
+                                QString *error)
+{
+    QByteArray contents;
+    if (!readStableFile(path, &contents, error)) {
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(contents, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return fail(error,
+                    QStringLiteral("Invalid version metadata: %1")
+                        .arg(files::normalizedAbsolute(path)));
+    }
+    const QJsonObject object = document.object();
+    const QJsonValue schemaValue = object.value(QStringLiteral("schemaVersion"));
+    if (!schemaValue.isDouble()
+        || (schemaValue.toInt() != 1 && schemaValue.toInt() != 2)
+        || schemaValue.toDouble() != static_cast<double>(schemaValue.toInt())) {
+        return fail(error,
+                    QStringLiteral("Unsupported version metadata schema: %1")
+                        .arg(files::normalizedAbsolute(path)));
+    }
+    VersionInfo parsed;
+    parsed.schemaVersion = schemaValue.toInt();
+    const QJsonValue versionValue = object.value(QStringLiteral("version"));
+    const QJsonValue createdAtValue = object.value(QStringLiteral("createdAt"));
+    const QJsonValue contentHashValue = object.value(QStringLiteral("contentHash"));
+    const QJsonValue strictHashValue = object.value(
+        QStringLiteral("strictContentHash"));
+    if (!versionValue.isString() || !createdAtValue.isString()
+        || !contentHashValue.isString()
+        || (parsed.schemaVersion == 2 && !strictHashValue.isString())) {
+        return fail(error,
+                    QStringLiteral("Incomplete version metadata: %1")
+                        .arg(files::normalizedAbsolute(path)));
+    }
+    parsed.version = versionValue.toString();
+    parsed.createdAt = QDateTime::fromString(createdAtValue.toString(),
+                                             Qt::ISODateWithMs);
+    parsed.contentHash = contentHashValue.toString();
+    parsed.strictContentHash = strictHashValue.isString()
+                                   ? strictHashValue.toString()
+                                   : QString();
+    if (!validVersion(parsed.version) || !parsed.createdAt.isValid()
+        || !validFingerprint(parsed.contentHash)
+        || (parsed.schemaVersion == 2
+            && !validFingerprint(parsed.strictContentHash))) {
+        return fail(error,
+                    QStringLiteral("Invalid version metadata fields: %1")
+                        .arg(files::normalizedAbsolute(path)));
+    }
+    if (version) {
+        *version = parsed;
+    }
+    if (canonical) {
+        *canonical = json::canonicalJson(object);
+    }
+    return true;
+}
+
+bool collectSnapshotEntries(const QString &directory,
+                            const QString &root,
+                            QStringList &entries,
+                            QString *error)
+{
+    const QFileInfoList children = QDir(directory).entryInfoList(
+        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+        QDir::Name);
+    for (const QFileInfo &entry : children) {
+        if (files::isLinkLike(entry)) {
+            return fail(error,
+                        QStringLiteral("Saved version contains linked data: %1")
+                            .arg(entry.absoluteFilePath()));
+        }
+        const QString relative = QDir::fromNativeSeparators(
+            QDir(root).relativeFilePath(entry.absoluteFilePath()));
+        if (entry.isDir()) {
+            entries.append(QStringLiteral("d:%1").arg(relative));
+            if (!collectSnapshotEntries(entry.absoluteFilePath(),
+                                        root,
+                                        entries,
+                                        error)) {
+                return false;
+            }
+        } else if (entry.isFile()) {
+            entries.append(QStringLiteral("f:%1").arg(relative));
+        } else {
+            return fail(error,
+                        QStringLiteral("Saved version contains unsupported data: %1")
+                            .arg(entry.absoluteFilePath()));
+        }
+    }
+    return true;
+}
+
+QStringList expectedPayloadEntries(const QStringList &payloadFiles)
+{
+    QSet<QString> expected;
+    for (const QString &payloadFile : payloadFiles) {
+        const QString normalized = QDir::fromNativeSeparators(payloadFile);
+        expected.insert(QStringLiteral("f:%1").arg(normalized));
+        QString parent = QDir::fromNativeSeparators(QFileInfo(normalized).path());
+        while (!parent.isEmpty() && parent != QStringLiteral(".")) {
+            expected.insert(QStringLiteral("d:%1").arg(parent));
+            const qsizetype separator = parent.lastIndexOf(u'/');
+            parent = separator < 0 ? QString() : parent.left(separator);
+        }
+    }
+    QStringList result = expected.values();
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+QStringList expectedSnapshotEntries(const QStringList &payloadFiles)
+{
+    QStringList result = expectedPayloadEntries(payloadFiles);
+    result.append(QStringLiteral("f:.snapshot.json"));
+    result.append(QStringLiteral("f:.xips.json"));
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+QString snapshotProofFingerprint(const SnapshotProof &proof)
+{
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(QByteArrayView("xips-snapshot-proof-v1\0", 23));
+    const auto addSizedData = [&hash](const QByteArray &data) {
+        hash.addData(QByteArray::number(static_cast<qlonglong>(data.size())));
+        hash.addData(QByteArrayView(":", 1));
+        hash.addData(data);
+    };
+    addSizedData(proof.metadataCanonical);
+    addSizedData(proof.manifestCanonical);
+    for (const QString &file : proof.files) {
+        addSizedData(file.toUtf8());
+    }
+    addSizedData(proof.info.contentHash.toUtf8());
+    addSizedData(proof.info.strictContentHash.toUtf8());
+    addSizedData(proof.payloadFingerprint.toUtf8());
+    return QStringLiteral("sha256:")
+           + QString::fromLatin1(hash.result().toHex());
+}
+
+bool verifySavedSnapshot(const QString &assetRoot,
+                         const QString &expectedAssetId,
+                         const QString &expectedVersion,
+                         const QString &snapshotRoot,
+                         const bool requireFinalDirectoryName,
+                         SnapshotProof *proof,
+                         QString *error)
+{
+    if (proof) {
+        *proof = {};
+    }
+    const QString root = files::normalizedAbsolute(assetRoot);
+    const QString versionsRoot = QDir(root).absoluteFilePath(
+        QStringLiteral(".xips/versions"));
+    const QFileInfo internalInfo(QDir(root).absoluteFilePath(
+        QStringLiteral(".xips")));
+    const QFileInfo versionsInfo(versionsRoot);
+    const QString snapshot = files::normalizedAbsolute(snapshotRoot);
+    const QFileInfo snapshotInfo(snapshot);
+    if (!internalInfo.isDir() || files::isLinkLike(internalInfo)
+        || !versionsInfo.isDir() || files::isLinkLike(versionsInfo)
+        || !snapshotInfo.isDir() || files::isLinkLike(snapshotInfo)
+        || !samePath(snapshotInfo.absolutePath(), versionsRoot)
+        || (requireFinalDirectoryName
+            && snapshotInfo.fileName() != expectedVersion)) {
+        return fail(error,
+                    QStringLiteral("Saved version path is invalid or linked: %1")
+                        .arg(snapshot));
+    }
+
+    const QString metadataPath = QDir(snapshot).absoluteFilePath(
+        QStringLiteral(".snapshot.json"));
+    const QString manifestPath = QDir(snapshot).absoluteFilePath(
+        QStringLiteral(".xips.json"));
+    VersionInfo metadata;
+    QByteArray metadataCanonical;
+    if (!readSnapshotMetadataStable(metadataPath,
+                                    &metadata,
+                                    &metadataCanonical,
+                                    error)) {
+        return false;
+    }
+    if (metadata.version != expectedVersion) {
+        return fail(error,
+                    QStringLiteral("Saved version metadata does not match its directory: %1")
+                        .arg(snapshot));
+    }
+    const QFileInfo manifestInfo(manifestPath);
+    if (!manifestInfo.isFile() || files::isLinkLike(manifestInfo)) {
+        return fail(error,
+                    QStringLiteral("Saved version manifest is missing or linked: %1")
+                        .arg(manifestPath));
+    }
+    const ManifestService manifestService;
+    const ManifestLoadResult loaded = manifestService.load(manifestPath);
+    if (!loaded.ok() || loaded.manifest->id != expectedAssetId
+        || loaded.manifest->version != expectedVersion) {
+        return fail(error,
+                    QStringLiteral("Saved version manifest does not match the asset or version: %1")
+                        .arg(manifestPath));
+    }
+    const QByteArray manifestCanonical = json::canonicalJson(
+        manifestService.toJson(*loaded.manifest));
+
+    QStringList payloadFiles;
+    QString payloadFingerprint;
+    if (!strictPayloadFingerprint(snapshot,
+                                  nullptr,
+                                  &payloadFiles,
+                                  &payloadFingerprint,
+                                  error)) {
+        return false;
+    }
+    QStringList initialEntries;
+    if (!collectSnapshotEntries(snapshot, snapshot, initialEntries, error)) {
+        return false;
+    }
+    std::sort(initialEntries.begin(), initialEntries.end());
+    if (initialEntries != expectedSnapshotEntries(payloadFiles)) {
+        return fail(error,
+                    QStringLiteral("Saved version contains unrecognized or incomplete data: %1")
+                        .arg(snapshot));
+    }
+
+    QString legacyHash;
+    QString strictHash;
+    if (!AssetScanner::verifiedContentHash(*loaded.manifest,
+                                           snapshot,
+                                           &legacyHash,
+                                           error)
+        || !AssetScanner::strictContentHash(*loaded.manifest,
+                                            snapshot,
+                                            &strictHash,
+                                            error)) {
+        return false;
+    }
+    if (legacyHash != metadata.contentHash
+        || (metadata.schemaVersion == 2
+            && strictHash != metadata.strictContentHash)) {
+        return fail(error,
+                    QStringLiteral("Saved version content no longer matches its metadata: %1")
+                        .arg(snapshot));
+    }
+
+    VersionInfo confirmedMetadata;
+    QByteArray confirmedMetadataCanonical;
+    const ManifestLoadResult confirmedManifest = manifestService.load(manifestPath);
+    QStringList confirmedFiles;
+    QString confirmedPayloadFingerprint;
+    QStringList confirmedEntries;
+    if (!readSnapshotMetadataStable(metadataPath,
+                                    &confirmedMetadata,
+                                    &confirmedMetadataCanonical,
+                                    error)
+        || !confirmedManifest.ok()
+        || json::canonicalJson(manifestService.toJson(*confirmedManifest.manifest))
+               != manifestCanonical
+        || confirmedMetadataCanonical != metadataCanonical
+        || !strictPayloadFingerprint(snapshot,
+                                     &payloadFiles,
+                                     &confirmedFiles,
+                                     &confirmedPayloadFingerprint,
+                                     error)
+        || confirmedPayloadFingerprint != payloadFingerprint
+        || !collectSnapshotEntries(snapshot, snapshot, confirmedEntries, error)) {
+        return fail(error,
+                    QStringLiteral("Saved version changed while it was being verified: %1")
+                        .arg(snapshot));
+    }
+    std::sort(confirmedEntries.begin(), confirmedEntries.end());
+    if (confirmedEntries != initialEntries) {
+        return fail(error,
+                    QStringLiteral("Saved version layout changed while it was being verified: %1")
+                        .arg(snapshot));
+    }
+
+    SnapshotProof verified;
+    verified.info = metadata;
+    verified.info.path = snapshot;
+    verified.info.strictContentHash = strictHash;
+    verified.manifest = *confirmedManifest.manifest;
+    verified.files = confirmedFiles;
+    verified.payloadFingerprint = confirmedPayloadFingerprint;
+    verified.metadataCanonical = confirmedMetadataCanonical;
+    verified.manifestCanonical = manifestCanonical;
+    verified.proofFingerprint = snapshotProofFingerprint(verified);
+    if (proof) {
+        *proof = verified;
+    }
+    return true;
+}
+
+bool sameSnapshotProof(const SnapshotProof &left, const SnapshotProof &right)
+{
+    return !left.proofFingerprint.isEmpty()
+           && left.proofFingerprint == right.proofFingerprint
+           && left.info.path == right.info.path
+           && left.files == right.files;
+}
+
+bool sameSnapshotContentProof(const SnapshotProof &left,
+                              const SnapshotProof &right)
+{
+    return !left.proofFingerprint.isEmpty()
+           && left.proofFingerprint == right.proofFingerprint
+           && left.files == right.files
+           && left.info.schemaVersion == right.info.schemaVersion
+           && left.info.version == right.info.version
+           && left.info.contentHash == right.info.contentHash
+           && left.info.strictContentHash == right.info.strictContentHash
+           && left.payloadFingerprint == right.payloadFingerprint;
+}
+
+bool copyPayloadFiles(const QString &sourceRoot,
+                      const QStringList &payloadFiles,
+                      const QString &destinationRoot,
+                      QString *error)
+{
+    for (const QString &relative : payloadFiles) {
+        const QString source = QDir(sourceRoot).absoluteFilePath(relative);
+        const QFileInfo sourceInfo(source);
+        if (!sourceInfo.isFile() || files::isLinkLike(sourceInfo)) {
+            return fail(error,
+                        QStringLiteral("Payload source changed or became linked: %1")
+                            .arg(source));
+        }
+        const QString destination = QDir(destinationRoot).absoluteFilePath(relative);
+        if (!QDir().mkpath(QFileInfo(destination).absolutePath())
+            || !QFile::copy(source, destination)) {
+            return fail(error,
+                        QStringLiteral("Cannot copy %1 to %2")
+                            .arg(source, destination));
+        }
+    }
+    return true;
+}
+
+bool verifiedCopiedPayload(const QString &root,
+                           const QStringList &expectedFiles,
+                           const QString &expectedFingerprint,
+                           QString *error)
+{
+    QStringList files;
+    QString fingerprint;
+    if (!strictPayloadFingerprint(root,
+                                  &expectedFiles,
+                                  &files,
+                                  &fingerprint,
+                                  error)) {
+        return false;
+    }
+    if (fingerprint != expectedFingerprint) {
+        return fail(error,
+                    QStringLiteral("Copied payload does not match the verified source"));
+    }
+    return true;
+}
+
+struct PayloadProof {
+    QString root;
+    QStringList files;
+    QString payloadFingerprint;
+    QStringList entries;
+};
+
+struct StagingRetireResult {
+    QString retainedPath;
+    QString warning;
+};
+
+bool verifyPayloadProofAtRoot(const QString &root,
+                              const QStringList &expectedFiles,
+                              const QString &expectedFingerprint,
+                              PayloadProof *proof,
+                              QString *error)
+{
+    if (proof) {
+        *proof = {};
+    }
+    const QString normalizedRoot = files::normalizedAbsolute(root);
+    const QFileInfo rootInfo(normalizedRoot);
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
+        return fail(error,
+                    QStringLiteral("Payload staging path is invalid or linked: %1")
+                        .arg(normalizedRoot));
+    }
+    QStringList entries;
+    if (!collectSnapshotEntries(normalizedRoot,
+                                normalizedRoot,
+                                entries,
+                                error)) {
+        return false;
+    }
+    std::sort(entries.begin(), entries.end());
+    if (entries != expectedPayloadEntries(expectedFiles)) {
+        return fail(error,
+                    QStringLiteral("Payload staging contains unrecognized or incomplete data: %1")
+                        .arg(normalizedRoot));
+    }
+    if (!verifiedCopiedPayload(normalizedRoot,
+                               expectedFiles,
+                               expectedFingerprint,
+                               error)) {
+        return false;
+    }
+    if (proof) {
+        proof->root = normalizedRoot;
+        proof->files = expectedFiles;
+        proof->payloadFingerprint = expectedFingerprint;
+        proof->entries = entries;
+    }
+    return true;
+}
+
+bool samePayloadProof(const PayloadProof &left, const PayloadProof &right)
+{
+    return !left.payloadFingerprint.isEmpty()
+           && left.files == right.files
+           && left.payloadFingerprint == right.payloadFingerprint
+           && left.entries == right.entries;
+}
+
+bool validOwnedStagingDirectory(const QString &path,
+                                const QString &expectedParent,
+                                const QString &prefix)
+{
+    const QString normalized = files::normalizedAbsolute(path);
+    const QFileInfo info(normalized);
+    const QRegularExpression namePattern(
+        QStringLiteral("^%1[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+            .arg(QRegularExpression::escape(prefix)),
+        QRegularExpression::CaseInsensitiveOption);
+    return info.isDir() && !files::isLinkLike(info)
+           && samePath(info.absolutePath(), expectedParent)
+           && namePattern.match(info.fileName()).hasMatch();
+}
+
+bool removeExactTree(const QString &root,
+                     const QStringList &expectedEntries)
+{
+    QStringList confirmedEntries;
+    QString ignoredError;
+    if (!collectSnapshotEntries(root,
+                                root,
+                                confirmedEntries,
+                                &ignoredError)) {
+        return false;
+    }
+    std::sort(confirmedEntries.begin(), confirmedEntries.end());
+    if (confirmedEntries != expectedEntries) {
+        return false;
+    }
+
+    QStringList directories;
+    for (const QString &entry : expectedEntries) {
+        if (entry.startsWith(QStringLiteral("f:"))) {
+            const QString relative = entry.mid(2);
+            const QString path = QDir(root).absoluteFilePath(relative);
+            const QFileInfo info(path);
+            if (!info.isFile() || files::isLinkLike(info)
+                || !QFile::remove(path)) {
+                return false;
+            }
+        } else if (entry.startsWith(QStringLiteral("d:"))) {
+            directories.append(entry.mid(2));
+        } else {
+            return false;
+        }
+    }
+    std::sort(directories.begin(), directories.end(),
+              [](const QString &left, const QString &right) {
+                  if (left.count(u'/') != right.count(u'/')) {
+                      return left.count(u'/') > right.count(u'/');
+                  }
+                  return left.size() > right.size();
+              });
+    for (const QString &relative : directories) {
+        if (!QDir().rmdir(QDir(root).absoluteFilePath(relative))) {
+            return false;
+        }
+    }
+    return QDir().rmdir(root);
+}
+
+bool removeExpectedEmptyDirectories(const QString &root,
+                                    const QStringList &originalEntries)
+{
+    QStringList expectedDirectories;
+    for (const QString &entry : originalEntries) {
+        if (entry.startsWith(QStringLiteral("d:"))) {
+            expectedDirectories.append(entry);
+        }
+    }
+    QStringList confirmedEntries;
+    QString ignoredError;
+    if (!collectSnapshotEntries(root,
+                                root,
+                                confirmedEntries,
+                                &ignoredError)) {
+        return false;
+    }
+    std::sort(expectedDirectories.begin(), expectedDirectories.end());
+    std::sort(confirmedEntries.begin(), confirmedEntries.end());
+    if (confirmedEntries != expectedDirectories) {
+        return false;
+    }
+    QStringList directories;
+    for (const QString &entry : expectedDirectories) {
+        directories.append(entry.mid(2));
+    }
+    std::sort(directories.begin(), directories.end(),
+              [](const QString &left, const QString &right) {
+                  if (left.count(u'/') != right.count(u'/')) {
+                      return left.count(u'/') > right.count(u'/');
+                  }
+                  return left.size() > right.size();
+              });
+    for (const QString &relative : directories) {
+        if (!QDir().rmdir(QDir(root).absoluteFilePath(relative))) {
+            return false;
+        }
+    }
+    return QDir().rmdir(root);
+}
+
+bool retireVerifiedPayloadStaging(const PayloadProof &proof,
+                                  const QString &expectedParent,
+                                  const QString &prefix,
+                                  StagingRetireResult *result)
+{
+    if (result) {
+        *result = {};
+    }
+    PayloadProof confirmed;
+    QString verificationError;
+    if (!validOwnedStagingDirectory(proof.root, expectedParent, prefix)
+        || !verifyPayloadProofAtRoot(proof.root,
+                                     proof.files,
+                                     proof.payloadFingerprint,
+                                     &confirmed,
+                                     &verificationError)
+        || !samePayloadProof(proof, confirmed)) {
+        if (result) {
+            result->retainedPath = proof.root;
+            result->warning = QStringLiteral(
+                "Temporary data was retained because it no longer matches the verified staging proof at %1%2")
+                                  .arg(proof.root,
+                                       verificationError.isEmpty()
+                                           ? QString()
+                                           : QStringLiteral(": %1")
+                                                 .arg(verificationError));
+        }
+        return false;
+    }
+
+    const QString parent = files::normalizedAbsolute(expectedParent);
+    const QString originalName = QFileInfo(proof.root).fileName();
+    const QString retireName = prefix.startsWith(QStringLiteral(".staging-"))
+                                   ? QStringLiteral(".staging-retire-%1")
+                                         .arg(QUuid::createUuid().toString(
+                                             QUuid::WithoutBraces))
+                                   : QStringLiteral(".xips-create-retire-%1")
+                                         .arg(QUuid::createUuid().toString(
+                                             QUuid::WithoutBraces));
+    QDir parentDirectory(parent);
+    if (!parentDirectory.rename(originalName, retireName)) {
+        if (result) {
+            result->retainedPath = proof.root;
+            result->warning = QStringLiteral(
+                "Verified temporary data could not be isolated for cleanup and remains at %1")
+                                  .arg(proof.root);
+        }
+        return false;
+    }
+    const QString retiredPath = QDir(parent).absoluteFilePath(retireName);
+    PayloadProof isolated;
+    verificationError.clear();
+    if (!verifyPayloadProofAtRoot(retiredPath,
+                                  proof.files,
+                                  proof.payloadFingerprint,
+                                  &isolated,
+                                  &verificationError)
+        || !samePayloadProof(proof, isolated)) {
+        const bool restored = !QFileInfo::exists(proof.root)
+                              && parentDirectory.rename(retireName,
+                                                        originalName);
+        if (result) {
+            result->retainedPath = restored ? proof.root : retiredPath;
+            result->warning = QStringLiteral(
+                "Temporary data changed after cleanup isolation and was not deleted; it remains at %1%2")
+                                  .arg(result->retainedPath,
+                                       verificationError.isEmpty()
+                                           ? QString()
+                                           : QStringLiteral(": %1")
+                                                 .arg(verificationError));
+        }
+        return false;
+    }
+    if (!removeExactTree(retiredPath, isolated.entries)) {
+        if (result) {
+            result->retainedPath = retiredPath;
+            result->warning = QStringLiteral(
+                "Verified temporary data could not be completely retired and remains at %1")
+                                  .arg(retiredPath);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool retireVerifiedSnapshotStaging(const QString &assetRoot,
+                                   const QString &assetId,
+                                   const QString &version,
+                                   const SnapshotProof &proof,
+                                   StagingRetireResult *result)
+{
+    if (result) {
+        *result = {};
+    }
+    const QString versionsRoot = QDir(assetRoot).absoluteFilePath(
+        QStringLiteral(".xips/versions"));
+    SnapshotProof confirmed;
+    QString verificationError;
+    if (!validOwnedStagingDirectory(proof.info.path,
+                                    versionsRoot,
+                                    QStringLiteral(".staging-"))
+        || !verifySavedSnapshot(assetRoot,
+                                assetId,
+                                version,
+                                proof.info.path,
+                                false,
+                                &confirmed,
+                                &verificationError)
+        || !sameSnapshotProof(proof, confirmed)) {
+        if (result) {
+            result->retainedPath = proof.info.path;
+            result->warning = QStringLiteral(
+                "Version staging was retained because it no longer matches its verified snapshot proof at %1%2")
+                                  .arg(proof.info.path,
+                                       verificationError.isEmpty()
+                                           ? QString()
+                                           : QStringLiteral(": %1")
+                                                 .arg(verificationError));
+        }
+        return false;
+    }
+
+    const QString originalName = QFileInfo(proof.info.path).fileName();
+    const QString retireName = QStringLiteral(".staging-retire-%1")
+                                   .arg(QUuid::createUuid().toString(
+                                       QUuid::WithoutBraces));
+    QDir versionsDirectory(versionsRoot);
+    if (!versionsDirectory.rename(originalName, retireName)) {
+        if (result) {
+            result->retainedPath = proof.info.path;
+            result->warning = QStringLiteral(
+                "Verified version staging could not be isolated for cleanup and remains at %1")
+                                  .arg(proof.info.path);
+        }
+        return false;
+    }
+    const QString retiredPath = QDir(versionsRoot).absoluteFilePath(retireName);
+    SnapshotProof isolated;
+    verificationError.clear();
+    if (!verifySavedSnapshot(assetRoot,
+                             assetId,
+                             version,
+                             retiredPath,
+                             false,
+                             &isolated,
+                             &verificationError)
+        || !sameSnapshotContentProof(proof, isolated)) {
+        const bool restored = !QFileInfo::exists(proof.info.path)
+                              && versionsDirectory.rename(retireName,
+                                                          originalName);
+        if (result) {
+            result->retainedPath = restored ? proof.info.path : retiredPath;
+            result->warning = QStringLiteral(
+                "Version staging changed after cleanup isolation and was not deleted; it remains at %1%2")
+                                  .arg(result->retainedPath,
+                                       verificationError.isEmpty()
+                                           ? QString()
+                                           : QStringLiteral(": %1")
+                                                 .arg(verificationError));
+        }
+        return false;
+    }
+    const QStringList expectedEntries = expectedSnapshotEntries(isolated.files);
+    if (!removeExactTree(retiredPath, expectedEntries)) {
+        if (result) {
+            result->retainedPath = retiredPath;
+            result->warning = QStringLiteral(
+                "Verified version staging could not be completely retired and remains at %1")
+                                  .arg(retiredPath);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool verifyCopyPlanSource(const AssetRecord &asset,
+                          const CopyPlan &plan,
+                          QString *error)
+{
+    Manifest liveManifest;
+    if (!validateAssetRecord(asset, &liveManifest, error)) {
+        return false;
+    }
+    if (!plan.version.isEmpty()) {
+        SnapshotProof confirmed;
+        if (!verifySavedSnapshot(asset.assetRoot,
+                                 liveManifest.id,
+                                 plan.version,
+                                 plan.sourceRoot,
+                                 true,
+                                 &confirmed,
+                                 error)) {
+            return false;
+        }
+        if (confirmed.files != plan.files
+            || confirmed.info.contentHash != plan.contentHash
+            || confirmed.info.strictContentHash != plan.strictContentHash
+            || confirmed.payloadFingerprint != plan.payloadFingerprint
+            || confirmed.proofFingerprint != plan.proofFingerprint) {
+            return fail(error,
+                        QStringLiteral("Saved version changed during the operation: %1")
+                            .arg(plan.sourceRoot));
+        }
+        return true;
+    }
+
+    QStringList files;
+    QString strictFingerprint;
+    QString payloadFingerprint;
+    if (!strictNonEmptyAssetFingerprintAtRoot(asset.assetRoot,
+                                              liveManifest.id,
+                                              nullptr,
+                                              &files,
+                                              &strictFingerprint,
+                                              &payloadFingerprint,
+                                              error)) {
+        return false;
+    }
+    QString legacyHash;
+    if (!AssetScanner::verifiedContentHash(liveManifest,
+                                           asset.assetRoot,
+                                           &legacyHash,
+                                           error)) {
+        return false;
+    }
+    if (files != plan.files || strictFingerprint != plan.strictContentHash
+        || payloadFingerprint != plan.payloadFingerprint
+        || legacyHash != plan.contentHash
+        || strictFingerprint != plan.proofFingerprint) {
+        return fail(error,
+                    QStringLiteral("The working copy changed during the operation"));
+    }
+    return true;
+}
+
+struct VersionMarkerCasResult {
+    bool published = false;
+    Manifest publishedManifest;
+    QString retainedPath;
+    QString warning;
+};
+
+VersionMarkerCasResult compareAndSwapVersionMarker(
+    const QString &assetRoot,
+    const QString &expectedAssetId,
+    const Manifest &baselineManifest,
+    const QString &version)
+{
+    VersionMarkerCasResult result;
+    const ManifestService manifestService;
+    const QByteArray baselineCanonical = json::canonicalJson(
+        manifestService.toJson(baselineManifest));
+    Manifest nextManifest = baselineManifest;
+    nextManifest.version = version;
+    const QByteArray nextCanonical = json::canonicalJson(
+        manifestService.toJson(nextManifest));
+    const QString normalizedRoot = files::normalizedAbsolute(assetRoot);
+    const QString parent = QFileInfo(normalizedRoot).absolutePath();
+    const QString operationName = QStringLiteral(".xips-create-version-marker-%1")
+                                      .arg(QUuid::createUuid().toString(
+                                          QUuid::WithoutBraces));
+    const QString operationRoot = QDir(parent).absoluteFilePath(operationName);
+    const QString nextPath = QDir(operationRoot).absoluteFilePath(
+        QStringLiteral("next.xips.json"));
+    const QString backupPath = QDir(operationRoot).absoluteFilePath(
+        QStringLiteral("original.xips.json"));
+    const QString manifestPath = QDir(normalizedRoot).absoluteFilePath(
+        QStringLiteral(".xips.json"));
+    const auto setWarning = [&result, &operationRoot](const QString &message,
+                                                       const bool retained) {
+        result.retainedPath = retained ? operationRoot : QString();
+        result.warning = retained
+                             ? QStringLiteral("%1 Data remains at %2")
+                                   .arg(message, operationRoot)
+                             : message;
+    };
+    const auto removeVerifiedNextAndDirectory = [&]() {
+        const ManifestLoadResult next = manifestService.load(nextPath);
+        if (next.ok()
+            && json::canonicalJson(manifestService.toJson(*next.manifest))
+                   == nextCanonical) {
+            QFile::remove(nextPath);
+        }
+        return QDir().rmdir(operationRoot);
+    };
+
+    if (!QDir().mkpath(operationRoot)) {
+        setWarning(QStringLiteral(
+                       "The working-copy version marker could not be prepared"),
+                   false);
+        return result;
+    }
+    QString operationError;
+    if (!manifestService.write(nextPath, nextManifest, &operationError)) {
+        setWarning(QStringLiteral(
+                       "The working-copy version marker could not be prepared: %1")
+                       .arg(operationError),
+                   !QDir().rmdir(operationRoot));
+        return result;
+    }
+
+    const ManifestLoadResult current = manifestService.load(manifestPath);
+    if (!current.ok() || current.manifest->id != expectedAssetId
+        || json::canonicalJson(manifestService.toJson(*current.manifest))
+               != baselineCanonical) {
+        const bool cleaned = removeVerifiedNextAndDirectory();
+        setWarning(QStringLiteral(
+                       "The working copy changed before its version marker could be updated"),
+                   !cleaned);
+        return result;
+    }
+    if (!QFile::rename(manifestPath, backupPath)) {
+        const bool cleaned = removeVerifiedNextAndDirectory();
+        setWarning(QStringLiteral(
+                       "The working-copy version marker could not be isolated"),
+                   !cleaned);
+        return result;
+    }
+
+    const ManifestLoadResult isolated = manifestService.load(backupPath);
+    const bool isolatedMatches = isolated.ok()
+                                 && isolated.manifest->id == expectedAssetId
+                                 && json::canonicalJson(
+                                        manifestService.toJson(*isolated.manifest))
+                                        == baselineCanonical;
+    if (!isolatedMatches || QFileInfo::exists(manifestPath)
+        || !QFile::rename(nextPath, manifestPath)) {
+        bool restored = false;
+        if (!QFileInfo::exists(manifestPath)) {
+            restored = QFile::rename(backupPath, manifestPath);
+        }
+        bool cleaned = false;
+        if (restored) {
+            cleaned = removeVerifiedNextAndDirectory();
+        }
+        setWarning(QStringLiteral(
+                       "A concurrent manifest change prevented the working-copy version marker update"),
+                   !cleaned);
+        return result;
+    }
+
+    const ManifestLoadResult published = manifestService.load(manifestPath);
+    if (!published.ok() || published.manifest->id != expectedAssetId
+        || json::canonicalJson(manifestService.toJson(*published.manifest))
+               != nextCanonical) {
+        setWarning(QStringLiteral(
+                       "The published working-copy version marker could not be verified"),
+                   true);
+        return result;
+    }
+    result.published = true;
+    result.publishedManifest = *published.manifest;
+    const ManifestLoadResult confirmedBackup = manifestService.load(backupPath);
+    if (!confirmedBackup.ok()
+        || json::canonicalJson(
+               manifestService.toJson(*confirmedBackup.manifest))
+               != baselineCanonical
+        || !QFile::remove(backupPath) || !QDir().rmdir(operationRoot)) {
+        setWarning(QStringLiteral(
+                       "The working-copy version marker was updated, but marker recovery data could not be retired"),
+                   true);
+        return result;
+    }
+    return result;
+}
+
 } // namespace
 
 #ifdef XIPS_ENABLE_TEST_HOOKS
-void AssetLibraryService::setWorkingCopyTestHook(WorkingCopyTestHook hook)
+void AssetLibraryService::setWorkingCopyTestHook(
+    const WorkingCopyTestPoint point,
+    WorkingCopyTestHook hook)
 {
+    m_workingCopyTestPoint = point;
+    m_hasWorkingCopyTestHook = static_cast<bool>(hook);
     m_workingCopyTestHook = std::move(hook);
 }
 
@@ -582,7 +1701,11 @@ void AssetLibraryService::invokeWorkingCopyTestHook(
     const WorkingCopyTestPoint point,
     const QString &path) const
 {
+    if (!m_hasWorkingCopyTestHook || point != m_workingCopyTestPoint) {
+        return;
+    }
     WorkingCopyTestHook hook = std::move(m_workingCopyTestHook);
+    m_hasWorkingCopyTestHook = false;
     m_workingCopyTestHook = {};
     if (hook) {
         hook(point, path);
@@ -711,12 +1834,18 @@ bool AssetLibraryService::importAsset(const ImportAssetRequest &request,
             QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
             manifest,
             &operationError)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, operationError);
+        if (QDir().rmdir(stagingRoot)) {
+            return fail(error, operationError);
+        }
+        return fail(error,
+                    QStringLiteral("%1; import staging remains at %2")
+                        .arg(operationError, stagingRoot));
     }
     if (!QDir(libraryRoot).rename(stagingName, manifest.id)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, QStringLiteral("Cannot publish the imported asset"));
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot publish the imported asset; verified import staging remains at %1")
+                        .arg(stagingRoot));
     }
 
     if (created) {
@@ -843,7 +1972,9 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                                       const WorkingCopyRecoveryMode recoveryMode,
                                       UpdateAssetResult *result,
                                       QString *error,
-                                      const QString &expectedCurrentHash) const
+                                      const QString &expectedCurrentHash,
+                                      const QStringList &expectedSourceFiles,
+                                      const QString &expectedSourcePayloadFingerprint) const
 {
     if (recoveryMode == WorkingCopyRecoveryMode::RetainForUndo && !result) {
         return fail(error,
@@ -861,6 +1992,16 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
     if (!expectedHash.isEmpty() && !validFingerprint(expectedHash)) {
         return fail(error,
                     QStringLiteral("The expected working-copy fingerprint is invalid"));
+    }
+    const QString expectedPayloadFingerprint =
+        expectedSourcePayloadFingerprint.trimmed();
+    const bool hasExpectedSourceProof = !expectedSourceFiles.isEmpty()
+                                        || !expectedPayloadFingerprint.isEmpty();
+    if (hasExpectedSourceProof
+        && (expectedSourceFiles.isEmpty()
+            || !validFingerprint(expectedPayloadFingerprint))) {
+        return fail(error,
+                    QStringLiteral("The expected source payload proof is invalid"));
     }
     QString initialFingerprint;
     QString initialHashError;
@@ -885,6 +2026,23 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
     if (!resolveSourcePayload(sourcePath, source, error)) {
         return false;
     }
+    PayloadProof expectedSourceProof;
+    if (hasExpectedSourceProof) {
+        if (source.singleFile || source.files != expectedSourceFiles
+            || !verifyPayloadProofAtRoot(source.root,
+                                         expectedSourceFiles,
+                                         expectedPayloadFingerprint,
+                                         &expectedSourceProof,
+                                         error)) {
+            return fail(error,
+                        error && !error->isEmpty()
+                            ? QStringLiteral(
+                                  "The verified restore source changed before update: %1")
+                                  .arg(*error)
+                            : QStringLiteral(
+                                  "The verified restore source changed before update"));
+        }
+    }
 
     const QString assetRoot = files::normalizedAbsolute(asset.assetRoot);
     const QString parent = QFileInfo(assetRoot).absolutePath();
@@ -903,7 +2061,12 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
 
     QString operationError;
     bool copied = false;
-    if (source.singleFile) {
+    if (hasExpectedSourceProof) {
+        copied = copyPayloadFiles(source.root,
+                                  expectedSourceFiles,
+                                  stagingRoot,
+                                  &operationError);
+    } else if (source.singleFile) {
         copied = QFile::copy(
             QDir(source.root).absoluteFilePath(source.files.first()),
             QDir(stagingRoot).absoluteFilePath(source.files.first()));
@@ -913,19 +2076,61 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
     } else {
         copied = copyPayload(source.root, stagingRoot, &operationError);
     }
-    if (!copied
-        || !ManifestService().write(
+    if (!copied) {
+        if (!QDir().rmdir(stagingRoot)) {
+            operationError += QStringLiteral("; update staging remains at %1")
+                                  .arg(stagingRoot);
+        }
+        return fail(error, operationError);
+    }
+    if (hasExpectedSourceProof) {
+        PayloadProof confirmedSourceProof;
+        PayloadProof copiedSourceProof;
+        QString sourceProofError;
+        QString copiedProofError;
+        const bool sourceUnchanged = verifyPayloadProofAtRoot(
+                                         source.root,
+                                         expectedSourceFiles,
+                                         expectedPayloadFingerprint,
+                                         &confirmedSourceProof,
+                                         &sourceProofError)
+                                     && samePayloadProof(expectedSourceProof,
+                                                         confirmedSourceProof);
+        const bool copiedAsExpected = verifyPayloadProofAtRoot(
+            stagingRoot,
+            expectedSourceFiles,
+            expectedPayloadFingerprint,
+            &copiedSourceProof,
+            &copiedProofError);
+        if (!sourceUnchanged || !copiedAsExpected) {
+            return fail(
+                error,
+                QStringLiteral(
+                    "The verified restore source changed while it was copied; the working copy was not isolated and update staging remains at %1%2%3")
+                    .arg(stagingRoot,
+                         sourceProofError.isEmpty()
+                             ? QString()
+                             : QStringLiteral(": %1").arg(sourceProofError),
+                         copiedProofError.isEmpty()
+                             ? QString()
+                             : QStringLiteral("; %1").arg(copiedProofError)));
+        }
+    }
+    if (!ManifestService().write(
             QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
             manifest,
             &operationError)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, operationError);
+        return fail(error,
+                    QStringLiteral("%1; update staging remains at %2")
+                        .arg(operationError, stagingRoot));
     }
 
     QDir parentDirectory(parent);
     if (!parentDirectory.rename(assetName, backupName)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, QStringLiteral("Cannot stage the existing working copy"));
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot stage the existing working copy; update staging remains at %1")
+                        .arg(stagingRoot));
     }
     Manifest stagedManifest;
     QString stagedFingerprint;
@@ -938,15 +2143,15 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         || stagedFingerprint != requiredCurrentFingerprint) {
         const bool rolledBack = parentDirectory.rename(backupName,
                                                         assetName);
-        QDir(stagingRoot).removeRecursively();
         return fail(
             error,
             rolledBack
                 ? QStringLiteral(
-                      "The working copy changed while the update was starting; newer edits were kept")
+                      "The working copy changed while the update was starting; newer edits were kept and update staging remains at %1")
+                      .arg(stagingRoot)
                 : QStringLiteral(
-                      "The working copy changed while the update was starting and rollback failed; recovery is at %1")
-                      .arg(backupRoot));
+                      "The working copy changed while the update was starting and rollback failed; recovery is at %1 and update staging remains at %2")
+                      .arg(backupRoot, stagingRoot));
     }
     manifest = stagedManifest;
     operationError.clear();
@@ -956,13 +2161,13 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
             &operationError)) {
         const bool rolledBack = parentDirectory.rename(backupName,
                                                         assetName);
-        QDir(stagingRoot).removeRecursively();
         return fail(error,
                     rolledBack
-                        ? operationError
+                        ? QStringLiteral("%1; update staging remains at %2")
+                              .arg(operationError, stagingRoot)
                         : QStringLiteral(
-                              "%1; rollback failed and recovery is at %2")
-                              .arg(operationError, backupRoot));
+                              "%1; rollback failed and recovery is at %2; update staging remains at %3")
+                              .arg(operationError, backupRoot, stagingRoot));
     }
     const QString backupInternal = QDir(backupRoot).absoluteFilePath(
         QStringLiteral(".xips"));
@@ -971,10 +2176,11 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
     const bool hadInternal = QFileInfo(backupInternal).isDir();
     if (hadInternal && !QDir().rename(backupInternal, stagingInternal)) {
         const bool rolledBack = parentDirectory.rename(backupName, assetName);
-        QDir(stagingRoot).removeRecursively();
         return fail(error,
                     rolledBack
-                        ? QStringLiteral("Cannot preserve saved versions during update")
+                        ? QStringLiteral(
+                              "Cannot preserve saved versions during update; update staging remains at %1")
+                              .arg(stagingRoot)
                         : QStringLiteral("Cannot preserve saved versions and rollback failed; recovery is at %1")
                               .arg(backupRoot));
     }
@@ -996,14 +2202,12 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         }
         const bool rootRolledBack = parentDirectory.rename(backupName,
                                                             assetName);
-        if (internalRolledBack) {
-            QDir(stagingRoot).removeRecursively();
-        }
         if (internalRolledBack && rootRolledBack) {
             return fail(
                 error,
                 QStringLiteral(
-                    "The working copy changed before publish; newer edits were kept"));
+                    "The working copy changed before publish; newer edits were kept and update staging remains at %1")
+                    .arg(stagingRoot));
         }
         QStringList recoveryLocations;
         if (!rootRolledBack) {
@@ -1019,10 +2223,36 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                 .arg(recoveryLocations.join(QStringLiteral(", "))));
     }
 
+    const ManifestService manifestService;
+    Manifest anchoredPublishedManifest;
+    QString anchoredPublishedFingerprint;
+    QString anchoredPublishedError;
+    const bool anchoredStagingVerified = strictFingerprintAtRoot(
+        stagingRoot,
+        manifest.id,
+        &anchoredPublishedManifest,
+        &anchoredPublishedFingerprint,
+        &anchoredPublishedError);
+    const bool anchoredManifestMatches =
+        anchoredStagingVerified
+        && json::canonicalJson(
+               manifestService.toJson(anchoredPublishedManifest))
+               == json::canonicalJson(manifestService.toJson(manifest));
+    QString anchoredBoundPayloadError;
+    const bool anchoredBoundPayloadMatches =
+        !hasExpectedSourceProof
+        || verifiedCopiedPayload(stagingRoot,
+                                 expectedSourceFiles,
+                                 expectedPayloadFingerprint,
+                                 &anchoredBoundPayloadError);
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::StagingVerifiedBeforePublish,
+        stagingRoot);
+#endif
     Manifest intendedPublishedManifest;
     QString intendedPublishedFingerprint;
     QString intendedPublishedError;
-    const ManifestService manifestService;
     const bool stagingVerified = strictFingerprintAtRoot(
         stagingRoot,
         manifest.id,
@@ -1030,10 +2260,22 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         &intendedPublishedFingerprint,
         &intendedPublishedError);
     const bool stagingManifestMatches =
-        stagingVerified
+        anchoredManifestMatches && stagingVerified
+        && intendedPublishedFingerprint == anchoredPublishedFingerprint
         && json::canonicalJson(manifestService.toJson(intendedPublishedManifest))
-               == json::canonicalJson(manifestService.toJson(manifest));
-    if (!stagingVerified || !stagingManifestMatches) {
+               == json::canonicalJson(
+                   manifestService.toJson(anchoredPublishedManifest));
+    QString boundPayloadError;
+    const bool boundPayloadMatches =
+        anchoredBoundPayloadMatches
+        && (!hasExpectedSourceProof
+            || verifiedCopiedPayload(stagingRoot,
+                                     expectedSourceFiles,
+                                     expectedPayloadFingerprint,
+                                     &boundPayloadError));
+    if (!anchoredStagingVerified || !stagingVerified
+        || !stagingManifestMatches
+        || !boundPayloadMatches) {
         bool internalRolledBack = true;
         if (hadInternal) {
             internalRolledBack = QDir().rename(stagingInternal,
@@ -1041,18 +2283,26 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         }
         const bool rootRolledBack = parentDirectory.rename(backupName,
                                                             assetName);
-        if (internalRolledBack) {
-            QDir(stagingRoot).removeRecursively();
-        }
         if (internalRolledBack && rootRolledBack) {
             return fail(
                 error,
-                stagingVerified
+                anchoredStagingVerified && stagingVerified
+                        && boundPayloadMatches
                     ? QStringLiteral(
-                          "The staged update manifest changed before publish; the existing working copy was kept")
+                          "The staged update manifest changed before publish; the existing working copy was kept and update staging remains at %1")
+                          .arg(stagingRoot)
                     : QStringLiteral(
-                          "Cannot verify the staged update before publish: %1")
-                          .arg(intendedPublishedError));
+                          "Cannot verify the staged update before publish: %1%2; the existing working copy was kept and update staging remains at %3")
+                          .arg(!anchoredPublishedError.isEmpty()
+                                   ? anchoredPublishedError
+                                   : intendedPublishedError,
+                               !anchoredBoundPayloadError.isEmpty()
+                                   ? anchoredBoundPayloadError
+                                   : boundPayloadError.isEmpty()
+                                   ? QString()
+                                   : QStringLiteral("; %1")
+                                         .arg(boundPayloadError),
+                               stagingRoot));
         }
         QStringList recoveryLocations;
         if (!rootRolledBack) {
@@ -1067,23 +2317,18 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                 "Cannot verify or fully rollback the staged update; recovery data remains at %1")
                 .arg(recoveryLocations.join(QStringLiteral(", "))));
     }
-#ifdef XIPS_ENABLE_TEST_HOOKS
-    invokeWorkingCopyTestHook(
-        WorkingCopyTestPoint::StagingVerifiedBeforePublish,
-        stagingRoot);
-#endif
     if (!parentDirectory.rename(stagingName, assetName)) {
         bool internalRolledBack = true;
         if (hadInternal) {
             internalRolledBack = QDir().rename(stagingInternal, backupInternal);
         }
         const bool rootRolledBack = parentDirectory.rename(backupName, assetName);
-        if (internalRolledBack) {
-            QDir(stagingRoot).removeRecursively();
-        }
         if (internalRolledBack && rootRolledBack) {
-            return fail(error,
-                        QStringLiteral("Cannot publish the updated working copy"));
+            return fail(
+                error,
+                QStringLiteral(
+                    "Cannot publish the updated working copy; verified update staging remains at %1")
+                    .arg(stagingRoot));
         }
         QStringList recoveryLocations;
         if (!rootRolledBack) {
@@ -1253,10 +2498,6 @@ bool AssetLibraryService::restoreVersion(const AssetRecord &asset,
                                          UpdateAssetResult *result,
                                          QString *error) const
 {
-    if (recoveryMode == WorkingCopyRecoveryMode::RetainForUndo && !result) {
-        return fail(error,
-                    QStringLiteral("Retained recovery requires an Undo result token"));
-    }
     const QString cleanVersion = version.trimmed();
     const UpdatePreview preview = previewRestore(asset, cleanVersion);
     if (!preview.ok()) {
@@ -1269,56 +2510,168 @@ bool AssetLibraryService::restoreVersion(const AssetRecord &asset,
                     QStringLiteral("The working copy already matches version %1")
                         .arg(cleanVersion));
     }
+    if (!result) {
+        return fail(error,
+                    QStringLiteral(
+                        "Restoring a version requires a result for recovery and staging reporting"));
+    }
 
     const CopyPlan plan = copyPlan(asset, cleanVersion);
     if (!plan.ok()) {
         return fail(error, plan.error);
     }
     const QString parent = QFileInfo(asset.assetRoot).absolutePath();
-    QTemporaryDir restoreSource(
-        QDir(parent).absoluteFilePath(
-            QStringLiteral(".xips-create-restore-XXXXXX")));
-    restoreSource.setAutoRemove(false);
-    if (!restoreSource.isValid()) {
+    const QString restorePrefix = QStringLiteral(".xips-create-restore-");
+    const QString restoreName = restorePrefix
+                                + QUuid::createUuid().toString(
+                                    QUuid::WithoutBraces);
+    const QString restoreRoot = QDir(parent).absoluteFilePath(restoreName);
+    if (!QDir().mkpath(restoreRoot)) {
         return fail(error,
                     QStringLiteral("Cannot create the restore staging directory"));
     }
-    QString operationError;
-    if (!copyPayload(plan.sourceRoot, restoreSource.path(), &operationError)) {
-        const QString stagingPath = restoreSource.path();
-        if (!restoreSource.remove()) {
-            operationError += QStringLiteral(
-                "; restore staging data remains at %1")
-                                  .arg(stagingPath);
+    UpdateAssetResult completed;
+    const auto retainUnverifiedRestore = [&](const QString &message) {
+        completed.retainedPaths.append(restoreRoot);
+        completed.retainedPaths.removeDuplicates();
+        appendWarning(completed.warning,
+                      QStringLiteral("%1 Restore staging remains at %2")
+                          .arg(message, restoreRoot));
+        if (result) {
+            *result = completed;
         }
-        return fail(error, operationError);
+    };
+    const auto retireRestore = [&](const PayloadProof &proof,
+                                   QString *cleanupMessage) {
+        StagingRetireResult retired;
+        const bool removed = retireVerifiedPayloadStaging(proof,
+                                                          parent,
+                                                          restorePrefix,
+                                                          &retired);
+        if (!removed) {
+            completed.retainedPaths.append(retired.retainedPath.isEmpty()
+                                               ? restoreRoot
+                                               : retired.retainedPath);
+            completed.retainedPaths.removeDuplicates();
+            appendWarning(completed.warning,
+                          retired.warning.isEmpty()
+                              ? QStringLiteral(
+                                    "Restore staging could not be safely retired and remains at %1")
+                                    .arg(restoreRoot)
+                              : retired.warning);
+            if (cleanupMessage) {
+                *cleanupMessage = completed.warning;
+            }
+        }
+        return removed;
+    };
+    QString operationError;
+    if (!copyPayloadFiles(plan.sourceRoot,
+                          plan.files,
+                          restoreRoot,
+                          &operationError)) {
+        retainUnverifiedRestore(
+            QStringLiteral("The saved version could not be copied: %1.")
+                .arg(operationError));
+        return fail(error,
+                    QStringLiteral("%1; restore staging remains at %2")
+                        .arg(operationError, restoreRoot));
     }
 
-    UpdateAssetResult completed;
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::RestoreStagingPreparedBeforeInitialVerification,
+        restoreRoot);
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::SavedVersionCopiedBeforeVerification,
+        plan.sourceRoot);
+#endif
+
+    QString sourceError;
+    QString stagingError;
+    PayloadProof restoreProof;
+    const bool sourceVerified = verifyCopyPlanSource(asset,
+                                                     plan,
+                                                     &sourceError);
+    const bool stagingVerified = verifyPayloadProofAtRoot(
+        restoreRoot,
+        plan.files,
+        plan.payloadFingerprint,
+        &restoreProof,
+        &stagingError);
+    if (!sourceVerified || !stagingVerified) {
+        QString cleanupMessage;
+        if (stagingVerified) {
+            retireRestore(restoreProof, &cleanupMessage);
+        } else {
+            retainUnverifiedRestore(
+                QStringLiteral(
+                    "Restore staging no longer matches the verified saved version."));
+        }
+        return fail(error,
+                    QStringLiteral(
+                        "Saved version or restore staging changed while it was copied: %1%2%3")
+                        .arg(sourceError,
+                             stagingError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral("; %1").arg(stagingError),
+                             cleanupMessage.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral("; %1").arg(cleanupMessage)));
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::RestoreStagingVerifiedBeforeUpdateAsset,
+        restoreRoot);
+#endif
+
     if (!updateAsset(asset,
-                     restoreSource.path(),
+                     restoreRoot,
                      recoveryMode,
                      &completed,
-                     &operationError)) {
-        const QString stagingPath = restoreSource.path();
-        if (!restoreSource.remove()) {
-            operationError += QStringLiteral(
-                "; restore staging data remains at %1")
-                                  .arg(stagingPath);
+                     &operationError,
+                     {},
+                     plan.files,
+                     plan.payloadFingerprint)) {
+        QString cleanupMessage;
+        retireRestore(restoreProof, &cleanupMessage);
+        if (result) {
+            *result = completed;
         }
-        return fail(error, operationError);
+        return fail(error,
+                    cleanupMessage.isEmpty()
+                        ? operationError
+                        : QStringLiteral("%1; %2")
+                              .arg(operationError, cleanupMessage));
     }
     completed.preview = preview;
-    const QString stagingPath = restoreSource.path();
-    if (!restoreSource.remove()) {
-        completed.retainedPaths.append(stagingPath);
-        if (!completed.warning.isEmpty()) {
-            completed.warning += QStringLiteral("; ");
+    QString postPublishError;
+    if (!verifiedCopiedPayload(asset.assetRoot,
+                               plan.files,
+                               plan.payloadFingerprint,
+                               &postPublishError)) {
+        completed.publishedAsIntended = false;
+        completed.retainedPaths.append(restoreRoot);
+        appendWarning(
+            completed.warning,
+            QStringLiteral(
+                "The restored working copy could not be verified against the saved version; restore staging remains at %1: %2")
+                .arg(restoreRoot, postPublishError));
+        if (result) {
+            *result = completed;
         }
-        completed.warning += QStringLiteral(
-            "restored the working copy, but temporary data remains at %1")
-                                 .arg(stagingPath);
+        return true;
     }
+    postPublishError.clear();
+    if (!verifyCopyPlanSource(asset, plan, &postPublishError)) {
+        appendWarning(
+            completed.warning,
+            QStringLiteral(
+                "The working copy was restored from verified staging, but the saved version changed afterward: %1")
+                .arg(postPublishError));
+    }
+    retireRestore(restoreProof, nullptr);
     if (result) {
         *result = completed;
     }
@@ -1329,7 +2682,8 @@ bool AssetLibraryService::undoWorkingCopyChange(
     const AssetRecord &asset,
     const WorkingCopyUndoToken &token,
     UpdateAssetResult *result,
-    QString *error) const
+    QString *error,
+    const RemovalMode cleanupMode) const
 {
     if (!result) {
         return fail(error,
@@ -1370,92 +2724,131 @@ bool AssetLibraryService::undoWorkingCopyChange(
             QStringLiteral(
                 "The retained recovery changed after the operation; Undo will not restore unverified files"));
     }
+    QStringList recoveryFiles;
+    QString recoveryPayloadFingerprint;
+    hashError.clear();
+    if (!strictPayloadFingerprint(token.recoveryPath,
+                                  nullptr,
+                                  &recoveryFiles,
+                                  &recoveryPayloadFingerprint,
+                                  &hashError)) {
+        return fail(error,
+                    QStringLiteral(
+                        "The retained recovery payload could not be verified for Undo: %1")
+                        .arg(hashError));
+    }
 
     const QString parent = QFileInfo(asset.assetRoot).absolutePath();
-    QTemporaryDir undoSource(
-        QDir(parent).absoluteFilePath(
-            QStringLiteral(".xips-create-undo-XXXXXX")));
-    undoSource.setAutoRemove(false);
-    if (!undoSource.isValid()) {
+    const QString undoPrefix = QStringLiteral(".xips-create-undo-");
+    const QString undoName = undoPrefix
+                             + QUuid::createUuid().toString(
+                                 QUuid::WithoutBraces);
+    const QString undoRoot = QDir(parent).absoluteFilePath(undoName);
+    if (!QDir().mkpath(undoRoot)) {
         return fail(error,
                     QStringLiteral("Cannot create the undo staging directory"));
     }
-    QString operationError;
-    if (!copyPayload(token.recoveryPath,
-                     undoSource.path(),
-                     &operationError)) {
-        const QString stagingPath = undoSource.path();
-        if (!undoSource.remove()) {
-            operationError += QStringLiteral(
-                "; undo staging data remains at %1")
-                                  .arg(stagingPath);
+    UpdateAssetResult completed;
+    const auto retainUndoStaging = [&](const QString &message) {
+        completed.retainedPaths.append(undoRoot);
+        completed.retainedPaths.removeDuplicates();
+        appendWarning(completed.warning,
+                      QStringLiteral("%1 Undo staging remains at %2")
+                          .arg(message, undoRoot));
+        *result = completed;
+    };
+    const auto retireUndoStaging = [&](const PayloadProof &proof) {
+        StagingRetireResult retired;
+        if (!retireVerifiedPayloadStaging(proof,
+                                          parent,
+                                          undoPrefix,
+                                          &retired)) {
+            completed.retainedPaths.append(retired.retainedPath.isEmpty()
+                                               ? undoRoot
+                                               : retired.retainedPath);
+            completed.retainedPaths.removeDuplicates();
+            appendWarning(completed.warning,
+                          retired.warning.isEmpty()
+                              ? QStringLiteral(
+                                    "Undo staging could not be safely retired and remains at %1")
+                                    .arg(undoRoot)
+                              : retired.warning);
+            return false;
         }
-        return fail(error, operationError);
+        return true;
+    };
+    QString operationError;
+    if (!copyPayloadFiles(token.recoveryPath,
+                          recoveryFiles,
+                          undoRoot,
+                          &operationError)) {
+        retainUndoStaging(
+            QStringLiteral("The recovery could not be copied: %1.")
+                .arg(operationError));
+        return fail(error,
+                    QStringLiteral("%1; undo staging remains at %2")
+                        .arg(operationError, undoRoot));
     }
-    Manifest confirmedRecoveryManifest;
     QString confirmedRecoveryHash;
+    QString confirmedRecoveryPayloadFingerprint;
     operationError.clear();
-    if (!strictRecoveryFingerprintAtRoot(token.recoveryPath,
-                                         asset.manifest.id,
-                                         &confirmedRecoveryManifest,
-                                         &confirmedRecoveryHash,
-                                         &operationError)
-        || confirmedRecoveryHash != token.recoveryFingerprint) {
-        const QString stagingPath = undoSource.path();
-        if (!undoSource.remove()) {
-            operationError += QStringLiteral(
-                "; undo staging data remains at %1")
-                                  .arg(stagingPath);
+    const bool recoveryStillVerified =
+        strictRecoveryFingerprintAtRoot(token.recoveryPath,
+                                        asset.manifest.id,
+                                        nullptr,
+                                        &confirmedRecoveryHash,
+                                        &operationError)
+        && confirmedRecoveryHash == token.recoveryFingerprint
+        && strictPayloadFingerprint(token.recoveryPath,
+                                    &recoveryFiles,
+                                    nullptr,
+                                    &confirmedRecoveryPayloadFingerprint,
+                                    &operationError)
+        && confirmedRecoveryPayloadFingerprint
+               == recoveryPayloadFingerprint;
+    PayloadProof undoProof;
+    QString undoProofError;
+    const bool copiedRecoveryVerified = verifyPayloadProofAtRoot(
+        undoRoot,
+        recoveryFiles,
+        recoveryPayloadFingerprint,
+        &undoProof,
+        &undoProofError);
+    if (!recoveryStillVerified || !copiedRecoveryVerified) {
+        if (copiedRecoveryVerified) {
+            retireUndoStaging(undoProof);
+        } else {
+            retainUndoStaging(
+                QStringLiteral(
+                    "Copied recovery no longer matches its verified payload."));
         }
         return fail(
             error,
             QStringLiteral(
-                "The retained recovery changed while it was being copied; Undo was not applied: %1")
-                .arg(operationError));
-    }
-    QString copiedRecoveryHash;
-    operationError.clear();
-    if (!AssetScanner::strictContentHash(confirmedRecoveryManifest,
-                                         undoSource.path(),
-                                         &copiedRecoveryHash,
-                                         &operationError)
-        || copiedRecoveryHash != token.recoveryFingerprint) {
-        const QString stagingPath = undoSource.path();
-        if (!undoSource.remove()) {
-            operationError += QStringLiteral(
-                "; undo staging data remains at %1")
-                                  .arg(stagingPath);
-        }
-        return fail(
-            error,
-            QStringLiteral("Cannot verify the copied recovery before Undo: %1")
-                .arg(operationError));
+                "The retained recovery changed while it was being copied; Undo was not applied: %1%2")
+                .arg(operationError,
+                     undoProofError.isEmpty()
+                         ? QString()
+                         : QStringLiteral("; %1").arg(undoProofError)));
     }
 
-    UpdateAssetResult completed;
+    const WorkingCopyRecoveryMode undoRecoveryMode =
+        cleanupMode == RemovalMode::MoveToTrash
+            ? WorkingCopyRecoveryMode::MoveToTrash
+            : WorkingCopyRecoveryMode::Permanent;
     if (!updateAsset(asset,
-                     undoSource.path(),
-                     WorkingCopyRecoveryMode::Permanent,
+                     undoRoot,
+                     undoRecoveryMode,
                      &completed,
                      &operationError,
-                     token.publishedFingerprint)) {
-        const QString stagingPath = undoSource.path();
-        if (!undoSource.remove()) {
-            operationError += QStringLiteral(
-                "; undo staging data remains at %1")
-                                  .arg(stagingPath);
-        }
+                     token.publishedFingerprint,
+                     recoveryFiles,
+                     recoveryPayloadFingerprint)) {
+        retireUndoStaging(undoProof);
+        *result = completed;
         return fail(error, operationError);
     }
-    const QString stagingPath = undoSource.path();
-    if (!undoSource.remove()) {
-        completed.retainedPaths.append(stagingPath);
-        appendWarning(
-            completed.warning,
-            QStringLiteral(
-                "restored the previous working copy, but temporary data remains at %1")
-                .arg(stagingPath));
-    }
+    retireUndoStaging(undoProof);
     if (!completed.publishedAsIntended) {
         completed.retainedPaths.append(token.recoveryPath);
         appendWarning(
@@ -1473,12 +2866,16 @@ bool AssetLibraryService::undoWorkingCopyChange(
 
     RecoveryDiscardResult discarded;
     QString discardError;
+    WorkingCopyUndoToken cleanupToken = token;
+    cleanupToken.publishedFingerprint = token.recoveryFingerprint;
     if (!discardWorkingCopyRecovery(asset,
-                                    token,
-                                    RemovalMode::Permanent,
+                                    cleanupToken,
+                                    cleanupMode,
                                     &discarded,
                                     &discardError)) {
-        completed.retainedPaths.append(token.recoveryPath);
+        completed.retainedPaths.append(
+            discarded.retainedPath.isEmpty() ? token.recoveryPath
+                                             : discarded.retainedPath);
         appendWarning(
             completed.warning,
             QStringLiteral(
@@ -1500,7 +2897,8 @@ bool AssetLibraryService::discardWorkingCopyRecovery(
     const WorkingCopyUndoToken &token,
     const RemovalMode mode,
     RecoveryDiscardResult *result,
-    QString *error) const
+    QString *error,
+    const WorkingCopyDiscardPolicy policy) const
 {
     if (!result) {
         return fail(error,
@@ -1508,24 +2906,89 @@ bool AssetLibraryService::discardWorkingCopyRecovery(
                         "Discard requires a result for cleanup reporting"));
     }
     *result = {};
-    if (!validateWorkingCopyUndoToken(asset,
-                                      token,
-                                      error)) {
+    if (!validateWorkingCopyUndoTokenEnvelope(asset, token, error)) {
         return false;
     }
+
     QString recoveryHash;
+    QString recoveryError;
+    const bool recoveryVerified =
+        validateWorkingCopyRecovery(asset, token.recoveryPath, &recoveryError)
+        && strictRecoveryFingerprintAtRoot(token.recoveryPath,
+                                           asset.manifest.id,
+                                           nullptr,
+                                           &recoveryHash,
+                                           &recoveryError)
+        && recoveryHash == token.recoveryFingerprint;
+    if (!recoveryVerified) {
+        result->outcome = RecoveryDiscardOutcome::TokenRetired;
+        const QFileInfo recoveryInfo(token.recoveryPath);
+        if (recoveryInfo.exists() || files::isLinkLike(recoveryInfo)) {
+            result->retainedPath = files::normalizedAbsolute(
+                token.recoveryPath);
+            result->warning = QStringLiteral(
+                "The Undo recovery is no longer valid and was not deleted; review retained data at %1: %2")
+                                  .arg(result->retainedPath,
+                                       recoveryError.isEmpty()
+                                           ? QStringLiteral(
+                                                 "its verified fingerprint changed")
+                                           : recoveryError);
+        } else {
+            result->warning = QStringLiteral(
+                "The Undo recovery is no longer available; the obsolete Undo token was retired");
+        }
+        return true;
+    }
+
+    QString liveHash;
+    QString livePayloadHash;
+    QStringList liveFiles;
     QString hashError;
+    if (!strictNonEmptyAssetFingerprintAtRoot(asset.assetRoot,
+                                              asset.manifest.id,
+                                              nullptr,
+                                              &liveFiles,
+                                              &liveHash,
+                                              &livePayloadHash,
+                                              &hashError)) {
+        result->outcome = RecoveryDiscardOutcome::PendingUndoPreserved;
+        result->retainedPath = token.recoveryPath;
+        return fail(
+            error,
+            QStringLiteral(
+                "The current working copy is missing, empty, linked, or unreadable; its Undo recovery was preserved: %1")
+                .arg(hashError));
+    }
+    if (policy == WorkingCopyDiscardPolicy::RequirePublishedCopy
+        && liveHash != token.publishedFingerprint) {
+        result->outcome = RecoveryDiscardOutcome::PendingUndoPreserved;
+        result->retainedPath = token.recoveryPath;
+        return fail(
+            error,
+            QStringLiteral(
+                "The working copy changed after the operation; its Undo recovery was preserved"));
+    }
+    const QString anchoredLiveHash = liveHash;
+    const QString anchoredPayloadHash = livePayloadHash;
+    const QStringList anchoredLiveFiles = liveFiles;
+
+    hashError.clear();
     if (!strictRecoveryFingerprintAtRoot(token.recoveryPath,
                                          asset.manifest.id,
                                          nullptr,
                                          &recoveryHash,
                                          &hashError)
         || recoveryHash != token.recoveryFingerprint) {
-        return fail(
-            error,
-            QStringLiteral(
-                "The retained recovery changed or contains unrecognized data; it was not discarded automatically: %1")
-                .arg(hashError));
+        result->outcome = RecoveryDiscardOutcome::TokenRetired;
+        result->retainedPath = token.recoveryPath;
+        result->warning = QStringLiteral(
+            "The Undo recovery changed after verification and was not deleted; review retained data at %1: %2")
+                              .arg(token.recoveryPath,
+                                   hashError.isEmpty()
+                                       ? QStringLiteral(
+                                             "its verified fingerprint changed")
+                                       : hashError);
+        return true;
     }
 
 #ifdef XIPS_ENABLE_TEST_HOOKS
@@ -1547,6 +3010,22 @@ bool AssetLibraryService::discardWorkingCopyRecovery(
     }
     const QString discardPath = QDir(parent).absoluteFilePath(discardName);
     RecoveryDiscardResult completed;
+    const auto retireIsolatedRecovery = [&](const QString &reason) {
+        completed.outcome = RecoveryDiscardOutcome::TokenRetired;
+        if (!QFileInfo::exists(token.recoveryPath)
+            && parentDirectory.rename(discardName, recoveryName)) {
+            completed.retainedPath = token.recoveryPath;
+            completed.warning = QStringLiteral("%1 Recovery remains at %2")
+                                    .arg(reason, token.recoveryPath);
+            *result = completed;
+            return true;
+        }
+        completed.retainedPath = discardPath;
+        completed.warning = QStringLiteral("%1 Data remains at %2")
+                                .arg(reason, discardPath);
+        *result = completed;
+        return true;
+    };
     QString isolatedHash;
     hashError.clear();
     if (!strictRecoveryFingerprintAtRoot(discardPath,
@@ -1555,15 +3034,83 @@ bool AssetLibraryService::discardWorkingCopyRecovery(
                                          &isolatedHash,
                                          &hashError)
         || isolatedHash != token.recoveryFingerprint) {
+        return retireIsolatedRecovery(
+            QStringLiteral("The recovery was isolated but could not be reverified;%1")
+                .arg(hashError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(" %1;").arg(hashError)));
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::RecoveryIsolatedBeforeLiveReverification,
+        asset.assetRoot);
+#endif
+
+    QString confirmedLiveHash;
+    QString confirmedPayloadHash;
+    QStringList confirmedLiveFiles;
+    hashError.clear();
+    if (!strictNonEmptyAssetFingerprintAtRoot(asset.assetRoot,
+                                              asset.manifest.id,
+                                              nullptr,
+                                              &confirmedLiveFiles,
+                                              &confirmedLiveHash,
+                                              &confirmedPayloadHash,
+                                              &hashError)
+        || confirmedLiveHash != anchoredLiveHash
+        || confirmedPayloadHash != anchoredPayloadHash
+        || confirmedLiveFiles != anchoredLiveFiles) {
+        if (!QFileInfo::exists(token.recoveryPath)
+            && parentDirectory.rename(discardName, recoveryName)) {
+            QString rolledBackHash;
+            QString rolledBackError;
+            if (strictRecoveryFingerprintAtRoot(token.recoveryPath,
+                                                asset.manifest.id,
+                                                nullptr,
+                                                &rolledBackHash,
+                                                &rolledBackError)
+                && rolledBackHash == token.recoveryFingerprint) {
+                completed.outcome =
+                    RecoveryDiscardOutcome::PendingUndoPreserved;
+                completed.retainedPath = token.recoveryPath;
+                *result = completed;
+                return fail(
+                    error,
+                    QStringLiteral(
+                        "The working copy changed or became unreadable before cleanup; its verified Undo recovery was preserved at %1%2")
+                        .arg(token.recoveryPath,
+                             hashError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1").arg(hashError)));
+            }
+            completed.outcome = RecoveryDiscardOutcome::TokenRetired;
+            completed.retainedPath = token.recoveryPath;
+            completed.warning = QStringLiteral(
+                "The working copy changed before cleanup, and the restored recovery no longer matches its Undo token; data remains at %1%2")
+                                    .arg(token.recoveryPath,
+                                         rolledBackError.isEmpty()
+                                             ? QString()
+                                             : QStringLiteral(": %1")
+                                                   .arg(rolledBackError));
+            *result = completed;
+            return true;
+        }
+        completed.outcome = RecoveryDiscardOutcome::TokenRetired;
         completed.retainedPath = discardPath;
         completed.warning = QStringLiteral(
-            "The recovery was isolated but could not be reverified; data remains at %1%2")
-                                .arg(
-                                    discardPath,
-                                    hashError.isEmpty()
-                                        ? QString()
-                                        : QStringLiteral(": %1").arg(hashError));
-    } else if (!removeDirectory(discardPath, mode, nullptr)) {
+            "The working copy changed before cleanup, and the recovery could not be restored to its Undo path; data remains at %1%2")
+                                .arg(discardPath,
+                                     hashError.isEmpty()
+                                         ? QString()
+                                         : QStringLiteral(": %1")
+                                               .arg(hashError));
+        *result = completed;
+        return true;
+    }
+
+    completed.outcome = RecoveryDiscardOutcome::TokenRetired;
+    if (!removeDirectory(discardPath, mode, nullptr)) {
         completed.retainedPath = discardPath;
         completed.warning =
             (mode == RemovalMode::MoveToTrash
@@ -1681,49 +3228,61 @@ QList<VersionInfo> AssetLibraryService::versions(const QString &assetRoot,
                                                  QString *error) const
 {
     QList<VersionInfo> result;
-    const QString root = QDir(assetRoot).absoluteFilePath(
+    if (error) {
+        error->clear();
+    }
+    const QString normalizedAssetRoot = files::normalizedAbsolute(assetRoot);
+    const QFileInfo assetRootInfo(normalizedAssetRoot);
+    const QString liveManifestPath = QDir(normalizedAssetRoot).absoluteFilePath(
+        QStringLiteral(".xips.json"));
+    const QFileInfo liveManifestInfo(liveManifestPath);
+    if (!assetRootInfo.isDir() || files::isLinkLike(assetRootInfo)
+        || !liveManifestInfo.isFile() || files::isLinkLike(liveManifestInfo)) {
+        fail(error, QStringLiteral("Asset path or manifest is invalid"));
+        return {};
+    }
+    const ManifestLoadResult liveManifest = ManifestService().load(
+        liveManifestPath);
+    if (!liveManifest.ok()) {
+        fail(error, QStringLiteral("Cannot reload the selected asset manifest"));
+        return {};
+    }
+    const QString root = QDir(normalizedAssetRoot).absoluteFilePath(
         QStringLiteral(".xips/versions"));
-    if (!QFileInfo(root).isDir()) {
+    const QFileInfo rootInfo(root);
+    if (!rootInfo.exists()) {
         return result;
     }
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
+        fail(error,
+             QStringLiteral("Saved versions directory is invalid or linked: %1")
+                 .arg(root));
+        return {};
+    }
     const QFileInfoList entries = QDir(root).entryInfoList(
-        QDir::Dirs | QDir::NoDotAndDotDot,
+        QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
         QDir::Name);
     for (const QFileInfo &entry : entries) {
         if (entry.fileName().startsWith(u'.')) {
             continue;
         }
-        QFile metadata(QDir(entry.absoluteFilePath()).absoluteFilePath(
-            QStringLiteral(".snapshot.json")));
-        if (!metadata.open(QIODevice::ReadOnly)) {
+        if (files::isLinkLike(entry)) {
             fail(error,
-                 QStringLiteral("Cannot read version metadata: %1")
-                     .arg(metadata.fileName()));
+                 QStringLiteral("Saved version directory is linked: %1")
+                     .arg(entry.absoluteFilePath()));
             return {};
         }
-        const QJsonDocument document = QJsonDocument::fromJson(metadata.readAll());
-        if (!document.isObject()) {
-            fail(error,
-                 QStringLiteral("Invalid version metadata: %1")
-                     .arg(metadata.fileName()));
+        SnapshotProof proof;
+        if (!verifySavedSnapshot(normalizedAssetRoot,
+                                 liveManifest.manifest->id,
+                                 entry.fileName(),
+                                 entry.absoluteFilePath(),
+                                 true,
+                                 &proof,
+                                 error)) {
             return {};
         }
-        const QJsonObject object = document.object();
-        VersionInfo version;
-        version.version = object.value(QStringLiteral("version")).toString();
-        version.createdAt = QDateTime::fromString(
-            object.value(QStringLiteral("createdAt")).toString(),
-            Qt::ISODateWithMs);
-        version.contentHash = object.value(QStringLiteral("contentHash")).toString();
-        version.path = entry.absoluteFilePath();
-        if (version.version.isEmpty() || !version.createdAt.isValid()
-            || version.contentHash.isEmpty()) {
-            fail(error,
-                 QStringLiteral("Incomplete version metadata: %1")
-                     .arg(metadata.fileName()));
-            return {};
-        }
-        result.append(version);
+        result.append(proof.info);
     }
     std::sort(result.begin(), result.end(), [](const VersionInfo &left,
                                                 const VersionInfo &right) {
@@ -1758,8 +3317,25 @@ WorkingCopyState AssetLibraryService::workingCopyState(
     state.latestVersion = savedVersions.first().version;
     Manifest comparable = *loaded.manifest;
     comparable.version = state.latestVersion;
-    state.changed = AssetScanner::contentHash(comparable, asset.assetRoot)
-                    != savedVersions.first().contentHash;
+    QString liveStrictHash;
+    if (!AssetScanner::strictContentHash(comparable,
+                                         asset.assetRoot,
+                                         &liveStrictHash,
+                                         &state.error)) {
+        return state;
+    }
+    const ManifestLoadResult confirmed = ManifestService().load(
+        asset.manifestPath);
+    const ManifestService manifestService;
+    if (!confirmed.ok()
+        || json::canonicalJson(manifestService.toJson(*confirmed.manifest))
+               != json::canonicalJson(manifestService.toJson(*loaded.manifest))) {
+        state.error = QStringLiteral(
+            "The working-copy manifest changed while its version state was being verified");
+        return state;
+    }
+    state.changed = liveStrictHash
+                    != savedVersions.first().strictContentHash;
     return state;
 }
 
@@ -1768,91 +3344,257 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
                                         VersionInfo *created,
                                         QString *error) const
 {
+    if (!created) {
+        return fail(error,
+                    QStringLiteral(
+                        "Saving a version requires a result for marker-warning reporting"));
+    }
+    if (created) {
+        *created = {};
+    }
+    if (error) {
+        error->clear();
+    }
     const QString cleanVersion = version.trimmed();
     if (!validVersion(cleanVersion)) {
         return fail(error,
                     QStringLiteral("Version must use letters, digits, '.', '_', '+', or '-'"));
     }
-    const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
-    if (!loaded.ok()) {
-        return fail(error, QStringLiteral("Cannot reload the selected asset manifest"));
+
+    Manifest baselineManifest;
+    QStringList baselineFiles;
+    QString baselineContentFingerprint;
+    QString baselinePayloadFingerprint;
+    if (!validateAssetRecord(asset, nullptr, error)
+        || !strictNonEmptyAssetFingerprintAtRoot(
+            asset.assetRoot,
+            asset.manifest.id,
+            &baselineManifest,
+            &baselineFiles,
+            &baselineContentFingerprint,
+            &baselinePayloadFingerprint,
+            error)) {
+        return false;
     }
-    const WorkingCopyState state = workingCopyState(asset);
-    if (!state.error.isEmpty()) {
-        return fail(error, state.error);
+    QString versionsError;
+    const QList<VersionInfo> savedVersions = versions(asset.assetRoot,
+                                                       &versionsError);
+    if (!versionsError.isEmpty()) {
+        return fail(error, versionsError);
     }
-    if (state.hasSavedVersion && !state.changed) {
-        return fail(error,
-                    QStringLiteral("The working copy has not changed since version %1")
-                        .arg(state.latestVersion));
+    if (!savedVersions.isEmpty()) {
+        Manifest comparable = baselineManifest;
+        comparable.version = savedVersions.first().version;
+        QString comparableStrictHash;
+        if (!AssetScanner::strictContentHash(comparable,
+                                             asset.assetRoot,
+                                             &comparableStrictHash,
+                                             error)) {
+            return false;
+        }
+        if (comparableStrictHash
+            == savedVersions.first().strictContentHash) {
+            return fail(error,
+                        QStringLiteral("The working copy has not changed since version %1")
+                            .arg(savedVersions.first().version));
+        }
     }
 
     const QString versionsRoot = QDir(asset.assetRoot).absoluteFilePath(
         QStringLiteral(".xips/versions"));
+    const QFileInfo internalInfo(QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral(".xips")));
+    const QFileInfo existingVersionsInfo(versionsRoot);
+    if ((internalInfo.exists()
+         && (!internalInfo.isDir() || files::isLinkLike(internalInfo)))
+        || (existingVersionsInfo.exists()
+            && (!existingVersionsInfo.isDir()
+                || files::isLinkLike(existingVersionsInfo)))) {
+        return fail(error,
+                    QStringLiteral("The versions path is invalid or linked"));
+    }
     if (!QDir().mkpath(versionsRoot)) {
         return fail(error, QStringLiteral("Cannot create the versions directory"));
+    }
+    const QFileInfo confirmedVersionsInfo(versionsRoot);
+    if (!confirmedVersionsInfo.isDir()
+        || files::isLinkLike(confirmedVersionsInfo)) {
+        return fail(error,
+                    QStringLiteral("The versions path became invalid or linked"));
     }
     const QString targetRoot = QDir(versionsRoot).absoluteFilePath(cleanVersion);
     if (QFileInfo::exists(targetRoot)) {
         return fail(error,
                     QStringLiteral("Version already exists: %1").arg(cleanVersion));
     }
-    const QString stagingName = QStringLiteral(".staging-%1")
-                                    .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    const QString stagingName = QStringLiteral(".staging-")
+                                + QUuid::createUuid().toString(
+                                    QUuid::WithoutBraces);
     const QString stagingRoot = QDir(versionsRoot).absoluteFilePath(stagingName);
     if (!QDir().mkpath(stagingRoot)) {
         return fail(error, QStringLiteral("Cannot create the version staging directory"));
     }
 
     QString operationError;
-    if (!copyPayload(asset.assetRoot, stagingRoot, &operationError)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, operationError);
+    if (!copyPayloadFiles(asset.assetRoot,
+                          baselineFiles,
+                          stagingRoot,
+                          &operationError)
+        || !verifiedCopiedPayload(stagingRoot,
+                                  baselineFiles,
+                                  baselinePayloadFingerprint,
+                                  &operationError)) {
+        return fail(error,
+                    QStringLiteral("%1; unverified version staging remains at %2")
+                        .arg(operationError, stagingRoot));
     }
-    Manifest snapshotManifest = *loaded.manifest;
+    Manifest snapshotManifest = baselineManifest;
     snapshotManifest.version = cleanVersion;
     const QString snapshotManifestPath = QDir(stagingRoot).absoluteFilePath(
         QStringLiteral(".xips.json"));
     if (!ManifestService().write(snapshotManifestPath,
                                  snapshotManifest,
                                  &operationError)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, operationError);
+        return fail(error,
+                    QStringLiteral("%1; version staging remains at %2")
+                        .arg(operationError, stagingRoot));
     }
 
     VersionInfo versionInfo;
+    versionInfo.schemaVersion = 2;
     versionInfo.version = cleanVersion;
     versionInfo.createdAt = QDateTime::currentDateTimeUtc();
-    versionInfo.contentHash = AssetScanner::contentHash(snapshotManifest, stagingRoot);
+    if (!AssetScanner::verifiedContentHash(snapshotManifest,
+                                           stagingRoot,
+                                           &versionInfo.contentHash,
+                                           &operationError)
+        || !AssetScanner::strictContentHash(snapshotManifest,
+                                            stagingRoot,
+                                            &versionInfo.strictContentHash,
+                                            &operationError)) {
+        return fail(error,
+                    QStringLiteral("%1; version staging remains at %2")
+                        .arg(operationError, stagingRoot));
+    }
     versionInfo.path = targetRoot;
     if (!writeSnapshotMetadata(
             QDir(stagingRoot).absoluteFilePath(QStringLiteral(".snapshot.json")),
             versionInfo,
             &operationError)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, operationError);
+        return fail(error,
+                    QStringLiteral("%1; version staging remains at %2")
+                        .arg(operationError, stagingRoot));
     }
 
-    Manifest currentManifest = *loaded.manifest;
-    currentManifest.version = cleanVersion;
-    if (!ManifestService().write(asset.manifestPath,
-                                 currentManifest,
-                                 &operationError)) {
-        QDir(stagingRoot).removeRecursively();
-        return fail(error, operationError);
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::VersionStagingPreparedBeforeInitialVerification,
+        stagingRoot);
+#endif
+
+    SnapshotProof stagedProof;
+    if (!verifySavedSnapshot(asset.assetRoot,
+                             baselineManifest.id,
+                             cleanVersion,
+                             stagingRoot,
+                             false,
+                             &stagedProof,
+                             &operationError)) {
+        return fail(error,
+                    QStringLiteral("%1; unverified version staging remains at %2")
+                        .arg(operationError, stagingRoot));
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::VersionStagingVerifiedBeforePublish,
+        stagingRoot);
+#endif
+
+    const auto failBeforePublish = [&](const QString &message) {
+        QString completedMessage = message;
+        StagingRetireResult retired;
+        if (!retireVerifiedSnapshotStaging(asset.assetRoot,
+                                           baselineManifest.id,
+                                           cleanVersion,
+                                           stagedProof,
+                                           &retired)) {
+            completedMessage += QStringLiteral("; %1")
+                                    .arg(retired.warning);
+        }
+        return fail(error, completedMessage);
+    };
+
+    SnapshotProof confirmedStagingProof;
+    if (!verifySavedSnapshot(asset.assetRoot,
+                             baselineManifest.id,
+                             cleanVersion,
+                             stagingRoot,
+                             false,
+                             &confirmedStagingProof,
+                             &operationError)
+        || !sameSnapshotProof(stagedProof, confirmedStagingProof)) {
+        return failBeforePublish(
+            QStringLiteral("The version staging data changed before publish: %1")
+                .arg(operationError));
+    }
+    Manifest confirmedLiveManifest;
+    QStringList confirmedLiveFiles;
+    QString confirmedLiveContentFingerprint;
+    QString confirmedLivePayloadFingerprint;
+    operationError.clear();
+    if (!strictNonEmptyAssetFingerprintAtRoot(
+            asset.assetRoot,
+            baselineManifest.id,
+            &confirmedLiveManifest,
+            &confirmedLiveFiles,
+            &confirmedLiveContentFingerprint,
+            &confirmedLivePayloadFingerprint,
+            &operationError)
+        || confirmedLiveFiles != baselineFiles
+        || confirmedLiveContentFingerprint != baselineContentFingerprint
+        || confirmedLivePayloadFingerprint != baselinePayloadFingerprint
+        || json::canonicalJson(
+               ManifestService().toJson(confirmedLiveManifest))
+               != json::canonicalJson(
+                   ManifestService().toJson(baselineManifest))) {
+        return failBeforePublish(
+            QStringLiteral("The working copy changed while the version was being prepared: %1")
+                .arg(operationError));
+    }
+    if (QFileInfo::exists(targetRoot)) {
+        return failBeforePublish(
+            QStringLiteral("Version already exists: %1").arg(cleanVersion));
     }
     if (!QDir(versionsRoot).rename(stagingName, cleanVersion)) {
-        QString rollbackError;
-        ManifestService().write(asset.manifestPath,
-                                *loaded.manifest,
-                                &rollbackError);
-        QDir(stagingRoot).removeRecursively();
-        return fail(error,
-                    rollbackError.isEmpty()
-                        ? QStringLiteral("Cannot publish the version snapshot")
-                        : QStringLiteral("Cannot publish the version snapshot; manifest rollback also failed: %1")
-                              .arg(rollbackError));
+        return failBeforePublish(
+            QStringLiteral("Cannot publish the version snapshot"));
     }
+
+    SnapshotProof publishedProof;
+    operationError.clear();
+    if (!verifySavedSnapshot(asset.assetRoot,
+                             baselineManifest.id,
+                             cleanVersion,
+                             targetRoot,
+                             true,
+                             &publishedProof,
+                             &operationError)
+        || publishedProof.proofFingerprint
+               != stagedProof.proofFingerprint) {
+        return fail(error,
+                    QStringLiteral(
+                        "The version snapshot was published at %1 but could not be verified: %2")
+                        .arg(targetRoot, operationError));
+    }
+
+    const VersionMarkerCasResult marker = compareAndSwapVersionMarker(
+        asset.assetRoot,
+        baselineManifest.id,
+        baselineManifest,
+        cleanVersion);
+    versionInfo = publishedProof.info;
+    versionInfo.warning = marker.warning;
     if (created) {
         *created = versionInfo;
     }
@@ -1862,11 +3604,22 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
 bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
                                         const QString &version,
                                         const RemovalMode mode,
+                                        DeleteVersionResult *result,
                                         QString *error) const
 {
+    if (!result) {
+        return fail(error,
+                    QStringLiteral(
+                        "Version deletion requires a result for recovery reporting"));
+    }
+    *result = {};
     const QString cleanVersion = version.trimmed();
     if (cleanVersion.isEmpty()) {
         return fail(error, QStringLiteral("The working copy cannot be deleted here"));
+    }
+    Manifest selectedManifest;
+    if (!validateAssetRecord(asset, &selectedManifest, error)) {
+        return false;
     }
     QString versionsError;
     const QList<VersionInfo> available = versions(asset.assetRoot, &versionsError);
@@ -1882,44 +3635,390 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
                     QStringLiteral("Version not found: %1").arg(cleanVersion));
     }
 
-    const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
-    if (!loaded.ok()) {
-        return fail(error, QStringLiteral("Cannot reload the selected asset manifest"));
+    SnapshotProof initialProof;
+    if (!verifySavedSnapshot(asset.assetRoot,
+                             selectedManifest.id,
+                             cleanVersion,
+                             found->path,
+                             true,
+                             &initialProof,
+                             error)) {
+        return false;
     }
-    Manifest updated = *loaded.manifest;
-    const bool updateCurrent = updated.version == cleanVersion;
-    if (updateCurrent) {
-        updated.version.clear();
-        for (const VersionInfo &candidate : available) {
-            if (candidate.version != cleanVersion) {
-                updated.version = candidate.version;
-                break;
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::DeleteVersionVerifiedBeforeIsolation,
+        initialProof.info.path);
+#endif
+
+    SnapshotProof beforeIsolation;
+    QString operationError;
+    if (!verifySavedSnapshot(asset.assetRoot,
+                             selectedManifest.id,
+                             cleanVersion,
+                             initialProof.info.path,
+                             true,
+                             &beforeIsolation,
+                             &operationError)
+        || !sameSnapshotProof(initialProof, beforeIsolation)) {
+        return fail(error,
+                    QStringLiteral(
+                        "The saved version changed before deletion and was not isolated; review data at %1: %2")
+                        .arg(initialProof.info.path, operationError));
+    }
+
+    const QString versionsRoot = QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral(".xips/versions"));
+    const QString isolatedName = QStringLiteral(".staging-delete-")
+                                 + QUuid::createUuid().toString(
+                                     QUuid::WithoutBraces);
+    const QString isolatedRoot = QDir(versionsRoot).absoluteFilePath(
+        isolatedName);
+    if (!QDir(versionsRoot).rename(cleanVersion, isolatedName)) {
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot isolate saved version %1 before deletion")
+                        .arg(cleanVersion));
+    }
+
+    const auto appendRetained = [&](const QString &path,
+                                    const QString &message) {
+        if (!path.isEmpty()) {
+            result->retainedPaths.append(files::normalizedAbsolute(path));
+            result->retainedPaths.removeDuplicates();
+        }
+        if (!message.isEmpty()) {
+            appendWarning(result->warning, message);
+        }
+    };
+    const auto restoreIsolatedSnapshot = [&]() {
+        const QString targetRoot = QDir(versionsRoot).absoluteFilePath(
+            cleanVersion);
+        if (!QFileInfo::exists(targetRoot)
+            && QDir(versionsRoot).rename(isolatedName, cleanVersion)) {
+            return true;
+        }
+        appendRetained(
+            isolatedRoot,
+            QStringLiteral(
+                "The isolated saved version could not be restored without overwriting concurrent data; recovery remains at %1")
+                .arg(isolatedRoot));
+        return false;
+    };
+    const auto verifiedIsolatedSnapshot = [&](SnapshotProof *proof,
+                                               QString *verificationError) {
+        SnapshotProof confirmed;
+        if (!verifySavedSnapshot(asset.assetRoot,
+                                 selectedManifest.id,
+                                 cleanVersion,
+                                 isolatedRoot,
+                                 false,
+                                 &confirmed,
+                                 verificationError)
+            || !sameSnapshotContentProof(initialProof, confirmed)) {
+            return false;
+        }
+        if (proof) {
+            *proof = confirmed;
+        }
+        return true;
+    };
+
+    SnapshotProof isolatedProof;
+    operationError.clear();
+    if (!verifiedIsolatedSnapshot(&isolatedProof, &operationError)) {
+        const bool restored = restoreIsolatedSnapshot();
+        return fail(error,
+                    QStringLiteral(
+                        "The isolated saved version could not be reverified and was not deleted; data remains at %1: %2")
+                        .arg(restored ? initialProof.info.path : isolatedRoot,
+                             operationError));
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::DeleteVersionIsolatedBeforeMarkerCas,
+        isolatedRoot);
+#endif
+    operationError.clear();
+    if (!verifiedIsolatedSnapshot(&isolatedProof, &operationError)) {
+        const bool restored = restoreIsolatedSnapshot();
+        return fail(error,
+                    QStringLiteral(
+                        "The isolated saved version changed before its marker transaction and was not deleted; data remains at %1: %2")
+                        .arg(restored ? initialProof.info.path : isolatedRoot,
+                             operationError));
+    }
+
+    const QList<VersionInfo> remainingVersions = versions(asset.assetRoot,
+                                                           &operationError);
+    if (!operationError.isEmpty()) {
+        const bool restored = restoreIsolatedSnapshot();
+        return fail(error,
+                    QStringLiteral(
+                        "Remaining saved versions could not be verified; deletion was cancelled and data remains at %1: %2")
+                        .arg(restored ? initialProof.info.path : isolatedRoot,
+                             operationError));
+    }
+    const QString nextVersion = remainingVersions.isEmpty()
+                                    ? QString()
+                                    : remainingVersions.first().version;
+    SnapshotProof nextVersionProof;
+    if (!nextVersion.isEmpty()
+        && !verifySavedSnapshot(asset.assetRoot,
+                                selectedManifest.id,
+                                nextVersion,
+                                remainingVersions.first().path,
+                                true,
+                                &nextVersionProof,
+                                &operationError)) {
+        const bool restored = restoreIsolatedSnapshot();
+        return fail(error,
+                    QStringLiteral(
+                        "The replacement version marker target could not be proved; deletion was cancelled and data remains at %1: %2")
+                        .arg(restored ? initialProof.info.path : isolatedRoot,
+                             operationError));
+    }
+    Manifest liveManifest;
+    QString liveFingerprint;
+    operationError.clear();
+    if (!strictFingerprintAtRoot(asset.assetRoot,
+                                 selectedManifest.id,
+                                 &liveManifest,
+                                 &liveFingerprint,
+                                 &operationError)) {
+        const bool restored = restoreIsolatedSnapshot();
+        return fail(error,
+                    QStringLiteral(
+                        "The working-copy manifest could not be verified; deletion was cancelled and data remains at %1: %2")
+                        .arg(restored ? initialProof.info.path : isolatedRoot,
+                             operationError));
+    }
+
+    bool markerChangedByThisOperation = false;
+    if (liveManifest.version == cleanVersion) {
+        const VersionMarkerCasResult marker = compareAndSwapVersionMarker(
+            asset.assetRoot,
+            selectedManifest.id,
+            liveManifest,
+            nextVersion);
+        if (!marker.retainedPath.isEmpty()) {
+            appendRetained(marker.retainedPath, marker.warning);
+        }
+        if (!marker.published) {
+            const bool restored = restoreIsolatedSnapshot();
+            return fail(error,
+                        QStringLiteral(
+                            "The saved version marker could not be updated safely; deletion was cancelled and snapshot data remains at %1: %2")
+                            .arg(restored ? initialProof.info.path
+                                          : isolatedRoot,
+                                 marker.warning));
+        }
+        markerChangedByThisOperation = true;
+        result->markerUpdated = true;
+    }
+
+    const auto rollbackMarkerIfSafe = [&]() {
+        if (!markerChangedByThisOperation) {
+            return true;
+        }
+        Manifest currentManifest;
+        QString currentFingerprint;
+        QString rollbackError;
+        if (!strictFingerprintAtRoot(asset.assetRoot,
+                                     selectedManifest.id,
+                                     &currentManifest,
+                                     &currentFingerprint,
+                                     &rollbackError)) {
+            appendRetained(
+                {},
+                QStringLiteral(
+                    "The saved version was restored, but its working-copy marker could not be verified for rollback: %1")
+                    .arg(rollbackError));
+            return false;
+        }
+        if (currentManifest.version == cleanVersion) {
+            result->markerUpdated = false;
+            return true;
+        }
+        if (currentManifest.version != nextVersion) {
+            appendRetained(
+                {},
+                QStringLiteral(
+                    "The saved version was restored, but a concurrent version-marker change was preserved"));
+            return false;
+        }
+        const VersionMarkerCasResult rollback = compareAndSwapVersionMarker(
+            asset.assetRoot,
+            selectedManifest.id,
+            currentManifest,
+            cleanVersion);
+        if (!rollback.retainedPath.isEmpty()) {
+            appendRetained(rollback.retainedPath, rollback.warning);
+        }
+        if (!rollback.published) {
+            appendRetained(
+                {},
+                QStringLiteral(
+                    "The saved version was restored, but its version marker could not be rolled back safely: %1")
+                    .arg(rollback.warning));
+            return false;
+        }
+        result->markerUpdated = false;
+        return true;
+    };
+    const auto deletionStateIsSafe = [&](QString *verificationError) {
+        SnapshotProof confirmed;
+        if (!verifiedIsolatedSnapshot(&confirmed, verificationError)) {
+            return false;
+        }
+        const QString targetRoot = QDir(versionsRoot).absoluteFilePath(
+            cleanVersion);
+        if (QFileInfo::exists(targetRoot)) {
+            return fail(verificationError,
+                        QStringLiteral(
+                            "Concurrent data appeared at the saved version path"));
+        }
+        Manifest confirmedLiveManifest;
+        QString confirmedLiveFingerprint;
+        if (!strictFingerprintAtRoot(asset.assetRoot,
+                                     selectedManifest.id,
+                                     &confirmedLiveManifest,
+                                     &confirmedLiveFingerprint,
+                                     verificationError)) {
+            return false;
+        }
+        if (confirmedLiveManifest.version == cleanVersion) {
+            return fail(verificationError,
+                        QStringLiteral(
+                            "The working copy points to the version being deleted"));
+        }
+        if (markerChangedByThisOperation) {
+            if (confirmedLiveManifest.version != nextVersion) {
+                return fail(
+                    verificationError,
+                    QStringLiteral(
+                        "The working-copy version marker changed during deletion"));
+            }
+            if (nextVersion.isEmpty()) {
+                QString remainingError;
+                const QList<VersionInfo> confirmedRemaining = versions(
+                    asset.assetRoot,
+                    &remainingError);
+                if (!remainingError.isEmpty()
+                    || !confirmedRemaining.isEmpty()) {
+                    return fail(
+                        verificationError,
+                        remainingError.isEmpty()
+                            ? QStringLiteral(
+                                  "The remaining saved-version set changed during deletion")
+                            : remainingError);
+                }
+            } else {
+                SnapshotProof confirmedNext;
+                const QString nextRoot = QDir(asset.assetRoot).absoluteFilePath(
+                    QStringLiteral(".xips/versions/%1").arg(nextVersion));
+                if (!verifySavedSnapshot(asset.assetRoot,
+                                         selectedManifest.id,
+                                         nextVersion,
+                                         nextRoot,
+                                         true,
+                                         &confirmedNext,
+                                         verificationError)
+                    || !sameSnapshotProof(nextVersionProof,
+                                          confirmedNext)) {
+                    return fail(
+                        verificationError,
+                        QStringLiteral(
+                            "The replacement saved version changed during deletion"));
+                }
             }
         }
-        QString manifestError;
-        if (!ManifestService().write(asset.manifestPath, updated, &manifestError)) {
-            return fail(error, manifestError);
+        return true;
+    };
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::DeleteVersionMarkerPublishedBeforeFinalProof,
+        isolatedRoot);
+#endif
+    operationError.clear();
+    if (!deletionStateIsSafe(&operationError)) {
+        const bool restored = restoreIsolatedSnapshot();
+        if (restored) {
+            rollbackMarkerIfSafe();
         }
+        return fail(error,
+                    QStringLiteral(
+                        "Saved version deletion was cancelled before removal; data remains at %1: %2%3")
+                        .arg(restored ? initialProof.info.path : isolatedRoot,
+                             operationError,
+                             result->warning.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral("; %1")
+                                       .arg(result->warning)));
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::DeleteVersionVerifiedBeforeRemoval,
+        isolatedRoot);
+#endif
+    operationError.clear();
+    if (!deletionStateIsSafe(&operationError)) {
+        const bool restored = restoreIsolatedSnapshot();
+        if (restored) {
+            rollbackMarkerIfSafe();
+        }
+        return fail(error,
+                    QStringLiteral(
+                        "Saved version deletion was cancelled at the removal boundary; data remains at %1: %2%3")
+                        .arg(restored ? initialProof.info.path : isolatedRoot,
+                             operationError,
+                             result->warning.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral("; %1")
+                                       .arg(result->warning)));
     }
 
     bool removed = false;
     if (mode == RemovalMode::MoveToTrash) {
-        removed = QFile::moveToTrash(found->path);
+        removed = QFile::moveToTrash(isolatedRoot, &result->removedPath);
     } else {
-        removed = QDir(found->path).removeRecursively();
+        removed = removeExactTree(isolatedRoot,
+                                  expectedSnapshotEntries(initialProof.files));
     }
     if (!removed) {
-        if (updateCurrent) {
-            QString rollbackError;
-            ManifestService().write(asset.manifestPath,
-                                    *loaded.manifest,
-                                    &rollbackError);
+        SnapshotProof stillComplete;
+        QString retainedError;
+        const bool canRestore = verifiedIsolatedSnapshot(&stillComplete,
+                                                         &retainedError);
+        const bool restored = canRestore && restoreIsolatedSnapshot();
+        if (!restored) {
+            appendRetained(
+                isolatedRoot,
+                QStringLiteral(
+                    "Saved version removal was incomplete; remaining data is retained at %1")
+                    .arg(isolatedRoot));
+        } else {
+            rollbackMarkerIfSafe();
         }
         return fail(error,
                     mode == RemovalMode::MoveToTrash
-                        ? QStringLiteral("Cannot move the saved version to the trash")
-                        : QStringLiteral("Cannot delete the saved version"));
+                        ? QStringLiteral(
+                              "Cannot move the saved version to the recycle bin%1")
+                              .arg(result->warning.isEmpty()
+                                       ? QString()
+                                       : QStringLiteral("; %1")
+                                             .arg(result->warning))
+                        : QStringLiteral(
+                              "Cannot completely delete the verified saved version%1")
+                              .arg(result->warning.isEmpty()
+                                       ? QString()
+                                       : QStringLiteral("; %1")
+                                             .arg(result->warning)));
     }
+    result->snapshotRemoved = true;
     return true;
 }
 
@@ -1928,35 +4027,78 @@ CopyPlan AssetLibraryService::copyPlan(const AssetRecord &asset,
 {
     CopyPlan plan;
     plan.version = version.trimmed();
-    plan.sourceRoot = asset.assetRoot;
     if (!plan.version.isEmpty()) {
-        QString versionsError;
-        const QList<VersionInfo> available = versions(asset.assetRoot,
-                                                       &versionsError);
-        if (!versionsError.isEmpty()) {
-            plan.error = versionsError;
+        if (!validVersion(plan.version)) {
+            plan.error = QStringLiteral("The saved version name is invalid");
             return plan;
         }
-        const auto found = std::find_if(
-            available.cbegin(), available.cend(), [&plan](const VersionInfo &entry) {
-                return entry.version == plan.version;
-            });
-        if (found == available.cend()) {
-            plan.error = QStringLiteral("Version not found: %1").arg(plan.version);
-            return plan;
-        }
-        plan.sourceRoot = found->path;
-    } else {
+        Manifest liveManifest;
         QString validationError;
-        if (!validateAssetRecord(asset, nullptr, &validationError)) {
+        if (!validateAssetRecord(asset, &liveManifest, &validationError)) {
             plan.error = validationError;
             return plan;
         }
-    }
-    plan.files = AssetScanner::assetFiles(plan.sourceRoot);
-    if (plan.files.isEmpty()) {
-        plan.error = QStringLiteral("The selected asset has no payload files");
-        return plan;
+        const QString snapshotRoot = QDir(asset.assetRoot).absoluteFilePath(
+            QStringLiteral(".xips/versions/%1").arg(plan.version));
+        if (!QFileInfo::exists(snapshotRoot)) {
+            plan.error = QStringLiteral("Version not found: %1").arg(plan.version);
+            return plan;
+        }
+        SnapshotProof proof;
+        if (!verifySavedSnapshot(asset.assetRoot,
+                                 liveManifest.id,
+                                 plan.version,
+                                 snapshotRoot,
+                                 true,
+                                 &proof,
+                                 &plan.error)) {
+            return plan;
+        }
+        plan.sourceRoot = proof.info.path;
+        plan.files = proof.files;
+        plan.contentHash = proof.info.contentHash;
+        plan.strictContentHash = proof.info.strictContentHash;
+        plan.payloadFingerprint = proof.payloadFingerprint;
+        plan.proofFingerprint = proof.proofFingerprint;
+    } else {
+        Manifest liveManifest;
+        QString contentFingerprint;
+        if (!validateAssetRecord(asset, &liveManifest, &plan.error)) {
+            return plan;
+        }
+        if (!strictNonEmptyAssetFingerprintAtRoot(asset.assetRoot,
+                                                  liveManifest.id,
+                                                  nullptr,
+                                                  &plan.files,
+                                                  &contentFingerprint,
+                                                  &plan.payloadFingerprint,
+                                                  &plan.error)) {
+            return plan;
+        }
+        if (!AssetScanner::verifiedContentHash(liveManifest,
+                                               asset.assetRoot,
+                                               &plan.contentHash,
+                                               &plan.error)) {
+            return plan;
+        }
+        plan.sourceRoot = files::normalizedAbsolute(asset.assetRoot);
+        plan.strictContentHash = contentFingerprint;
+        plan.proofFingerprint = contentFingerprint;
+        QString confirmedFingerprint;
+        if (!strictFingerprintAtRoot(asset.assetRoot,
+                                     liveManifest.id,
+                                     nullptr,
+                                     &confirmedFingerprint,
+                                     &plan.error)
+            || confirmedFingerprint != contentFingerprint) {
+            plan.error = QStringLiteral(
+                "The working copy changed while the copy plan was prepared");
+            return plan;
+        }
+        if (plan.files.isEmpty()) {
+            plan.error = QStringLiteral("The selected asset has no payload files");
+            return plan;
+        }
     }
     plan.suggestedName = plan.isSingleFile()
                              ? QFileInfo(plan.files.first()).fileName()
@@ -1993,35 +4135,124 @@ bool AssetLibraryService::copyVersionPayload(
                     QStringLiteral("Copy destination parent is not a directory"));
     }
 
-    if (plan.isSingleFile()) {
-        const QString source = QDir(plan.sourceRoot).absoluteFilePath(
-            plan.files.first());
-        if (!QFile::copy(source, targetPath)) {
-            return fail(error,
-                        QStringLiteral("Cannot copy %1 to %2")
-                            .arg(source, targetPath));
-        }
-        if (copiedPath) {
-            *copiedPath = targetPath;
-        }
-        return true;
-    }
-
-    const QString stagingName = QStringLiteral(".xips-copy-%1")
-                                    .arg(QUuid::createUuid().toString(
-                                        QUuid::WithoutBraces));
+    const QString stagingPrefix = QStringLiteral(".xips-copy-");
+    const QString stagingName = stagingPrefix
+                                + QUuid::createUuid().toString(
+                                    QUuid::WithoutBraces);
     const QString stagingRoot = QDir(parent).absoluteFilePath(stagingName);
     if (!QDir().mkpath(stagingRoot)) {
         return fail(error, QStringLiteral("Cannot create the copy staging directory"));
     }
     QString copyError;
-    if (!copyPayload(plan.sourceRoot, stagingRoot, &copyError)
-        || !QDir(parent).rename(stagingName, targetName)) {
-        QDir(stagingRoot).removeRecursively();
+    if (!copyPayloadFiles(plan.sourceRoot,
+                          plan.files,
+                          stagingRoot,
+                          &copyError)) {
         return fail(error,
-                    copyError.isEmpty()
-                        ? QStringLiteral("Cannot publish the copied asset")
-                        : copyError);
+                    QStringLiteral("%1; unverified copy staging remains at %2")
+                        .arg(copyError, stagingRoot));
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::CopyStagingPreparedBeforeInitialVerification,
+        stagingRoot);
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::SavedVersionCopiedBeforeVerification,
+        plan.sourceRoot);
+#endif
+
+    QString sourceError;
+    QString stagingError;
+    PayloadProof stagingProof;
+    const bool sourceVerified = verifyCopyPlanSource(asset,
+                                                     plan,
+                                                     &sourceError);
+    const bool stagingVerified = verifyPayloadProofAtRoot(
+        stagingRoot,
+        plan.files,
+        plan.payloadFingerprint,
+        &stagingProof,
+        &stagingError);
+    if (!sourceVerified || !stagingVerified) {
+        QString completedError = QStringLiteral(
+            "Copy source or staging changed or could not be verified: %1%2")
+                                     .arg(sourceError,
+                                          stagingError.isEmpty()
+                                              ? QString()
+                                              : QStringLiteral("; %1")
+                                                    .arg(stagingError));
+        if (stagingVerified) {
+            StagingRetireResult retired;
+            if (!retireVerifiedPayloadStaging(stagingProof,
+                                              parent,
+                                              stagingPrefix,
+                                              &retired)) {
+                completedError += QStringLiteral("; %1")
+                                      .arg(retired.warning);
+            }
+        } else {
+            completedError += QStringLiteral(
+                "; unverified copy staging remains at %1")
+                                  .arg(stagingRoot);
+        }
+        return fail(error, completedError);
+    }
+
+    bool published = false;
+    if (plan.isSingleFile()) {
+        const QString stagedFile = QDir(stagingRoot).absoluteFilePath(
+            plan.files.first());
+        published = QFile::rename(stagedFile, targetPath);
+        if (published
+            && !removeExpectedEmptyDirectories(stagingRoot,
+                                               stagingProof.entries)) {
+            return fail(error,
+                        QStringLiteral(
+                            "Copied file was published at %1, but copy staging remains at %2")
+                            .arg(targetPath, stagingRoot));
+        }
+    } else {
+        published = QDir(parent).rename(stagingName, targetName);
+    }
+    if (!published) {
+        StagingRetireResult retired;
+        if (!retireVerifiedPayloadStaging(stagingProof,
+                                          parent,
+                                          stagingPrefix,
+                                          &retired)) {
+            copyError = QStringLiteral("; %1").arg(retired.warning);
+        }
+        return fail(error,
+                    QStringLiteral("Cannot publish the copied asset%1")
+                        .arg(copyError));
+    }
+
+    bool outputVerified = false;
+    if (plan.isSingleFile()) {
+        outputVerified = filesEqual(
+            targetPath,
+            QDir(plan.sourceRoot).absoluteFilePath(plan.files.first()));
+    } else {
+        outputVerified = verifiedCopiedPayload(targetPath,
+                                               plan.files,
+                                               plan.payloadFingerprint,
+                                               &copyError);
+    }
+    QString finalSourceError;
+    const bool sourceStillVerified = verifyCopyPlanSource(asset,
+                                                          plan,
+                                                          &finalSourceError);
+    if (!outputVerified || !sourceStillVerified) {
+        return fail(
+            error,
+            QStringLiteral(
+                "Copied data remains at %1, but final verification failed: %2%3")
+                .arg(targetPath,
+                     copyError,
+                     finalSourceError.isEmpty()
+                         ? QString()
+                         : QStringLiteral("; %1").arg(finalSourceError)));
     }
     if (copiedPath) {
         *copiedPath = targetPath;
