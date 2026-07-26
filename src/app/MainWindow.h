@@ -34,6 +34,7 @@ public:
     explicit MainWindow(QString libraryRoot,
                         QWidget *parent = nullptr,
                         RemovalMode removalMode = RemovalMode::MoveToTrash);
+    ~MainWindow() override;
     void applyActivation(const ActivationRequest &request);
     [[nodiscard]] static QString openTarget(const AssetRecord &asset);
 
@@ -72,10 +73,23 @@ private:
     void renameCurrentGroup();
     void removeCurrentGroup();
     void showProblems();
+    void reportUnfinishedOperationPaths();
+    void recordUpdateProblems(const AssetRecord &asset,
+                              const UpdateAssetResult &result);
+    void offerWorkingCopyUndo(const AssetRecord &asset,
+                              const UpdateAssetResult &result,
+                              const QString &message);
+    void undoWorkingCopyChange(const AssetRecord &asset,
+                               const WorkingCopyUndoToken &token);
+    bool discardWorkingCopyRecovery(const AssetRecord &asset,
+                                    const WorkingCopyUndoToken &token);
     void showNotice(const QString &message,
                     const QString &actionText = {},
-                    std::function<void()> action = {});
-    void clearNotice();
+                    std::function<void()> action = {},
+                    std::function<bool()> dismiss = {});
+    void showPassiveReview(const QString &message);
+    [[nodiscard]] bool hasPendingUndo() const;
+    bool clearNotice();
     void setLibraryReady(bool ready);
     void saveLibrarySetting();
 
@@ -96,6 +110,7 @@ private:
     QStringList m_lastProblems;
     QList<AssetRecord> m_undoImportAssets;
     std::function<void()> m_noticeCallback;
+    std::function<bool()> m_noticeDismissCallback;
 
     QStackedWidget *m_contentStack = nullptr;
     QWidget *m_libraryPage = nullptr;
@@ -119,6 +134,7 @@ private:
     QFrame *m_noticeFrame = nullptr;
     QLabel *m_noticeLabel = nullptr;
     QToolButton *m_noticeActionButton = nullptr;
+    QToolButton *m_noticeDismissButton = nullptr;
     QToolButton *m_openMatchedFileButton = nullptr;
 
     QAction *m_addFilesAction = nullptr;

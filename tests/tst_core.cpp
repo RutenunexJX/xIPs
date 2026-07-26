@@ -24,6 +24,12 @@ bool writeFile(const QString &path, const QByteArray &contents)
            && file.write(contents) == contents.size();
 }
 
+QByteArray readFile(const QString &path)
+{
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
 QString createSourceIp(const QString &root)
 {
     const QString source = QDir(root).absoluteFilePath(QStringLiteral("source_ip"));
@@ -51,6 +57,8 @@ private slots:
     void scannerListsPayloadAndHashesOnDemand();
     void metadataKeepsStableId();
     void updateReplacesWorkingCopyAndPreservesSavedVersions();
+    void workingCopyUndoFailsClosedAtSecurityBoundaries();
+    void workingCopyTransactionsRejectConcurrentMutation();
     void assetDeletionIsBoundedAndLeavesSourcesUntouched();
     void versionsAreImmutableAndCopyable();
     void versionStateCopyToAndDeletionFormASafeWorkflow();
@@ -359,11 +367,36 @@ void CoreTest::updateReplacesWorkingCopyAndPreservesSavedVersions()
     UpdateAssetResult updated;
     QVERIFY2(service.updateAsset(asset,
                                  replacement,
-                                 RemovalMode::Permanent,
+                                 WorkingCopyRecoveryMode::RetainForUndo,
                                  &updated,
                                  &error),
              qPrintable(error));
     QVERIFY(updated.warning.isEmpty());
+    QVERIFY(updated.undoToken.isValid());
+    QCOMPARE(updated.undoToken.assetId, asset.manifest.id);
+    QCOMPARE(updated.undoToken.assetRoot, asset.assetRoot);
+    QVERIFY(QFileInfo(updated.undoToken.recoveryPath).isDir());
+    QVERIFY(updated.retainedPaths.isEmpty());
+    QString fingerprint;
+    QString fingerprintError;
+    QVERIFY2(AssetScanner::strictContentHash(updated.updated.manifest,
+                                             updated.updated.assetRoot,
+                                             &fingerprint,
+                                             &fingerprintError),
+             qPrintable(fingerprintError));
+    QCOMPARE(fingerprint, updated.undoToken.publishedFingerprint);
+    const ManifestLoadResult recoveryManifest = ManifestService().load(
+        QDir(updated.undoToken.recoveryPath).absoluteFilePath(
+            QStringLiteral(".xips.json")));
+    QVERIFY(recoveryManifest.ok());
+    fingerprint.clear();
+    fingerprintError.clear();
+    QVERIFY2(AssetScanner::strictContentHash(*recoveryManifest.manifest,
+                                             updated.undoToken.recoveryPath,
+                                             &fingerprint,
+                                             &fingerprintError),
+             qPrintable(fingerprintError));
+    QCOMPARE(fingerprint, updated.undoToken.recoveryFingerprint);
     QCOMPARE(updated.updated.manifest.id, QStringLiteral("update_ip"));
     QCOMPARE(updated.updated.manifest.name, QStringLiteral("Update IP"));
     QCOMPARE(updated.updated.manifest.tags,
@@ -375,6 +408,7 @@ void CoreTest::updateReplacesWorkingCopyAndPreservesSavedVersions()
         QStringLiteral("rtl/top.sv")));
     QVERIFY(working.open(QIODevice::ReadOnly));
     QCOMPARE(working.readAll(), revised);
+    working.close();
     QVERIFY(QFileInfo(QDir(asset.assetRoot).absoluteFilePath(
         QStringLiteral("doc/guide.md"))).isFile());
     QCOMPARE(service.versions(asset.assetRoot, &error).size(), 1);
@@ -384,10 +418,610 @@ void CoreTest::updateReplacesWorkingCopyAndPreservesSavedVersions()
         QStringLiteral("README.md"))).isFile());
     QVERIFY(!service.updateAsset(updated.updated,
                                  asset.assetRoot,
-                                 RemovalMode::Permanent,
+                                 WorkingCopyRecoveryMode::Permanent,
                                  nullptr,
                                  &error));
     QVERIFY(error.contains(QStringLiteral("cannot contain")));
+    UpdateAssetResult undone;
+    error.clear();
+    QVERIFY2(service.undoWorkingCopyChange(updated.updated,
+                                           updated.undoToken,
+                                           &undone,
+                                           &error),
+             qPrintable(error));
+    QVERIFY(undone.warning.isEmpty());
+    QVERIFY(undone.retainedPaths.isEmpty());
+    QVERIFY(!QFileInfo::exists(updated.undoToken.recoveryPath));
+    QVERIFY(QDir(library)
+                .entryList({QStringLiteral(".xips-create-*")},
+                           QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
+    QVERIFY(QFileInfo(QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("README.md"))).isFile());
+    QVERIFY(!QFileInfo(QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("doc/guide.md"))).exists());
+    QFile originalWorking(QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("rtl/top.sv")));
+    QVERIFY(originalWorking.open(QIODevice::ReadOnly));
+    QCOMPARE(originalWorking.readAll(),
+             QByteArrayLiteral("module top; endmodule\n"));
+    QCOMPARE(service.versions(asset.assetRoot, &error).size(), 1);
+    const WorkingCopyState undoneState = service.workingCopyState(undone.updated);
+    QVERIFY(!undoneState.changed);
+}
+
+void CoreTest::workingCopyUndoFailsClosedAtSecurityBoundaries()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString original = createSourceIp(temporary.path());
+    QVERIFY(!original.isEmpty());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = original,
+                  .metadata = {.id = QStringLiteral("undo_safety"),
+                               .name = QStringLiteral("Undo Safety"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+
+    QString failedFingerprint = QStringLiteral("stale fingerprint");
+    error.clear();
+    QVERIFY(!AssetScanner::strictContentHash(
+        asset.manifest,
+        temporary.filePath(QStringLiteral("missing-root")),
+        &failedFingerprint,
+        &error));
+    QVERIFY(failedFingerprint.isEmpty());
+    QVERIFY(!error.isEmpty());
+
+    const QByteArray originalBytes = QByteArrayLiteral(
+        "module top; endmodule\n");
+    const QByteArray revisedBytes = QByteArrayLiteral(
+        "module top; localparam REV = 2; endmodule\n");
+    const QByteArray newerBytes = QByteArrayLiteral(
+        "module top; localparam REV = 3; endmodule\n");
+    const QByteArray boundaryBytes = QByteArrayLiteral(
+        "module top; localparam REV = 4; endmodule\n");
+    const QString workingFile = QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("rtl/top.sv"));
+    const QString originalSourceFile = QDir(original).absoluteFilePath(
+        QStringLiteral("rtl/top.sv"));
+    const QString replacement = temporary.filePath(
+        QStringLiteral("replacement"));
+    const QString replacementFile = QDir(replacement).absoluteFilePath(
+        QStringLiteral("rtl/top.sv"));
+    QVERIFY(writeFile(replacementFile, revisedBytes));
+
+    error.clear();
+    QVERIFY(!service.updateAsset(asset,
+                                 replacement,
+                                 WorkingCopyRecoveryMode::RetainForUndo,
+                                 nullptr,
+                                 &error));
+    QVERIFY(error.contains(QStringLiteral("requires an Undo result token")));
+    QCOMPARE(readFile(workingFile), originalBytes);
+    QCOMPARE(readFile(originalSourceFile), originalBytes);
+    QCOMPARE(readFile(replacementFile), revisedBytes);
+    QVERIFY(QDir(library)
+                .entryList({QStringLiteral(".xips-create-*")},
+                           QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
+
+    UpdateAssetResult updated;
+    error.clear();
+    QVERIFY2(service.updateAsset(asset,
+                                 replacement,
+                                 WorkingCopyRecoveryMode::RetainForUndo,
+                                 &updated,
+                                 &error),
+             qPrintable(error));
+    QVERIFY(updated.undoToken.isValid());
+    QCOMPARE(readFile(workingFile), revisedBytes);
+    QCOMPARE(readFile(replacementFile), revisedBytes);
+    const QString neighbor = QDir(library).absoluteFilePath(
+        QStringLiteral("neighbor.keep"));
+    const QByteArray neighborBytes = QByteArrayLiteral("do not delete\n");
+    QVERIFY(writeFile(neighbor, neighborBytes));
+
+    QVERIFY(writeFile(workingFile, newerBytes));
+    UpdateAssetResult rejectedUndo;
+    error.clear();
+    QVERIFY(!service.undoWorkingCopyChange(updated.updated,
+                                           updated.undoToken,
+                                           &rejectedUndo,
+                                           &error));
+    QVERIFY(error.contains(QStringLiteral("changed after the operation")));
+    QCOMPARE(readFile(workingFile), newerBytes);
+    QCOMPARE(readFile(QDir(updated.undoToken.recoveryPath).absoluteFilePath(
+                          QStringLiteral("rtl/top.sv"))),
+             originalBytes);
+    QCOMPARE(readFile(neighbor), neighborBytes);
+    QVERIFY(QFileInfo(updated.undoToken.recoveryPath).isDir());
+
+    RecoveryDiscardResult explicitDiscard;
+    error.clear();
+    QVERIFY2(service.discardWorkingCopyRecovery(updated.updated,
+                                                updated.undoToken,
+                                                RemovalMode::Permanent,
+                                                &explicitDiscard,
+                                                &error),
+             qPrintable(error));
+    QVERIFY(explicitDiscard.warning.isEmpty());
+    QVERIFY(explicitDiscard.retainedPath.isEmpty());
+    QVERIFY(!QFileInfo::exists(updated.undoToken.recoveryPath));
+    QCOMPARE(readFile(workingFile), newerBytes);
+    QCOMPARE(readFile(neighbor), neighborBytes);
+
+    UpdateAssetResult tamperedRecovery;
+    error.clear();
+    QVERIFY2(service.updateAsset(updated.updated,
+                                 replacement,
+                                 WorkingCopyRecoveryMode::RetainForUndo,
+                                 &tamperedRecovery,
+                                 &error),
+             qPrintable(error));
+    QVERIFY(tamperedRecovery.undoToken.isValid());
+    QCOMPARE(readFile(workingFile), revisedBytes);
+    const QString tamperedRecoveryFile =
+        QDir(tamperedRecovery.undoToken.recoveryPath).absoluteFilePath(
+            QStringLiteral("rtl/top.sv"));
+    const QByteArray tamperedBytes = QByteArrayLiteral(
+        "module top; localparam TAMPERED = 1; endmodule\n");
+    QVERIFY(writeFile(tamperedRecoveryFile, tamperedBytes));
+
+    UpdateAssetResult tamperedUndo;
+    error.clear();
+    QVERIFY(!service.undoWorkingCopyChange(tamperedRecovery.updated,
+                                           tamperedRecovery.undoToken,
+                                           &tamperedUndo,
+                                           &error));
+    QVERIFY(error.contains(QStringLiteral("retained recovery changed")));
+    QCOMPARE(readFile(workingFile), revisedBytes);
+    QCOMPARE(readFile(tamperedRecoveryFile), tamperedBytes);
+    QCOMPARE(readFile(neighbor), neighborBytes);
+
+    RecoveryDiscardResult rejectedDiscard;
+    error.clear();
+    QVERIFY(!service.discardWorkingCopyRecovery(
+        tamperedRecovery.updated,
+        tamperedRecovery.undoToken,
+        RemovalMode::Permanent,
+        &rejectedDiscard,
+        &error));
+    QVERIFY(error.contains(QStringLiteral("not discarded automatically")));
+    QVERIFY(rejectedDiscard.retainedPath.isEmpty());
+    QVERIFY(rejectedDiscard.warning.isEmpty());
+    QVERIFY(QFileInfo(tamperedRecovery.undoToken.recoveryPath).isDir());
+    QCOMPARE(readFile(workingFile), revisedBytes);
+    QCOMPARE(readFile(tamperedRecoveryFile), tamperedBytes);
+    QCOMPARE(readFile(neighbor), neighborBytes);
+    QVERIFY(QDir(library)
+                .entryList({QStringLiteral(".xips-create-discard-*")},
+                           QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
+
+    const QString boundaryReplacement = temporary.filePath(
+        QStringLiteral("boundary-replacement"));
+    const QString boundaryReplacementFile =
+        QDir(boundaryReplacement).absoluteFilePath(
+            QStringLiteral("rtl/top.sv"));
+    QVERIFY(writeFile(boundaryReplacementFile, boundaryBytes));
+    UpdateAssetResult bounded;
+    error.clear();
+    QVERIFY2(service.updateAsset(tamperedRecovery.updated,
+                                 boundaryReplacement,
+                                 WorkingCopyRecoveryMode::RetainForUndo,
+                                 &bounded,
+                                 &error),
+             qPrintable(error));
+    QVERIFY(bounded.undoToken.isValid());
+    const WorkingCopyUndoToken validToken = bounded.undoToken;
+    const QString validRecoveryFile =
+        QDir(validToken.recoveryPath).absoluteFilePath(
+            QStringLiteral("rtl/top.sv"));
+    QCOMPARE(readFile(validRecoveryFile), revisedBytes);
+    QCOMPARE(readFile(workingFile), boundaryBytes);
+
+    error.clear();
+    QVERIFY(!service.undoWorkingCopyChange(bounded.updated,
+                                           validToken,
+                                           nullptr,
+                                           &error));
+    QVERIFY(error.contains(QStringLiteral("cleanup reporting")));
+    error.clear();
+    QVERIFY(!service.discardWorkingCopyRecovery(bounded.updated,
+                                                validToken,
+                                                RemovalMode::Permanent,
+                                                nullptr,
+                                                &error));
+    QVERIFY(error.contains(QStringLiteral("cleanup reporting")));
+    QVERIFY(QFileInfo(validToken.recoveryPath).isDir());
+    QCOMPARE(readFile(validRecoveryFile), revisedBytes);
+    QCOMPARE(readFile(workingFile), boundaryBytes);
+
+    const QString unexpectedVersionRoot =
+        QDir(validToken.recoveryPath).absoluteFilePath(
+            QStringLiteral(".xips/versions/external"));
+    const QString unexpectedVersionFile =
+        QDir(unexpectedVersionRoot).absoluteFilePath(
+            QStringLiteral("rtl/newer.sv"));
+    QVERIFY(writeFile(unexpectedVersionFile,
+                      QByteArrayLiteral("module newer; endmodule\n")));
+    UpdateAssetResult protectedUndo;
+    error.clear();
+    QVERIFY(!service.undoWorkingCopyChange(bounded.updated,
+                                           validToken,
+                                           &protectedUndo,
+                                           &error));
+    QVERIFY(error.contains(QStringLiteral("saved-version data")));
+    RecoveryDiscardResult protectedDiscard;
+    error.clear();
+    QVERIFY(!service.discardWorkingCopyRecovery(bounded.updated,
+                                                validToken,
+                                                RemovalMode::Permanent,
+                                                &protectedDiscard,
+                                                &error));
+    QVERIFY(error.contains(QStringLiteral("saved-version data")));
+    QVERIFY(QFileInfo(unexpectedVersionFile).isFile());
+    QVERIFY(QFileInfo(validToken.recoveryPath).isDir());
+    QVERIFY(QDir(QDir(validToken.recoveryPath).absoluteFilePath(
+                     QStringLiteral(".xips")))
+                .removeRecursively());
+
+    const QString fakeRecovery = QDir(library).absoluteFilePath(
+        QStringLiteral(".xips-create-recovery-not-a-uuid"));
+    const QString fakeVictim = QDir(fakeRecovery).absoluteFilePath(
+        QStringLiteral("victim.keep"));
+    const QByteArray fakeVictimBytes = QByteArrayLiteral("fake victim\n");
+    QVERIFY(writeFile(fakeVictim, fakeVictimBytes));
+    QVERIFY2(ManifestService().write(
+                 QDir(fakeRecovery).absoluteFilePath(
+                     QStringLiteral(".xips.json")),
+                 bounded.updated.manifest,
+                 &error),
+             qPrintable(error));
+    const QString externalRecovery = temporary.filePath(
+        QStringLiteral(
+            "outside/.xips-create-recovery-11111111-1111-1111-1111-111111111111"));
+    const QString externalVictim = QDir(externalRecovery).absoluteFilePath(
+        QStringLiteral("victim.keep"));
+    const QByteArray externalVictimBytes = QByteArrayLiteral(
+        "external victim\n");
+    QVERIFY(writeFile(externalVictim, externalVictimBytes));
+    QVERIFY2(ManifestService().write(
+                 QDir(externalRecovery).absoluteFilePath(
+                     QStringLiteral(".xips.json")),
+                 bounded.updated.manifest,
+                 &error),
+             qPrintable(error));
+
+    QList<WorkingCopyUndoToken> invalidTokens;
+    QStringList invalidLabels;
+    const auto addInvalid = [&invalidTokens, &invalidLabels](
+                                const QString &label,
+                                const WorkingCopyUndoToken &token) {
+        invalidLabels.append(label);
+        invalidTokens.append(token);
+    };
+    WorkingCopyUndoToken invalid = validToken;
+    invalid.assetId = QStringLiteral("other_asset");
+    addInvalid(QStringLiteral("asset id"), invalid);
+    invalid = validToken;
+    invalid.assetRoot = temporary.filePath(QStringLiteral("outside/current"));
+    addInvalid(QStringLiteral("asset root"), invalid);
+    invalid = validToken;
+    invalid.publishedFingerprint = QStringLiteral("sha256:not-a-hash");
+    addInvalid(QStringLiteral("published fingerprint"), invalid);
+    invalid = validToken;
+    invalid.recoveryFingerprint = QStringLiteral("invalid");
+    addInvalid(QStringLiteral("recovery fingerprint"), invalid);
+    invalid = validToken;
+    invalid.recoveryPath = fakeRecovery;
+    addInvalid(QStringLiteral("fake recovery uuid"), invalid);
+    invalid = validToken;
+    invalid.recoveryPath = externalRecovery;
+    addInvalid(QStringLiteral("external recovery"), invalid);
+
+    QCOMPARE(invalidTokens.size(), invalidLabels.size());
+    for (qsizetype index = 0; index < invalidTokens.size(); ++index) {
+        UpdateAssetResult invalidUndo;
+        error.clear();
+        QVERIFY2(!service.undoWorkingCopyChange(bounded.updated,
+                                                invalidTokens.at(index),
+                                                &invalidUndo,
+                                                &error),
+                 qPrintable(QStringLiteral("Undo accepted invalid %1 token")
+                                .arg(invalidLabels.at(index))));
+        QVERIFY2(!error.isEmpty(), qPrintable(invalidLabels.at(index)));
+        RecoveryDiscardResult invalidDiscard;
+        error.clear();
+        QVERIFY2(!service.discardWorkingCopyRecovery(
+                     bounded.updated,
+                     invalidTokens.at(index),
+                     RemovalMode::Permanent,
+                     &invalidDiscard,
+                     &error),
+                 qPrintable(QStringLiteral("Discard accepted invalid %1 token")
+                                .arg(invalidLabels.at(index))));
+        QVERIFY2(!error.isEmpty(), qPrintable(invalidLabels.at(index)));
+        QVERIFY(QFileInfo(validToken.recoveryPath).isDir());
+        QCOMPARE(readFile(validRecoveryFile), revisedBytes);
+        QCOMPARE(readFile(workingFile), boundaryBytes);
+        QCOMPARE(readFile(neighbor), neighborBytes);
+        QCOMPARE(readFile(fakeVictim), fakeVictimBytes);
+        QCOMPARE(readFile(externalVictim), externalVictimBytes);
+        QVERIFY(QDir(library)
+                    .entryList({QStringLiteral(".xips-create-discard-*")},
+                               QDir::Dirs | QDir::Hidden
+                                   | QDir::NoDotAndDotDot)
+                    .isEmpty());
+    }
+
+    RecoveryDiscardResult validDiscard;
+    error.clear();
+    QVERIFY2(service.discardWorkingCopyRecovery(bounded.updated,
+                                                validToken,
+                                                RemovalMode::Permanent,
+                                                &validDiscard,
+                                                &error),
+             qPrintable(error));
+    QVERIFY(validDiscard.warning.isEmpty());
+    QVERIFY(validDiscard.retainedPath.isEmpty());
+    QVERIFY(!QFileInfo::exists(validToken.recoveryPath));
+    QVERIFY(QFileInfo(tamperedRecovery.undoToken.recoveryPath).isDir());
+    QCOMPARE(readFile(tamperedRecoveryFile), tamperedBytes);
+    QCOMPARE(readFile(workingFile), boundaryBytes);
+    QCOMPARE(readFile(boundaryReplacementFile), boundaryBytes);
+    QCOMPARE(readFile(neighbor), neighborBytes);
+    QCOMPARE(readFile(fakeVictim), fakeVictimBytes);
+    QCOMPARE(readFile(externalVictim), externalVictimBytes);
+    QVERIFY(QDir(library)
+                .entryList({QStringLiteral(".xips-create-discard-*")},
+                           QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
+}
+
+void CoreTest::workingCopyTransactionsRejectConcurrentMutation()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QByteArray originalBytes = QByteArrayLiteral(
+        "module top; endmodule\n");
+    const QByteArray revisedBytes = QByteArrayLiteral(
+        "module top; localparam REV = 2; endmodule\n");
+    const QByteArray concurrentBytes = QByteArrayLiteral(
+        "module top; localparam SYNC = 3; endmodule\n");
+
+    const QList<WorkingCopyRecoveryMode> modes{
+        WorkingCopyRecoveryMode::RetainForUndo,
+        WorkingCopyRecoveryMode::Permanent,
+    };
+    for (qsizetype index = 0; index < modes.size(); ++index) {
+        const QString caseRoot = temporary.filePath(
+            QStringLiteral("publish-race-%1").arg(index));
+        const QString source = createSourceIp(caseRoot);
+        QVERIFY(!source.isEmpty());
+        const QString library = QDir(caseRoot).absoluteFilePath(
+            QStringLiteral("library"));
+        const QString replacement = QDir(caseRoot).absoluteFilePath(
+            QStringLiteral("replacement"));
+        const QString replacementFile = QDir(replacement).absoluteFilePath(
+            QStringLiteral("rtl/top.sv"));
+        QVERIFY(writeFile(replacementFile, revisedBytes));
+
+        AssetLibraryService service;
+        AssetRecord asset;
+        QString error;
+        QVERIFY2(service.importAsset(
+                     {.libraryRoot = library,
+                      .sourcePath = source,
+                      .metadata = {
+                          .id = QStringLiteral("publish_race_%1").arg(index),
+                          .name = QStringLiteral("Publish Race %1").arg(index),
+                          .description = {},
+                          .tags = {}}},
+                     &asset,
+                     &error),
+                 qPrintable(error));
+
+        int hookCount = 0;
+        bool mutationSucceeded = false;
+        service.setWorkingCopyTestHook(
+            [&](const WorkingCopyTestPoint point, const QString &path) {
+                ++hookCount;
+                if (point
+                    == WorkingCopyTestPoint::StagingVerifiedBeforePublish) {
+                    mutationSucceeded = writeFile(
+                        QDir(path).absoluteFilePath(
+                            QStringLiteral("rtl/top.sv")),
+                        concurrentBytes);
+                }
+            });
+
+        UpdateAssetResult updated;
+        error.clear();
+        QVERIFY2(service.updateAsset(asset,
+                                     replacement,
+                                     modes.at(index),
+                                     &updated,
+                                     &error),
+                 qPrintable(error));
+        QCOMPARE(hookCount, 1);
+        QVERIFY(mutationSucceeded);
+        QVERIFY(!updated.publishedAsIntended);
+        QVERIFY(!updated.undoToken.isValid());
+        QCOMPARE(updated.retainedPaths.size(), 1);
+        const QString recoveryPath = updated.retainedPaths.first();
+        QVERIFY(QFileInfo(recoveryPath).isDir());
+        QVERIFY(QFileInfo(recoveryPath).fileName().startsWith(
+            QStringLiteral(".xips-create-recovery-")));
+        QVERIFY(updated.warning.contains(recoveryPath));
+        QCOMPARE(readFile(QDir(asset.assetRoot).absoluteFilePath(
+                              QStringLiteral("rtl/top.sv"))),
+                 concurrentBytes);
+        QCOMPARE(readFile(replacementFile), revisedBytes);
+        QCOMPARE(readFile(QDir(recoveryPath).absoluteFilePath(
+                              QStringLiteral("rtl/top.sv"))),
+                 originalBytes);
+        QVERIFY(QFileInfo(QDir(recoveryPath).absoluteFilePath(
+                              QStringLiteral("README.md")))
+                    .isFile());
+        const ManifestLoadResult recoveryManifest = ManifestService().load(
+            QDir(recoveryPath).absoluteFilePath(
+                QStringLiteral(".xips.json")));
+        QVERIFY(recoveryManifest.ok());
+        QCOMPARE(recoveryManifest.manifest->id, asset.manifest.id);
+        QVERIFY(QDir(library)
+                    .entryList({QStringLiteral(".xips-create-discard-*")},
+                               QDir::Dirs | QDir::Hidden
+                                   | QDir::NoDotAndDotDot)
+                    .isEmpty());
+    }
+
+    const QString discardRoot = temporary.filePath(
+        QStringLiteral("discard-race"));
+    const QString source = createSourceIp(discardRoot);
+    QVERIFY(!source.isEmpty());
+    const QString library = QDir(discardRoot).absoluteFilePath(
+        QStringLiteral("library"));
+    const QString replacement = QDir(discardRoot).absoluteFilePath(
+        QStringLiteral("replacement"));
+    const QString replacementFile = QDir(replacement).absoluteFilePath(
+        QStringLiteral("rtl/top.sv"));
+    QVERIFY(writeFile(replacementFile, revisedBytes));
+
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("discard_race"),
+                               .name = QStringLiteral("Discard Race"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    UpdateAssetResult updated;
+    QVERIFY2(service.updateAsset(asset,
+                                 replacement,
+                                 WorkingCopyRecoveryMode::RetainForUndo,
+                                 &updated,
+                                 &error),
+             qPrintable(error));
+    QVERIFY(updated.publishedAsIntended);
+    QVERIFY(updated.undoToken.isValid());
+
+    const QString recoveryManifestPath = QDir(updated.undoToken.recoveryPath)
+                                             .absoluteFilePath(
+                                                 QStringLiteral(".xips.json"));
+    const ManifestLoadResult originalRecoveryManifest =
+        ManifestService().load(recoveryManifestPath);
+    QVERIFY(originalRecoveryManifest.ok());
+    Manifest changedRecoveryManifest = *originalRecoveryManifest.manifest;
+    changedRecoveryManifest.description = QStringLiteral(
+        "manifest changed before Undo");
+    QVERIFY2(ManifestService().write(recoveryManifestPath,
+                                     changedRecoveryManifest,
+                                     &error),
+             qPrintable(error));
+    UpdateAssetResult rejectedManifestUndo;
+    error.clear();
+    QVERIFY(!service.undoWorkingCopyChange(updated.updated,
+                                           updated.undoToken,
+                                           &rejectedManifestUndo,
+                                           &error));
+    QVERIFY(error.contains(QStringLiteral("retained recovery changed")));
+    QVERIFY(QFileInfo(updated.undoToken.recoveryPath).isDir());
+    QCOMPARE(readFile(QDir(asset.assetRoot).absoluteFilePath(
+                          QStringLiteral("rtl/top.sv"))),
+             revisedBytes);
+    QVERIFY2(ManifestService().write(recoveryManifestPath,
+                                     *originalRecoveryManifest.manifest,
+                                     &error),
+             qPrintable(error));
+
+    const QString ignoredVictim = QDir(updated.undoToken.recoveryPath)
+                                      .absoluteFilePath(
+                                          QStringLiteral(".cache/victim.keep"));
+    QVERIFY(writeFile(ignoredVictim, QByteArrayLiteral("keep synced data\n")));
+    RecoveryDiscardResult blockedDiscard;
+    error.clear();
+    QVERIFY(!service.discardWorkingCopyRecovery(updated.updated,
+                                                updated.undoToken,
+                                                RemovalMode::Permanent,
+                                                &blockedDiscard,
+                                                &error));
+    QVERIFY(error.contains(QStringLiteral("unrecognized data")));
+    QVERIFY(QFileInfo(ignoredVictim).isFile());
+    QVERIFY(QFileInfo(updated.undoToken.recoveryPath).isDir());
+    QVERIFY(QDir(QDir(updated.undoToken.recoveryPath).absoluteFilePath(
+                     QStringLiteral(".cache")))
+                .removeRecursively());
+
+    int hookCount = 0;
+    bool manifestMutationSucceeded = false;
+    const QString concurrentDescription = QStringLiteral(
+        "manifest changed by concurrent sync");
+    service.setWorkingCopyTestHook(
+        [&](const WorkingCopyTestPoint point, const QString &path) {
+            ++hookCount;
+            if (point
+                != WorkingCopyTestPoint::RecoveryVerifiedBeforeDiscardIsolation) {
+                return;
+            }
+            const QString manifestPath = QDir(path).absoluteFilePath(
+                QStringLiteral(".xips.json"));
+            const ManifestLoadResult loaded = ManifestService().load(
+                manifestPath);
+            if (!loaded.ok()) {
+                return;
+            }
+            Manifest changed = *loaded.manifest;
+            changed.description = concurrentDescription;
+            QString writeError;
+            manifestMutationSucceeded = ManifestService().write(
+                manifestPath,
+                changed,
+                &writeError);
+        });
+
+    RecoveryDiscardResult isolated;
+    error.clear();
+    QVERIFY2(service.discardWorkingCopyRecovery(updated.updated,
+                                                updated.undoToken,
+                                                RemovalMode::Permanent,
+                                                &isolated,
+                                                &error),
+             qPrintable(error));
+    QCOMPARE(hookCount, 1);
+    QVERIFY(manifestMutationSucceeded);
+    QVERIFY(!isolated.warning.isEmpty());
+    QVERIFY(!isolated.retainedPath.isEmpty());
+    QVERIFY(isolated.warning.contains(isolated.retainedPath));
+    QVERIFY(!QFileInfo::exists(updated.undoToken.recoveryPath));
+    QVERIFY(QFileInfo(isolated.retainedPath).isDir());
+    const ManifestLoadResult retainedManifest = ManifestService().load(
+        QDir(isolated.retainedPath).absoluteFilePath(
+            QStringLiteral(".xips.json")));
+    QVERIFY(retainedManifest.ok());
+    QCOMPARE(retainedManifest.manifest->description,
+             concurrentDescription);
+    QCOMPARE(readFile(QDir(isolated.retainedPath).absoluteFilePath(
+                          QStringLiteral("rtl/top.sv"))),
+             originalBytes);
+    QCOMPARE(readFile(QDir(asset.assetRoot).absoluteFilePath(
+                          QStringLiteral("rtl/top.sv"))),
+             revisedBytes);
+    QCOMPARE(readFile(replacementFile), revisedBytes);
 }
 
 void CoreTest::assetDeletionIsBoundedAndLeavesSourcesUntouched()
@@ -602,17 +1236,20 @@ void CoreTest::versionStateCopyToAndDeletionFormASafeWorkflow()
     error.clear();
     QVERIFY2(service.restoreVersion(asset,
                                     QStringLiteral("1.0.0"),
-                                    RemovalMode::Permanent,
+                                    WorkingCopyRecoveryMode::RetainForUndo,
                                     &restored,
                                     &error),
              qPrintable(error));
     QCOMPARE(restored.preview.replacedFiles,
              QStringList{QStringLiteral("uart_rx.sv")});
     QVERIFY(restored.warning.isEmpty());
+    QVERIFY(restored.undoToken.isValid());
+    QVERIFY(QFileInfo(restored.undoToken.recoveryPath).isDir());
     QCOMPARE(restored.updated.manifest.version, QStringLiteral("1.0.1"));
     QFile restoredWorking(workingFile);
     QVERIFY(restoredWorking.open(QIODevice::ReadOnly));
     QVERIFY(restoredWorking.readAll().contains(QByteArrayLiteral("V = 1")));
+    restoredWorking.close();
     const QList<VersionInfo> versionsAfterRestore = service.versions(
         asset.assetRoot, &error);
     QCOMPARE(versionsAfterRestore.size(), versionsBeforeRestore.size());
@@ -639,6 +1276,49 @@ void CoreTest::versionStateCopyToAndDeletionFormASafeWorkflow()
              manifestBeforeRestore.manifest->tags);
     QCOMPARE(manifestAfterRestore.manifest->version,
              manifestBeforeRestore.manifest->version);
+    QVERIFY(writeFile(workingFile,
+                      QByteArrayLiteral(
+                          "module uart_rx; localparam V = 3; endmodule\n")));
+    UpdateAssetResult undoneRestore;
+    error.clear();
+    QVERIFY(!service.undoWorkingCopyChange(asset,
+                                           restored.undoToken,
+                                           &undoneRestore,
+                                           &error));
+    QVERIFY(error.contains(QStringLiteral("changed after the operation")));
+    QVERIFY(QFileInfo(restored.undoToken.recoveryPath).isDir());
+    QVERIFY(writeFile(workingFile,
+                      QByteArrayLiteral(
+                          "module uart_rx; localparam V = 1; endmodule\n")));
+    error.clear();
+    QVERIFY2(service.undoWorkingCopyChange(asset,
+                                           restored.undoToken,
+                                           &undoneRestore,
+                                           &error),
+             qPrintable(error));
+    QVERIFY(!QFileInfo::exists(restored.undoToken.recoveryPath));
+    QFile undoRestoredWorking(workingFile);
+    QVERIFY(undoRestoredWorking.open(QIODevice::ReadOnly));
+    QVERIFY(undoRestoredWorking.readAll().contains(QByteArrayLiteral("V = 2")));
+    undoRestoredWorking.close();
+    QCOMPARE(service.versions(asset.assetRoot, &error).size(), 2);
+    UpdateAssetResult restoredAgain;
+    QVERIFY2(service.restoreVersion(asset,
+                                    QStringLiteral("1.0.0"),
+                                    WorkingCopyRecoveryMode::RetainForUndo,
+                                    &restoredAgain,
+                                    &error),
+             qPrintable(error));
+    QVERIFY(QFileInfo(restoredAgain.undoToken.recoveryPath).isDir());
+    RecoveryDiscardResult discarded;
+    QVERIFY2(service.discardWorkingCopyRecovery(asset,
+                                                restoredAgain.undoToken,
+                                                RemovalMode::Permanent,
+                                                &discarded,
+                                                &error),
+             qPrintable(error));
+    QVERIFY(discarded.warning.isEmpty());
+    QVERIFY(!QFileInfo::exists(restoredAgain.undoToken.recoveryPath));
     state = service.workingCopyState(asset);
     QVERIFY2(state.error.isEmpty(), qPrintable(state.error));
     QVERIFY(state.changed);
@@ -646,14 +1326,14 @@ void CoreTest::versionStateCopyToAndDeletionFormASafeWorkflow()
     error.clear();
     QVERIFY(!service.restoreVersion(asset,
                                     QStringLiteral("1.0.0"),
-                                    RemovalMode::Permanent,
+                                    WorkingCopyRecoveryMode::Permanent,
                                     nullptr,
                                     &error));
     QVERIFY(error.contains(QStringLiteral("already matches")));
     error.clear();
     QVERIFY(!service.restoreVersion(asset,
                                     QStringLiteral("missing"),
-                                    RemovalMode::Permanent,
+                                    WorkingCopyRecoveryMode::Permanent,
                                     nullptr,
                                     &error));
     QVERIFY(error.contains(QStringLiteral("Version not found")));

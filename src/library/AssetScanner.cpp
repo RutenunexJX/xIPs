@@ -4,6 +4,7 @@
 #include "library/FileSystemUtil.h"
 
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -17,6 +18,35 @@ namespace {
 bool isCancelled(const std::atomic_bool *cancelled)
 {
     return cancelled && cancelled->load(std::memory_order_relaxed);
+}
+
+bool fail(QString *error, const QString &message)
+{
+    if (error) {
+        *error = message;
+    }
+    return false;
+}
+
+void discoverUnfinishedOperationPaths(const QString &directory,
+                                      QStringList &paths)
+{
+    const QFileInfoList entries = QDir(directory).entryInfoList(
+        QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+        QDir::Name);
+    for (const QFileInfo &entry : entries) {
+        if (files::isLinkLike(entry)) {
+            continue;
+        }
+        if (entry.fileName().startsWith(QStringLiteral(".xips-create-"),
+                                        Qt::CaseInsensitive)) {
+            paths.append(files::normalizedAbsolute(entry.absoluteFilePath()));
+            continue;
+        }
+        if (!files::isIgnoredDirectory(entry.fileName())) {
+            discoverUnfinishedOperationPaths(entry.absoluteFilePath(), paths);
+        }
+    }
 }
 
 } // namespace
@@ -93,6 +123,19 @@ QStringList AssetScanner::assetFiles(const QString &assetRoot)
     return result;
 }
 
+QStringList AssetScanner::unfinishedOperationPaths(const QString &libraryRoot)
+{
+    QStringList paths;
+    const QFileInfo root(files::normalizedAbsolute(libraryRoot));
+    if (!root.isDir() || files::isLinkLike(root)) {
+        return paths;
+    }
+    discoverUnfinishedOperationPaths(root.absoluteFilePath(), paths);
+    std::sort(paths.begin(), paths.end());
+    paths.removeDuplicates();
+    return paths;
+}
+
 QString AssetScanner::contentHash(const Manifest &manifest,
                                   const QString &assetRoot)
 {
@@ -113,6 +156,87 @@ QString AssetScanner::contentHash(const Manifest &manifest,
         }
     }
     return QStringLiteral("sha256:") + QString::fromLatin1(hash.result().toHex());
+}
+
+bool AssetScanner::strictContentHash(const Manifest &manifest,
+                                     const QString &assetRoot,
+                                     QString *contentHash,
+                                     QString *error)
+{
+    if (contentHash) {
+        contentHash->clear();
+    }
+    QStringList relativeFiles;
+    if (!files::collectPayloadFiles(assetRoot,
+                                    relativeFiles,
+                                    files::LinkPolicy::Reject,
+                                    error)) {
+        return false;
+    }
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(QByteArrayView("xips-strict-v1\0", 15));
+    const auto addSizedData = [&hash](const QByteArray &data) {
+        hash.addData(QByteArray::number(
+            static_cast<qlonglong>(data.size())));
+        hash.addData(QByteArrayView(":", 1));
+        hash.addData(data);
+    };
+    addSizedData(json::canonicalJson(ManifestService().toJson(manifest)));
+    for (const QString &relative : relativeFiles) {
+        hash.addData(QByteArrayView("\0path\0", 6));
+        addSizedData(relative.toUtf8());
+        QFile file(QDir(assetRoot).absoluteFilePath(relative));
+        if (!file.open(QIODevice::ReadOnly)) {
+            return fail(error,
+                        QStringLiteral("Cannot read payload file for verification: %1")
+                            .arg(file.fileName()));
+        }
+        const qint64 expectedSize = file.size();
+        const QDateTime expectedModified = file.fileTime(
+            QFileDevice::FileModificationTime);
+        if (expectedSize < 0) {
+            return fail(error,
+                        QStringLiteral("Cannot determine payload file size: %1")
+                            .arg(file.fileName()));
+        }
+        hash.addData(QByteArrayView("\0data\0", 6));
+        hash.addData(QByteArray::number(expectedSize));
+        hash.addData(QByteArrayView(":", 1));
+        qint64 bytesRead = 0;
+        while (!file.atEnd()) {
+            const QByteArray chunk = file.read(1024 * 1024);
+            if (chunk.isEmpty() && file.error() != QFileDevice::NoError) {
+                return fail(error,
+                            QStringLiteral("Cannot finish reading payload file: %1")
+                                .arg(file.fileName()));
+            }
+            hash.addData(chunk);
+            bytesRead += static_cast<qint64>(chunk.size());
+        }
+        if (file.error() != QFileDevice::NoError
+            || bytesRead != expectedSize || file.size() != expectedSize
+            || file.fileTime(QFileDevice::FileModificationTime)
+                   != expectedModified) {
+            return fail(error,
+                        QStringLiteral("Payload file changed while being verified: %1")
+                            .arg(file.fileName()));
+        }
+    }
+    QStringList confirmedFiles;
+    if (!files::collectPayloadFiles(assetRoot,
+                                    confirmedFiles,
+                                    files::LinkPolicy::Reject,
+                                    error)
+        || confirmedFiles != relativeFiles) {
+        return fail(error,
+                    QStringLiteral(
+                        "The payload file list changed while it was being verified"));
+    }
+    if (contentHash) {
+        *contentHash = QStringLiteral("sha256:")
+                       + QString::fromLatin1(hash.result().toHex());
+    }
+    return true;
 }
 
 void AssetScanner::discoverManifests(

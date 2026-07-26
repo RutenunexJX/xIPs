@@ -7,9 +7,11 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QTabWidget>
 #include <QTableView>
@@ -53,6 +55,7 @@ class GuiSmokeTest final : public QObject {
 
 private slots:
     void firstRunRequiresAnExplicitLibrary();
+    void startupReportsUnfinishedOperationPaths();
     void firstScreenIsACompactAssetLibrary();
     void binaryFilesRemainInventoryEntries();
     void activationSelectsAnAsset();
@@ -76,6 +79,52 @@ void GuiSmokeTest::firstRunRequiresAnExplicitLibrary()
     QVERIFY(!addFiles->isEnabled());
     QVERIFY(table);
     QVERIFY(!table->isVisible());
+}
+
+void GuiSmokeTest::startupReportsUnfinishedOperationPaths()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    const QString orphan = QDir(library).absoluteFilePath(
+        QStringLiteral(
+            ".xips-create-recovery-11111111-1111-1111-1111-111111111111"));
+    const QString retainedFile = QDir(orphan).absoluteFilePath(
+        QStringLiteral("rtl/retained.sv"));
+    QVERIFY(writeFile(retainedFile,
+                      QByteArrayLiteral("module retained; endmodule\n")));
+
+    {
+        MainWindow window(library, nullptr, RemovalMode::Permanent);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *problems = window.findChild<QAction *>(
+            QStringLiteral("problemAction"));
+        auto *notice = window.findChild<QLabel *>(
+            QStringLiteral("noticeLabel"));
+        QVERIFY(problems);
+        QVERIFY(notice);
+        QTRY_VERIFY_WITH_TIMEOUT(problems->isEnabled(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            notice->text().contains(QStringLiteral("unfinished xIPs operation")),
+            3000);
+
+        bool exactPathReported = false;
+        QTimer::singleShot(0, &window, [&] {
+            QMessageBox *message = window.findChild<QMessageBox *>();
+            if (!message) {
+                return;
+            }
+            exactPathReported = message->text().contains(
+                QDir::toNativeSeparators(orphan));
+            message->accept();
+        });
+        problems->trigger();
+        QVERIFY(exactPathReported);
+        QVERIFY(!problems->isEnabled());
+    }
+
+    QVERIFY(QFileInfo(retainedFile).isFile());
 }
 
 void GuiSmokeTest::firstScreenIsACompactAssetLibrary()

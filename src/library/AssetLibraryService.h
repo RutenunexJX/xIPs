@@ -7,6 +7,10 @@
 #include <QString>
 #include <QStringList>
 
+#ifdef XIPS_ENABLE_TEST_HOOKS
+#include <functional>
+#endif
+
 namespace xips {
 
 struct AssetMetadata {
@@ -51,10 +55,33 @@ struct UpdatePreview {
     [[nodiscard]] bool ok() const { return error.isEmpty(); }
 };
 
+struct WorkingCopyUndoToken {
+    QString assetId;
+    QString assetRoot;
+    QString recoveryPath;
+    QString publishedFingerprint;
+    QString recoveryFingerprint;
+
+    [[nodiscard]] bool isValid() const
+    {
+        return !assetId.isEmpty() && !assetRoot.isEmpty()
+               && !recoveryPath.isEmpty()
+               && !publishedFingerprint.isEmpty()
+               && !recoveryFingerprint.isEmpty();
+    }
+};
+
 struct UpdateAssetResult {
     AssetRecord updated;
     UpdatePreview preview;
-    QString recoveryPath;
+    WorkingCopyUndoToken undoToken;
+    QStringList retainedPaths;
+    QString warning;
+    bool publishedAsIntended = false;
+};
+
+struct RecoveryDiscardResult {
+    QString retainedPath;
     QString warning;
 };
 
@@ -74,6 +101,22 @@ enum class RemovalMode {
     Permanent
 };
 
+enum class WorkingCopyRecoveryMode {
+    RetainForUndo,
+    MoveToTrash,
+    Permanent
+};
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+enum class WorkingCopyTestPoint {
+    StagingVerifiedBeforePublish,
+    RecoveryVerifiedBeforeDiscardIsolation
+};
+
+using WorkingCopyTestHook = std::function<void(WorkingCopyTestPoint,
+                                               const QString &)>;
+#endif
+
 class AssetLibraryService {
 public:
     [[nodiscard]] static AssetMetadata suggestedMetadata(
@@ -81,6 +124,10 @@ public:
     [[nodiscard]] static QString suggestedId(const QString &text);
     [[nodiscard]] static QString suggestedNextVersion(
         const QString &currentVersion);
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    void setWorkingCopyTestHook(WorkingCopyTestHook hook);
+#endif
 
     bool importAsset(const ImportAssetRequest &request,
                      AssetRecord *created = nullptr,
@@ -100,14 +147,24 @@ public:
         const QString &version) const;
     bool updateAsset(const AssetRecord &asset,
                      const QString &sourcePath,
-                     RemovalMode recoveryMode = RemovalMode::MoveToTrash,
+                     WorkingCopyRecoveryMode recoveryMode = WorkingCopyRecoveryMode::MoveToTrash,
                      UpdateAssetResult *result = nullptr,
-                     QString *error = nullptr) const;
+                     QString *error = nullptr,
+                     const QString &expectedCurrentHash = {}) const;
     bool restoreVersion(const AssetRecord &asset,
                         const QString &version,
-                        RemovalMode recoveryMode = RemovalMode::MoveToTrash,
+                        WorkingCopyRecoveryMode recoveryMode = WorkingCopyRecoveryMode::MoveToTrash,
                         UpdateAssetResult *result = nullptr,
                         QString *error = nullptr) const;
+    bool undoWorkingCopyChange(const AssetRecord &asset,
+                               const WorkingCopyUndoToken &token,
+                               UpdateAssetResult *result,
+                               QString *error = nullptr) const;
+    bool discardWorkingCopyRecovery(const AssetRecord &asset,
+                                    const WorkingCopyUndoToken &token,
+                                    RemovalMode mode,
+                                    RecoveryDiscardResult *result,
+                                    QString *error = nullptr) const;
     bool deleteAsset(const QString &libraryRoot,
                      const AssetRecord &asset,
                      RemovalMode mode = RemovalMode::MoveToTrash,
@@ -139,6 +196,14 @@ public:
                             const QString &destinationPath,
                             QString *copiedPath = nullptr,
                             QString *error = nullptr) const;
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+private:
+    void invokeWorkingCopyTestHook(WorkingCopyTestPoint point,
+                                   const QString &path) const;
+
+    mutable WorkingCopyTestHook m_workingCopyTestHook;
+#endif
 };
 
 } // namespace xips

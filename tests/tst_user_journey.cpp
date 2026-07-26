@@ -1,4 +1,5 @@
 #include "app/MainWindow.h"
+#include "app/LibraryController.h"
 #include "library/AssetLibraryService.h"
 #include "library/AssetScanner.h"
 
@@ -120,8 +121,13 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
         QStringLiteral("restoreVersionAction"));
     auto *deleteAssetAction = window.findChild<QAction *>(
         QStringLiteral("deleteAssetAction"));
+    auto *problemAction = window.findChild<QAction *>(
+        QStringLiteral("problemAction"));
+    auto *controller = window.findChild<LibraryController *>();
     auto *noticeAction = window.findChild<QToolButton *>(
         QStringLiteral("noticeActionButton"));
+    auto *dismissNotice = window.findChild<QToolButton *>(
+        QStringLiteral("dismissNoticeButton"));
     auto *noticeLabel = window.findChild<QLabel *>(QStringLiteral("noticeLabel"));
     QVERIFY(table);
     QVERIFY(search);
@@ -133,7 +139,10 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QVERIFY(copyAction);
     QVERIFY(restoreVersionAction);
     QVERIFY(deleteAssetAction);
+    QVERIFY(problemAction);
+    QVERIFY(controller);
     QVERIFY(noticeAction);
+    QVERIFY(dismissNotice);
     QVERIFY(noticeLabel);
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 0, 5000);
 
@@ -157,6 +166,7 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QTRY_COMPARE_WITH_TIMEOUT(table->model()->rowCount(), 2, 10000);
     QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
     QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    QCOMPARE(dismissNotice->text(), QStringLiteral("Close"));
     QVERIFY(QFileInfo::exists(singleSource));
     QVERIFY(QFileInfo::exists(QDir(folderSource).absoluteFilePath(
         QStringLiteral("rtl/packet_router.sv"))));
@@ -224,6 +234,20 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     const QString updateSource = temporary.filePath(
         QStringLiteral("revision-2/uart_rx.sv"));
     QVERIFY(writeFile(updateSource, secondRevision));
+    const QString malformedAsset = QDir(library).absoluteFilePath(
+        QStringLiteral("malformed_sync_asset"));
+    QVERIFY(writeFile(QDir(malformedAsset).absoluteFilePath(
+                          QStringLiteral(".xips.json")),
+                      QByteArrayLiteral("{ not valid json")));
+    bool refreshReportedProblem = false;
+    connect(controller,
+            &LibraryController::refreshFinished,
+            &window,
+            [&](const QList<AssetRecord> &, const QStringList &errors) {
+                if (!errors.isEmpty()) {
+                    refreshReportedProblem = true;
+                }
+            });
 
     window.applyActivation({
         .action = ActivationAction::OpenAsset,
@@ -265,6 +289,60 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QVERIFY(updatedWorking.open(QIODevice::ReadOnly));
     QCOMPARE(updatedWorking.readAll(), secondRevision);
     updatedWorking.close();
+    QTRY_VERIFY_WITH_TIMEOUT(refreshReportedProblem, 5000);
+    QVERIFY(problemAction->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
+    QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    QCOMPARE(dismissNotice->text(), QStringLiteral("Discard Undo"));
+    QCOMPARE(QDir(library).entryList(
+                 {QStringLiteral(".xips-create-recovery-*")},
+                 QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                 .size(),
+             1);
+    QVERIFY(QDir(malformedAsset).removeRecursively());
+    noticeAction->click();
+    QTRY_VERIFY_WITH_TIMEOUT(noticeLabel->text().contains(
+                                 QStringLiteral("previous working copy")),
+                             3000);
+    QFile undoneUpdate(workingFile);
+    QVERIFY(undoneUpdate.open(QIODevice::ReadOnly));
+    QCOMPARE(undoneUpdate.readAll(), firstRevision);
+    undoneUpdate.close();
+
+    QTRY_VERIFY_WITH_TIMEOUT(updateAction->isEnabled(), 3000);
+    bool repeatedUpdateCompleted = false;
+    QTimer::singleShot(0, &window, [&] {
+        QDialog *dialog = window.findChild<QDialog *>(
+            QStringLiteral("updateAssetDialog"));
+        if (!dialog) {
+            return;
+        }
+        auto *sourceEdit = dialog->findChild<QLineEdit *>(
+            QStringLiteral("updateSourceEdit"));
+        auto *preview = dialog->findChild<QLabel *>(
+            QStringLiteral("updatePreviewLabel"));
+        auto *buttons = dialog->findChild<QDialogButtonBox *>(
+            QStringLiteral("updateDialogButtons"));
+        if (!sourceEdit || !preview || !buttons) {
+            dialog->reject();
+            return;
+        }
+        sourceEdit->setText(updateSource);
+        repeatedUpdateCompleted = preview->text().contains(
+                                      QStringLiteral("Replace 1"))
+                                  && buttons->button(
+                                      QDialogButtonBox::Ok)->isEnabled();
+        buttons->button(QDialogButtonBox::Ok)->click();
+    });
+    updateAction->trigger();
+    QVERIFY(repeatedUpdateCompleted);
+    QFile reupdatedWorking(workingFile);
+    QVERIFY(reupdatedWorking.open(QIODevice::ReadOnly));
+    QCOMPARE(reupdatedWorking.readAll(), secondRevision);
+    reupdatedWorking.close();
+    QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
+    QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    QCOMPARE(dismissNotice->text(), QStringLiteral("Discard Undo"));
     QFile unchangedUpdateSource(updateSource);
     QVERIFY(unchangedUpdateSource.open(QIODevice::ReadOnly));
     QCOMPARE(unchangedUpdateSource.readAll(), secondRevision);
@@ -312,11 +390,21 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QVERIFY(copied.open(QIODevice::ReadOnly));
     QCOMPARE(copied.readAll(), firstRevision);
     QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
-    QCOMPARE(noticeAction->text(), QStringLiteral("Open destination"));
-    QVERIFY(noticeLabel->text().contains(
-        QStringLiteral("uart_rx_from_1_0_0.sv")));
+    QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    QCOMPARE(dismissNotice->text(), QStringLiteral("Discard Undo"));
+    const QStringList preservedUpdateRecovery = QDir(library).entryList(
+        {QStringLiteral(".xips-create-recovery-*")},
+        QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+    QCOMPARE(preservedUpdateRecovery.size(), 1);
     QVERIFY(!QFileInfo(QDir(copyDirectory).absoluteFilePath(
         QStringLiteral(".xips.json"))).exists());
+    dismissNotice->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!noticeAction->isVisible(), 3000);
+    QVERIFY(QDir(library).entryList(
+                {QStringLiteral(".xips-create-recovery-*"),
+                 QStringLiteral(".xips-create-discard-*")},
+                QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
 
     scan = AssetScanner().scan(library);
     single = findAsset(scan, QStringLiteral("uart_rx_sv"));
@@ -365,7 +453,7 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
                            && confirmation->text().contains(
                                QStringLiteral("Files replaced: 1"))
                            && confirmation->text().contains(
-                               QStringLiteral("current working copy will be replaced"))
+                               QStringLiteral("kept temporarily"))
                            && confirmation->text().contains(
                                QStringLiteral("Saved versions will not be changed"));
         confirmation->button(QMessageBox::Yes)->click();
@@ -383,6 +471,17 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
     QTRY_VERIFY_WITH_TIMEOUT(noticeLabel->text().contains(
                                  QStringLiteral("saved versions were kept")),
                              3000);
+    QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
+    QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    noticeAction->click();
+    QTRY_VERIFY_WITH_TIMEOUT(noticeLabel->text().contains(
+                                 QStringLiteral("previous working copy")),
+                             3000);
+    QFile undoneRestore(workingFile);
+    QVERIFY(undoneRestore.open(QIODevice::ReadOnly));
+    QCOMPARE(undoneRestore.readAll(), secondRevision);
+    undoneRestore.close();
+    QCOMPARE(service.versions(single->assetRoot, &error).size(), 2);
     QTRY_COMPARE_WITH_TIMEOUT(
         table->currentIndex()
             .siblingAtColumn(AssetTableModel::NameColumn)
@@ -498,7 +597,7 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
              qPrintable(error));
     QFile working(workingFile);
     QVERIFY(working.open(QIODevice::ReadOnly));
-    QCOMPARE(working.readAll(), firstRevision);
+    QCOMPARE(working.readAll(), secondRevision);
     QCOMPARE(service.versions(single->assetRoot, &error).size(), 1);
 
     window.applyActivation({
@@ -512,6 +611,64 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
             .toString(),
         QStringLiteral("packet_router"),
         3000);
+    const QString deleteUpdateSource = temporary.filePath(
+        QStringLiteral("incoming/packet_router_update"));
+    QVERIFY(writeFile(QDir(deleteUpdateSource).absoluteFilePath(
+                          QStringLiteral("rtl/packet_router.sv")),
+                      QByteArrayLiteral(
+                          "module packet_router; localparam REV = 2; endmodule\n")));
+    QVERIFY(writeFile(QDir(deleteUpdateSource).absoluteFilePath(
+                          QStringLiteral("doc/usage.md")),
+                      QByteArrayLiteral("Packet router usage revision 2\n")));
+    bool deleteUpdateCompleted = false;
+    QTimer::singleShot(0, &window, [&] {
+        QDialog *dialog = window.findChild<QDialog *>(
+            QStringLiteral("updateAssetDialog"));
+        if (!dialog) {
+            return;
+        }
+        auto *sourceEdit = dialog->findChild<QLineEdit *>(
+            QStringLiteral("updateSourceEdit"));
+        auto *buttons = dialog->findChild<QDialogButtonBox *>(
+            QStringLiteral("updateDialogButtons"));
+        if (!sourceEdit || !buttons) {
+            dialog->reject();
+            return;
+        }
+        sourceEdit->setText(deleteUpdateSource);
+        QPushButton *updateButton = buttons->button(QDialogButtonBox::Ok);
+        deleteUpdateCompleted = updateButton && updateButton->isEnabled();
+        if (updateButton) {
+            updateButton->click();
+        }
+    });
+    updateAction->trigger();
+    QVERIFY(deleteUpdateCompleted);
+    QTRY_VERIFY_WITH_TIMEOUT(noticeAction->isVisible(), 3000);
+    QCOMPARE(noticeAction->text(), QStringLiteral("Undo"));
+    QCOMPARE(QDir(library).entryList(
+                 {QStringLiteral(".xips-create-recovery-*")},
+                 QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                 .size(),
+             1);
+    const QString concurrentlyEditedPacket = QDir(library).absoluteFilePath(
+        QStringLiteral("packet_router/rtl/packet_router.sv"));
+    QVERIFY(writeFile(
+        concurrentlyEditedPacket,
+        QByteArrayLiteral(
+            "module packet_router; localparam EXTERNAL_REV = 3; endmodule\n")));
+    noticeAction->click();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        noticeLabel->text().contains(QStringLiteral("Undo was not applied")),
+        3000);
+    QVERIFY(!noticeAction->isVisible());
+    QCOMPARE(dismissNotice->text(), QStringLiteral("Discard Undo"));
+    QVERIFY(QFileInfo(concurrentlyEditedPacket).isFile());
+    QCOMPARE(QDir(library).entryList(
+                 {QStringLiteral(".xips-create-recovery-*")},
+                 QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                 .size(),
+             1);
     bool deletionConfirmed = false;
     QTimer::singleShot(0, &window, [&] {
         QMessageBox *confirmation = window.findChild<QMessageBox *>();
@@ -521,7 +678,9 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
         deletionConfirmed = confirmation->text().contains(
                                 QStringLiteral("working file(s)"))
                             && confirmation->text().contains(
-                                QStringLiteral("Original import sources are not changed"));
+                                QStringLiteral("Original import sources are not changed"))
+                            && confirmation->text().contains(
+                                QStringLiteral("pending Undo"));
         confirmation->button(QMessageBox::Yes)->click();
     });
     deleteAssetAction->trigger();
@@ -531,6 +690,11 @@ void UserJourneyTest::userCanCollectFindVersionCopyAndResyncAssets()
         QStringLiteral("rtl/packet_router.sv"))));
     const ScanResult finalScan = AssetScanner().scan(library);
     QVERIFY(!findAsset(finalScan, QStringLiteral("packet_router")));
+    QVERIFY(QDir(library).entryList(
+                {QStringLiteral(".xips-create-recovery-*"),
+                 QStringLiteral(".xips-create-discard-*")},
+                QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
     QVERIFY(noticeLabel->text().contains(QStringLiteral("recycle bin")));
 }
 

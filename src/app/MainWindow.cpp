@@ -1,5 +1,7 @@
 #include "app/MainWindow.h"
 
+#include "library/AssetScanner.h"
+
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
@@ -237,10 +239,9 @@ MainWindow::MainWindow(QString libraryRoot,
                                QStringLiteral("Undo"),
                                [this] { undoLastImport(); });
                 } else if (!errors.isEmpty()) {
-                    showNotice(QStringLiteral("%1 library problem(s) need review")
-                                   .arg(errors.size()),
-                               QStringLiteral("Review"),
-                               [this] { showProblems(); });
+                    showPassiveReview(
+                        QStringLiteral("%1 library problem(s) need review")
+                            .arg(errors.size()));
                 }
                 if (m_pendingActivation) {
                     const ActivationRequest request = *m_pendingActivation;
@@ -257,9 +258,7 @@ MainWindow::MainWindow(QString libraryRoot,
                 }
                 m_problemAction->setEnabled(true);
                 statusBar()->showMessage(message);
-                showNotice(message,
-                           QStringLiteral("Review"),
-                           [this] { showProblems(); });
+                showPassiveReview(message);
             });
     if (m_libraryRoot.isEmpty()) {
         setLibraryReady(false);
@@ -267,8 +266,14 @@ MainWindow::MainWindow(QString libraryRoot,
     } else {
         m_controller->setLibraryRoot(m_libraryRoot);
         setLibraryReady(true);
+        reportUnfinishedOperationPaths();
         m_controller->rebuild();
     }
+}
+
+MainWindow::~MainWindow()
+{
+    clearNotice();
 }
 
 void MainWindow::buildUi()
@@ -616,20 +621,23 @@ void MainWindow::buildUi()
     m_noticeActionButton = new QToolButton(m_noticeFrame);
     m_noticeActionButton->setObjectName(QStringLiteral("noticeActionButton"));
     noticeLayout->addWidget(m_noticeActionButton);
-    auto *dismissNotice = new QToolButton(m_noticeFrame);
-    dismissNotice->setObjectName(QStringLiteral("dismissNoticeButton"));
-    dismissNotice->setText(QStringLiteral("Close"));
-    noticeLayout->addWidget(dismissNotice);
+    m_noticeDismissButton = new QToolButton(m_noticeFrame);
+    m_noticeDismissButton->setObjectName(
+        QStringLiteral("dismissNoticeButton"));
+    m_noticeDismissButton->setText(QStringLiteral("Close"));
+    noticeLayout->addWidget(m_noticeDismissButton);
     connect(m_noticeActionButton, &QToolButton::clicked, this, [this] {
         std::function<void()> callback = std::move(m_noticeCallback);
+        m_noticeDismissCallback = {};
         clearNotice();
         if (callback) {
             callback();
         }
     });
-    connect(dismissNotice, &QToolButton::clicked, this, [this] {
-        m_undoImportAssets.clear();
-        clearNotice();
+    connect(m_noticeDismissButton, &QToolButton::clicked, this, [this] {
+        if (clearNotice()) {
+            m_undoImportAssets.clear();
+        }
     });
     m_noticeFrame->hide();
     centralLayout->addWidget(m_noticeFrame);
@@ -927,9 +935,7 @@ void MainWindow::populateVersions(const AssetRecord &asset)
             m_lastProblems.append(error);
         }
         m_problemAction->setEnabled(true);
-        showNotice(error,
-                   QStringLiteral("Review"),
-                   [this] { showProblems(); });
+        showPassiveReview(error);
     }
     for (const VersionInfo &version : versions) {
         auto *item = new QTreeWidgetItem(
@@ -986,18 +992,26 @@ void MainWindow::chooseLibrary()
     if (selected.isEmpty()) {
         return;
     }
+    const QStringList previousProblems = std::exchange(m_lastProblems, {});
+    if (!clearNotice()) {
+        m_lastProblems.append(previousProblems);
+        m_lastProblems.removeDuplicates();
+        m_problemAction->setEnabled(!m_lastProblems.isEmpty());
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; library was not changed"));
+        return;
+    }
+    m_undoImportAssets.clear();
     m_libraryRoot = QFileInfo(selected).absoluteFilePath();
     m_controller->setLibraryRoot(m_libraryRoot);
     m_loaded = false;
-    m_lastProblems.clear();
-    m_undoImportAssets.clear();
-    clearNotice();
-    m_problemAction->setEnabled(false);
+    m_problemAction->setEnabled(!m_lastProblems.isEmpty());
     saveLibrarySetting();
     setLibraryReady(true);
     m_tableModel->setHits({});
     rebuildGroups({});
     updateDetails(nullptr);
+    reportUnfinishedOperationPaths();
     m_controller->rebuild();
 }
 
@@ -1031,6 +1045,12 @@ void MainWindow::importPaths(const QStringList &sourcePaths)
     if (m_libraryRoot.isEmpty() || sourcePaths.isEmpty()) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; import was not started"));
+        return;
+    }
+    m_undoImportAssets.clear();
     const ImportBatchResult result = m_libraryService.importAssets(
         m_libraryRoot,
         sourcePaths);
@@ -1128,6 +1148,12 @@ void MainWindow::editCurrentAsset()
                       metadata)) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; details were not changed"));
+        return;
+    }
+    m_undoImportAssets.clear();
     QString error;
     if (!m_libraryService.updateMetadata(*asset, metadata, &error)) {
         QMessageBox::critical(this, QStringLiteral("Cannot update asset"), error);
@@ -1154,7 +1180,8 @@ void MainWindow::updateCurrentAsset()
     auto *layout = new QVBoxLayout(&dialog);
     auto *explanation = new QLabel(
         QStringLiteral("Choose a file or folder that should replace the working copy. "
-                       "Asset details and saved versions remain unchanged."),
+                       "Asset details and saved versions remain unchanged. "
+                       "The completed update can be undone from its banner."),
         &dialog);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);
@@ -1239,20 +1266,31 @@ void MainWindow::updateCurrentAsset()
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the previous Undo backup; update was not started"));
+        return;
+    }
+    m_undoImportAssets.clear();
 
     UpdateAssetResult result;
     QString error;
     if (!m_libraryService.updateAsset(selectedAsset,
                                       source->text().trimmed(),
-                                      m_removalMode,
+                                      WorkingCopyRecoveryMode::RetainForUndo,
                                       &result,
                                       &error)) {
+        const QString problem = QStringLiteral("Cannot update %1: %2")
+                                    .arg(selectedAsset.manifest.name, error);
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+        m_problemAction->setEnabled(true);
         QMessageBox::critical(this,
                               QStringLiteral("Cannot update asset"),
                               error);
         return;
     }
-    m_undoImportAssets.clear();
     m_pendingActivation = ActivationRequest{
         .action = ActivationAction::OpenAsset,
         .value = selectedAsset.manifest.id,
@@ -1263,17 +1301,7 @@ void MainWindow::updateCurrentAsset()
                                 .arg(result.preview.addedFiles.size())
                                 .arg(result.preview.replacedFiles.size())
                                 .arg(result.preview.removedFiles.size());
-    if (!result.warning.isEmpty()) {
-        if (!m_lastProblems.contains(result.warning)) {
-            m_lastProblems.append(result.warning);
-        }
-        m_problemAction->setEnabled(true);
-        showNotice(message,
-                   QStringLiteral("Review"),
-                   [this] { showProblems(); });
-    } else {
-        showNotice(message);
-    }
+    offerWorkingCopyUndo(selectedAsset, result, message);
     m_controller->rebuild();
 }
 
@@ -1294,17 +1322,28 @@ void MainWindow::deleteCurrentAsset()
                               versionsError);
         return;
     }
-    if (QMessageBox::question(
-            this,
-            QStringLiteral("Delete asset"),
-            QStringLiteral("Move '%1' to the recycle bin?\n\n"
-                           "This removes %2 working file(s) and %3 saved version(s) "
-                           "from the library. Original import sources are not changed.")
-                .arg(selectedAsset.manifest.name)
-                .arg(selectedAsset.fileCount)
-                .arg(savedVersions)) != QMessageBox::Yes) {
+    QString deleteQuestion = QStringLiteral(
+        "Move '%1' to the recycle bin?\n\n"
+        "This removes %2 working file(s) and %3 saved version(s) "
+        "from the library. Original import sources are not changed.")
+                                 .arg(selectedAsset.manifest.name)
+                                 .arg(selectedAsset.fileCount)
+                                 .arg(savedVersions);
+    if (m_noticeDismissCallback) {
+        deleteQuestion += QStringLiteral(
+            "\n\nThe pending Undo for the last working-copy change will also be discarded.");
+    }
+    if (QMessageBox::question(this,
+                              QStringLiteral("Delete asset"),
+                              deleteQuestion) != QMessageBox::Yes) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; asset was not deleted"));
+        return;
+    }
+    m_undoImportAssets.clear();
     QString error;
     if (!m_libraryService.deleteAsset(m_libraryRoot,
                                       selectedAsset,
@@ -1316,7 +1355,6 @@ void MainWindow::deleteCurrentAsset()
                               error);
         return;
     }
-    m_undoImportAssets.clear();
     m_assetTable->clearSelection();
     updateDetails(nullptr);
     showNotice(QStringLiteral("Moved '%1' and its saved versions to the recycle bin")
@@ -1341,6 +1379,12 @@ void MainWindow::createCurrentVersion()
     if (!accepted || version.isEmpty()) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; version was not saved"));
+        return;
+    }
+    m_undoImportAssets.clear();
     QString error;
     VersionInfo created;
     if (!m_libraryService.createVersion(*asset, version, &created, &error)) {
@@ -1495,6 +1539,16 @@ void MainWindow::copyCurrentVersion()
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
+    const bool preserveWorkingCopyUndo =
+        static_cast<bool>(m_noticeDismissCallback);
+    if (!preserveWorkingCopyUndo) {
+        if (!clearNotice()) {
+            statusBar()->showMessage(
+                QStringLiteral("Cannot retire the current Undo backup; copy was not started"));
+            return;
+        }
+        m_undoImportAssets.clear();
+    }
 
     const QString versionName = version->currentData().toString();
     const QString targetPath = QDir(destination->text().trimmed())
@@ -1506,28 +1560,29 @@ void MainWindow::copyCurrentVersion()
         QMessageBox::critical(this, QStringLiteral("Cannot copy asset"), error);
         return;
     }
-    m_undoImportAssets.clear();
     statusBar()->showMessage(
         QStringLiteral("Copied to %1")
             .arg(QDir::toNativeSeparators(copiedPath)));
     const QString destinationToOpen = QFileInfo(copiedPath).isDir()
                                           ? copiedPath
                                           : QFileInfo(copiedPath).absolutePath();
-    showNotice(QStringLiteral("Copied %1 to %2")
-                   .arg(versionName.isEmpty()
-                            ? QStringLiteral("working copy")
-                            : QStringLiteral("version %1").arg(versionName),
-                        QDir::toNativeSeparators(copiedPath)),
-               QStringLiteral("Open destination"),
-               [this, destinationToOpen] {
-                   if (!QDesktopServices::openUrl(
-                           QUrl::fromLocalFile(destinationToOpen))) {
-                       QMessageBox::warning(
-                           this,
-                           QStringLiteral("Cannot open destination"),
-                           QDir::toNativeSeparators(destinationToOpen));
-                   }
-               });
+    if (!preserveWorkingCopyUndo) {
+        showNotice(QStringLiteral("Copied %1 to %2")
+                       .arg(versionName.isEmpty()
+                                ? QStringLiteral("working copy")
+                                : QStringLiteral("version %1").arg(versionName),
+                            QDir::toNativeSeparators(copiedPath)),
+                   QStringLiteral("Open destination"),
+                   [this, destinationToOpen] {
+                       if (!QDesktopServices::openUrl(
+                               QUrl::fromLocalFile(destinationToOpen))) {
+                           QMessageBox::warning(
+                               this,
+                               QStringLiteral("Cannot open destination"),
+                               QDir::toNativeSeparators(destinationToOpen));
+                       }
+                   });
+    }
 }
 
 void MainWindow::deleteSelectedVersion()
@@ -1545,6 +1600,12 @@ void MainWindow::deleteSelectedVersion()
                 .arg(version)) != QMessageBox::Yes) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; version was not deleted"));
+        return;
+    }
+    m_undoImportAssets.clear();
     QString error;
     if (!m_libraryService.deleteVersion(*asset,
                                         version,
@@ -1559,7 +1620,6 @@ void MainWindow::deleteSelectedVersion()
         .action = ActivationAction::OpenAsset,
         .value = asset->manifest.id,
     };
-    m_undoImportAssets.clear();
     showNotice(
         QStringLiteral("Moved saved version %1 to the recycle bin").arg(version));
     m_controller->rebuild();
@@ -1592,11 +1652,8 @@ void MainWindow::restoreSelectedVersion()
         return;
     }
 
-    const QString recoveryText = m_removalMode == RemovalMode::MoveToTrash
-                                     ? QStringLiteral(
-                                           "The current working copy will be moved to the recycle bin.")
-                                     : QStringLiteral(
-                                           "The current working copy will be replaced.");
+    const QString recoveryText = QStringLiteral(
+        "The current working copy will be kept temporarily so this action can be undone.");
     const QString question = QStringLiteral(
         "Restore saved version %1 to the working copy?\n\n"
         "Files added: %2\nFiles replaced: %3\nFiles removed: %4\n\n"
@@ -1611,14 +1668,26 @@ void MainWindow::restoreSelectedVersion()
                               question) != QMessageBox::Yes) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the previous Undo backup; restore was not started"));
+        return;
+    }
+    m_undoImportAssets.clear();
 
     UpdateAssetResult restored;
     QString error;
     if (!m_libraryService.restoreVersion(selectedAsset,
                                          version,
-                                         m_removalMode,
+                                         WorkingCopyRecoveryMode::RetainForUndo,
                                          &restored,
                                          &error)) {
+        const QString problem = QStringLiteral("Cannot restore %1: %2")
+                                    .arg(selectedAsset.manifest.name, error);
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+        m_problemAction->setEnabled(true);
         QMessageBox::critical(this,
                               QStringLiteral("Cannot restore saved version"),
                               error);
@@ -1628,25 +1697,11 @@ void MainWindow::restoreSelectedVersion()
         .action = ActivationAction::OpenAsset,
         .value = selectedAsset.manifest.id,
     };
-    m_undoImportAssets.clear();
     const QString message = QStringLiteral(
         "Restored version %1 to the working copy; saved versions were kept")
                                 .arg(version);
     statusBar()->showMessage(message);
-    if (!restored.warning.isEmpty()) {
-        const QString warning = QStringLiteral("%1: %2")
-                                    .arg(selectedAsset.manifest.name,
-                                         restored.warning);
-        if (!m_lastProblems.contains(warning)) {
-            m_lastProblems.append(warning);
-        }
-        m_problemAction->setEnabled(true);
-        showNotice(message,
-                   QStringLiteral("Review"),
-                   [this] { showProblems(); });
-    } else {
-        showNotice(message);
-    }
+    offerWorkingCopyUndo(selectedAsset, restored, message);
     m_controller->rebuild();
 }
 
@@ -1720,6 +1775,12 @@ void MainWindow::assignNewGroup()
     if (!accepted || group.isEmpty()) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; group was not changed"));
+        return;
+    }
+    m_undoImportAssets.clear();
     int changed = 0;
     QString error;
     if (!m_libraryService.changeGroupMembership(
@@ -1750,6 +1811,12 @@ void MainWindow::renameCurrentGroup()
     if (!accepted || newGroup.isEmpty() || newGroup == oldGroup) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; group was not renamed"));
+        return;
+    }
+    m_undoImportAssets.clear();
     int changed = 0;
     QString error;
     if (!m_libraryService.changeGroupMembership(
@@ -1777,6 +1844,12 @@ void MainWindow::removeCurrentGroup()
                 .arg(group)) != QMessageBox::Yes) {
         return;
     }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; group was not removed"));
+        return;
+    }
+    m_undoImportAssets.clear();
     int changed = 0;
     QString error;
     if (!m_libraryService.changeGroupMembership(
@@ -1801,12 +1874,170 @@ void MainWindow::showProblems()
     m_problemAction->setEnabled(false);
 }
 
+void MainWindow::reportUnfinishedOperationPaths()
+{
+    const QStringList paths = AssetScanner::unfinishedOperationPaths(
+        m_libraryRoot);
+    for (const QString &path : paths) {
+        const QString problem = QStringLiteral(
+            "Unfinished xIPs operation data remains at %1")
+                                    .arg(QDir::toNativeSeparators(path));
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+    }
+    if (paths.isEmpty()) {
+        return;
+    }
+    m_problemAction->setEnabled(true);
+    showPassiveReview(
+        QStringLiteral("%1 unfinished xIPs operation path(s) need review")
+            .arg(paths.size()));
+}
+
+void MainWindow::recordUpdateProblems(const AssetRecord &asset,
+                                      const UpdateAssetResult &result)
+{
+    if (!result.warning.isEmpty()) {
+        const QString problem = QStringLiteral("%1: %2")
+                                    .arg(asset.manifest.name, result.warning);
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+    }
+    for (const QString &path : result.retainedPaths) {
+        const QString problem = QStringLiteral(
+            "%1: recovery data remains at %2")
+                                    .arg(asset.manifest.name,
+                                         QDir::toNativeSeparators(path));
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+    }
+    if (!result.warning.isEmpty() || !result.retainedPaths.isEmpty()) {
+        m_problemAction->setEnabled(true);
+    }
+}
+
+void MainWindow::offerWorkingCopyUndo(const AssetRecord &asset,
+                                      const UpdateAssetResult &result,
+                                      const QString &message)
+{
+    recordUpdateProblems(asset, result);
+    if (!result.undoToken.isValid()) {
+        if (!result.warning.isEmpty() || !result.retainedPaths.isEmpty()) {
+            showNotice(message + QStringLiteral("; Undo is unavailable"),
+                       QStringLiteral("Review"),
+                       [this] { showProblems(); });
+        } else {
+            showNotice(message);
+        }
+        return;
+    }
+    const WorkingCopyUndoToken token = result.undoToken;
+    showNotice(
+        message,
+        QStringLiteral("Undo"),
+        [this, asset, token] {
+            undoWorkingCopyChange(asset, token);
+        },
+        [this, asset, token] {
+            return discardWorkingCopyRecovery(asset, token);
+        });
+}
+
+void MainWindow::undoWorkingCopyChange(const AssetRecord &asset,
+                                       const WorkingCopyUndoToken &token)
+{
+    UpdateAssetResult undone;
+    QString error;
+    if (!m_libraryService.undoWorkingCopyChange(asset,
+                                                token,
+                                                &undone,
+                                                &error)) {
+        recordUpdateProblems(asset, undone);
+        const QString problem = QStringLiteral(
+            "Cannot undo %1: %2. Recovery remains at %3")
+                                    .arg(asset.manifest.name,
+                                         error,
+                                         QDir::toNativeSeparators(
+                                             token.recoveryPath));
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+        m_problemAction->setEnabled(true);
+        showNotice(
+            QStringLiteral(
+                "Undo was not applied; current files and the recovery backup were kept. Open More > Problems for its path."),
+            {},
+            {},
+            [this, asset, token] {
+                return discardWorkingCopyRecovery(asset, token);
+            });
+        return;
+    }
+    recordUpdateProblems(asset, undone);
+    m_pendingActivation = ActivationRequest{
+        .action = ActivationAction::OpenAsset,
+        .value = asset.manifest.id,
+    };
+    const QString message = QStringLiteral(
+        "Restored the previous working copy for %1")
+                                .arg(asset.manifest.name);
+    statusBar()->showMessage(message);
+    showNotice(message);
+    m_controller->rebuild();
+}
+
+bool MainWindow::discardWorkingCopyRecovery(
+    const AssetRecord &asset,
+    const WorkingCopyUndoToken &token)
+{
+    RecoveryDiscardResult discarded;
+    QString error;
+    if (m_libraryService.discardWorkingCopyRecovery(asset,
+                                                    token,
+                                                    m_removalMode,
+                                                    &discarded,
+                                                    &error)) {
+        if (!discarded.warning.isEmpty()) {
+            const QString problem = QStringLiteral("%1: %2")
+                                        .arg(asset.manifest.name,
+                                             discarded.warning);
+            if (!m_lastProblems.contains(problem)) {
+                m_lastProblems.append(problem);
+            }
+            m_problemAction->setEnabled(true);
+        }
+        return true;
+    }
+    const QString problem = QStringLiteral(
+        "Cannot discard recovery for %1: %2. Recovery remains at %3")
+                                .arg(asset.manifest.name,
+                                     error,
+                                     QDir::toNativeSeparators(
+                                         token.recoveryPath));
+    if (!m_lastProblems.contains(problem)) {
+        m_lastProblems.append(problem);
+    }
+    m_problemAction->setEnabled(true);
+    return false;
+}
+
 void MainWindow::showNotice(const QString &message,
                             const QString &actionText,
-                            std::function<void()> action)
+                            std::function<void()> action,
+                            std::function<bool()> dismiss)
 {
+    if (!clearNotice()) {
+        return;
+    }
     m_noticeLabel->setText(message);
     m_noticeCallback = std::move(action);
+    m_noticeDismissCallback = std::move(dismiss);
+    m_noticeDismissButton->setText(
+        m_noticeDismissCallback ? QStringLiteral("Discard Undo")
+                                : QStringLiteral("Close"));
     const bool hasAction = !actionText.isEmpty()
                            && static_cast<bool>(m_noticeCallback);
     m_noticeActionButton->setText(actionText);
@@ -1814,10 +2045,32 @@ void MainWindow::showNotice(const QString &message,
     m_noticeFrame->show();
 }
 
-void MainWindow::clearNotice()
+void MainWindow::showPassiveReview(const QString &message)
 {
+    if (hasPendingUndo()) {
+        return;
+    }
+    showNotice(message,
+               QStringLiteral("Review"),
+               [this] { showProblems(); });
+}
+
+bool MainWindow::hasPendingUndo() const
+{
+    return !m_undoImportAssets.isEmpty()
+           || static_cast<bool>(m_noticeDismissCallback);
+}
+
+bool MainWindow::clearNotice()
+{
+    if (m_noticeDismissCallback && !m_noticeDismissCallback()) {
+        return false;
+    }
+    m_noticeDismissCallback = {};
     m_noticeCallback = {};
+    m_noticeDismissButton->setText(QStringLiteral("Close"));
     m_noticeFrame->hide();
+    return true;
 }
 
 void MainWindow::setLibraryReady(const bool ready)

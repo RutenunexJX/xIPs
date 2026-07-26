@@ -15,6 +15,9 @@ add_library(xips_core STATIC
 )
 target_include_directories(xips_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xips_core PUBLIC Qt6::Core)
+if(BUILD_TESTING)
+    target_compile_definitions(xips_core PUBLIC XIPS_ENABLE_TEST_HOOKS)
+endif()
 
 add_library(xips_app STATIC
     app/AssetTableModel.cpp

@@ -17,8 +17,14 @@ public:
         const std::atomic_bool *cancelled = nullptr) const;
 
     [[nodiscard]] static QStringList assetFiles(const QString &assetRoot);
+    [[nodiscard]] static QStringList unfinishedOperationPaths(
+        const QString &libraryRoot);
     [[nodiscard]] static QString contentHash(const Manifest &manifest,
                                              const QString &assetRoot);
+    static bool strictContentHash(const Manifest &manifest,
+                                  const QString &assetRoot,
+                                  QString *contentHash,
+                                  QString *error = nullptr);
 
 private:
     void discoverManifests(const QString &directory,

@@ -1,5 +1,6 @@
 #include "library/AssetLibraryService.h"
 
+#include "assetcore/JsonUtil.h"
 #include "library/AssetScanner.h"
 #include "library/FileSystemUtil.h"
 #include "manifest/ManifestService.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 namespace xips {
 namespace {
@@ -183,9 +185,10 @@ bool validateAssetRecord(const AssetRecord &asset,
                          QString *error)
 {
     const QString root = files::normalizedAbsolute(asset.assetRoot);
+    const QFileInfo rootInfo(root);
     const QString expectedManifest = QDir(root).absoluteFilePath(
         QStringLiteral(".xips.json"));
-    if (!QFileInfo(root).isDir()
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)
         || files::normalizedAbsolute(asset.manifestPath) != expectedManifest) {
         return fail(error, QStringLiteral("Selected asset path is invalid"));
     }
@@ -197,6 +200,277 @@ bool validateAssetRecord(const AssetRecord &asset,
         *manifest = *loaded.manifest;
     }
     return true;
+}
+
+bool strictFingerprintAtRoot(const QString &root,
+                             const QString &expectedAssetId,
+                             Manifest *manifest,
+                             QString *fingerprint,
+                             QString *error)
+{
+    if (manifest) {
+        *manifest = {};
+    }
+    if (fingerprint) {
+        fingerprint->clear();
+    }
+    const QString absoluteRoot = files::normalizedAbsolute(root);
+    const ManifestService manifestService;
+    const ManifestLoadResult loaded = manifestService.load(
+        QDir(absoluteRoot).absoluteFilePath(QStringLiteral(".xips.json")));
+    if (!loaded.ok() || loaded.manifest->id != expectedAssetId) {
+        return fail(error,
+                    QStringLiteral(
+                        "The asset manifest changed or became unreadable during the operation"));
+    }
+    QString hash;
+    if (!AssetScanner::strictContentHash(*loaded.manifest,
+                                         absoluteRoot,
+                                         &hash,
+                                         error)) {
+        return false;
+    }
+    const ManifestLoadResult confirmed = manifestService.load(
+        QDir(absoluteRoot).absoluteFilePath(QStringLiteral(".xips.json")));
+    if (!confirmed.ok() || confirmed.manifest->id != expectedAssetId
+        || json::canonicalJson(manifestService.toJson(*confirmed.manifest))
+               != json::canonicalJson(
+                   manifestService.toJson(*loaded.manifest))) {
+        return fail(error,
+                    QStringLiteral(
+                        "The asset manifest changed while its content was being verified"));
+    }
+    if (manifest) {
+        *manifest = *confirmed.manifest;
+    }
+    if (fingerprint) {
+        *fingerprint = hash;
+    }
+    return true;
+}
+
+bool collectAllRecoveryEntries(const QString &directory,
+                               const QString &root,
+                               QStringList &entries,
+                               QString *error)
+{
+    const QFileInfoList children = QDir(directory).entryInfoList(
+        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+        QDir::Name);
+    for (const QFileInfo &entry : children) {
+        if (files::isLinkLike(entry)) {
+            return fail(
+                error,
+                QStringLiteral(
+                    "The recovery contains linked data and will not be discarded automatically: %1")
+                    .arg(entry.absoluteFilePath()));
+        }
+        const QString relative = QDir::fromNativeSeparators(
+            QDir(root).relativeFilePath(entry.absoluteFilePath()));
+        if (entry.isDir()) {
+            entries.append(QStringLiteral("d:%1").arg(relative));
+            if (!collectAllRecoveryEntries(entry.absoluteFilePath(),
+                                           root,
+                                           entries,
+                                           error)) {
+                return false;
+            }
+        } else if (entry.isFile()) {
+            entries.append(QStringLiteral("f:%1").arg(relative));
+        } else {
+            return fail(
+                error,
+                QStringLiteral(
+                    "The recovery contains unsupported data and will not be discarded automatically: %1")
+                    .arg(entry.absoluteFilePath()));
+        }
+    }
+    return true;
+}
+
+bool verifiedRecoveryLayout(const QString &root,
+                            QStringList &entries,
+                            QString *error)
+{
+    entries.clear();
+    const QString absoluteRoot = files::normalizedAbsolute(root);
+    const QFileInfo rootInfo(absoluteRoot);
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
+        return fail(error,
+                    QStringLiteral("The recovery root is invalid or linked"));
+    }
+
+    QStringList actualEntries;
+    if (!collectAllRecoveryEntries(absoluteRoot,
+                                   absoluteRoot,
+                                   actualEntries,
+                                   error)) {
+        return false;
+    }
+
+    QStringList payloadFiles;
+    if (!files::collectPayloadFiles(absoluteRoot,
+                                    payloadFiles,
+                                    files::LinkPolicy::Reject,
+                                    error)) {
+        return false;
+    }
+    QSet<QString> expectedEntries{
+        QStringLiteral("f:.xips.json"),
+    };
+    for (const QString &payloadFile : payloadFiles) {
+        const QString normalized = QDir::fromNativeSeparators(payloadFile);
+        expectedEntries.insert(QStringLiteral("f:%1").arg(normalized));
+        QString parent = QDir::fromNativeSeparators(QFileInfo(normalized).path());
+        while (!parent.isEmpty() && parent != QStringLiteral(".")) {
+            expectedEntries.insert(QStringLiteral("d:%1").arg(parent));
+            const qsizetype separator = parent.lastIndexOf(u'/');
+            parent = separator < 0 ? QString() : parent.left(separator);
+        }
+    }
+
+    std::sort(actualEntries.begin(), actualEntries.end());
+    actualEntries.removeDuplicates();
+    QStringList expected = expectedEntries.values();
+    std::sort(expected.begin(), expected.end());
+    if (actualEntries != expected) {
+        QString unexpected;
+        for (const QString &entry : actualEntries) {
+            if (!expectedEntries.contains(entry)) {
+                unexpected = entry.mid(2);
+                break;
+            }
+        }
+        return fail(
+            error,
+            unexpected.isEmpty()
+                ? QStringLiteral(
+                      "The recovery layout changed while it was being verified")
+                : QStringLiteral(
+                      "The recovery contains unrecognized data and will not be discarded automatically: %1")
+                      .arg(QDir(absoluteRoot).absoluteFilePath(unexpected)));
+    }
+    entries = actualEntries;
+    return true;
+}
+
+bool strictRecoveryFingerprintAtRoot(const QString &root,
+                                     const QString &expectedAssetId,
+                                     Manifest *manifest,
+                                     QString *fingerprint,
+                                     QString *error)
+{
+    if (manifest) {
+        *manifest = {};
+    }
+    if (fingerprint) {
+        fingerprint->clear();
+    }
+    QStringList initialEntries;
+    if (!verifiedRecoveryLayout(root, initialEntries, error)) {
+        return false;
+    }
+    Manifest verifiedManifest;
+    QString verifiedFingerprint;
+    if (!strictFingerprintAtRoot(root,
+                                 expectedAssetId,
+                                 &verifiedManifest,
+                                 &verifiedFingerprint,
+                                 error)) {
+        return false;
+    }
+    QStringList confirmedEntries;
+    if (!verifiedRecoveryLayout(root, confirmedEntries, error)
+        || confirmedEntries != initialEntries) {
+        return fail(
+            error,
+            QStringLiteral(
+                "The recovery layout changed while it was being verified"));
+    }
+    if (manifest) {
+        *manifest = verifiedManifest;
+    }
+    if (fingerprint) {
+        *fingerprint = verifiedFingerprint;
+    }
+    return true;
+}
+
+bool validateWorkingCopyRecovery(const AssetRecord &asset,
+                                 const QString &recoveryPath,
+                                 QString *error)
+{
+    const QString assetRoot = files::normalizedAbsolute(asset.assetRoot);
+    const QString recovery = files::normalizedAbsolute(recoveryPath);
+    const QFileInfo recoveryInfo(recovery);
+    const QString recoveryParent = files::normalizedAbsolute(
+        recoveryInfo.absolutePath());
+    const QString assetParent = files::normalizedAbsolute(
+        QFileInfo(assetRoot).absolutePath());
+    static const QRegularExpression recoveryName(
+        QStringLiteral(
+            "^\\.xips-create-recovery-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (!recoveryInfo.isDir() || files::isLinkLike(recoveryInfo)
+        || !files::isWithin(recoveryParent, assetParent)
+        || !files::isWithin(assetParent, recoveryParent)
+        || !recoveryName.match(recoveryInfo.fileName()).hasMatch()) {
+        return fail(error,
+                    QStringLiteral("The working-copy recovery path is invalid"));
+    }
+    const QFileInfo recoveryVersions(
+        QDir(recovery).absoluteFilePath(QStringLiteral(".xips")));
+    if (recoveryVersions.exists() || files::isLinkLike(recoveryVersions)) {
+        return fail(
+            error,
+            QStringLiteral(
+                "The working-copy recovery contains saved-version data and will not be used or discarded automatically"));
+    }
+    const ManifestLoadResult loaded = ManifestService().load(
+        QDir(recovery).absoluteFilePath(QStringLiteral(".xips.json")));
+    if (!loaded.ok() || loaded.manifest->id != asset.manifest.id) {
+        return fail(error,
+                    QStringLiteral("The working-copy recovery does not match this asset"));
+    }
+    return true;
+}
+
+bool samePath(const QString &left, const QString &right)
+{
+    return !left.isEmpty() && !right.isEmpty()
+           && files::isWithin(left, right) && files::isWithin(right, left);
+}
+
+bool validFingerprint(const QString &fingerprint)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^sha256:[0-9a-f]{64}$"),
+        QRegularExpression::CaseInsensitiveOption);
+    return pattern.match(fingerprint).hasMatch();
+}
+
+bool validateWorkingCopyUndoToken(const AssetRecord &asset,
+                                  const WorkingCopyUndoToken &token,
+                                  QString *error)
+{
+    if (!token.isValid() || token.assetId != asset.manifest.id
+        || !samePath(token.assetRoot, asset.assetRoot)
+        || !validFingerprint(token.publishedFingerprint)
+        || !validFingerprint(token.recoveryFingerprint)) {
+        return fail(error,
+                    QStringLiteral("The working-copy Undo token is invalid"));
+    }
+    return validateWorkingCopyRecovery(asset,
+                                       token.recoveryPath,
+                                       error);
+}
+
+void appendWarning(QString &warning, const QString &message)
+{
+    if (!warning.isEmpty()) {
+        warning += QStringLiteral("; ");
+    }
+    warning += message;
 }
 
 QString safeCopyName(QString name, const QString &fallback)
@@ -297,6 +571,24 @@ bool writeSnapshotMetadata(const QString &path,
 }
 
 } // namespace
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+void AssetLibraryService::setWorkingCopyTestHook(WorkingCopyTestHook hook)
+{
+    m_workingCopyTestHook = std::move(hook);
+}
+
+void AssetLibraryService::invokeWorkingCopyTestHook(
+    const WorkingCopyTestPoint point,
+    const QString &path) const
+{
+    WorkingCopyTestHook hook = std::move(m_workingCopyTestHook);
+    m_workingCopyTestHook = {};
+    if (hook) {
+        hook(point, path);
+    }
+}
+#endif
 
 QString AssetLibraryService::suggestedId(const QString &text)
 {
@@ -548,10 +840,15 @@ UpdatePreview AssetLibraryService::previewRestore(
 
 bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                                       const QString &sourcePath,
-                                      const RemovalMode recoveryMode,
+                                      const WorkingCopyRecoveryMode recoveryMode,
                                       UpdateAssetResult *result,
-                                      QString *error) const
+                                      QString *error,
+                                      const QString &expectedCurrentHash) const
 {
+    if (recoveryMode == WorkingCopyRecoveryMode::RetainForUndo && !result) {
+        return fail(error,
+                    QStringLiteral("Retained recovery requires an Undo result token"));
+    }
     const UpdatePreview preview = previewUpdate(asset, sourcePath);
     if (!preview.ok()) {
         return fail(error, preview.error);
@@ -560,6 +857,30 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
     if (!validateAssetRecord(asset, &manifest, error)) {
         return false;
     }
+    const QString expectedHash = expectedCurrentHash.trimmed();
+    if (!expectedHash.isEmpty() && !validFingerprint(expectedHash)) {
+        return fail(error,
+                    QStringLiteral("The expected working-copy fingerprint is invalid"));
+    }
+    QString initialFingerprint;
+    QString initialHashError;
+    if (!AssetScanner::strictContentHash(manifest,
+                                         asset.assetRoot,
+                                         &initialFingerprint,
+                                         &initialHashError)) {
+        return fail(error,
+                    QStringLiteral("Cannot verify the working copy before update: %1")
+                        .arg(initialHashError));
+    }
+    if (!expectedHash.isEmpty() && initialFingerprint != expectedHash) {
+        return fail(
+            error,
+            QStringLiteral(
+                "The working copy changed after the operation; Undo will not overwrite newer edits"));
+    }
+    const QString requiredCurrentFingerprint = expectedHash.isEmpty()
+                                                   ? initialFingerprint
+                                                   : expectedHash;
     SourcePayload source;
     if (!resolveSourcePayload(sourcePath, source, error)) {
         return false;
@@ -606,6 +927,43 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         QDir(stagingRoot).removeRecursively();
         return fail(error, QStringLiteral("Cannot stage the existing working copy"));
     }
+    Manifest stagedManifest;
+    QString stagedFingerprint;
+    QString stagedError;
+    if (!strictFingerprintAtRoot(backupRoot,
+                                 manifest.id,
+                                 &stagedManifest,
+                                 &stagedFingerprint,
+                                 &stagedError)
+        || stagedFingerprint != requiredCurrentFingerprint) {
+        const bool rolledBack = parentDirectory.rename(backupName,
+                                                        assetName);
+        QDir(stagingRoot).removeRecursively();
+        return fail(
+            error,
+            rolledBack
+                ? QStringLiteral(
+                      "The working copy changed while the update was starting; newer edits were kept")
+                : QStringLiteral(
+                      "The working copy changed while the update was starting and rollback failed; recovery is at %1")
+                      .arg(backupRoot));
+    }
+    manifest = stagedManifest;
+    operationError.clear();
+    if (!ManifestService().write(
+            QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
+            manifest,
+            &operationError)) {
+        const bool rolledBack = parentDirectory.rename(backupName,
+                                                        assetName);
+        QDir(stagingRoot).removeRecursively();
+        return fail(error,
+                    rolledBack
+                        ? operationError
+                        : QStringLiteral(
+                              "%1; rollback failed and recovery is at %2")
+                              .arg(operationError, backupRoot));
+    }
     const QString backupInternal = QDir(backupRoot).absoluteFilePath(
         QStringLiteral(".xips"));
     const QString stagingInternal = QDir(stagingRoot).absoluteFilePath(
@@ -620,6 +978,100 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                         : QStringLiteral("Cannot preserve saved versions and rollback failed; recovery is at %1")
                               .arg(backupRoot));
     }
+    Manifest finalBackupManifest;
+    QString finalBackupFingerprint;
+    QString finalBackupError;
+    if (!strictFingerprintAtRoot(backupRoot,
+                                 manifest.id,
+                                 &finalBackupManifest,
+                                 &finalBackupFingerprint,
+                                 &finalBackupError)
+        || finalBackupFingerprint != requiredCurrentFingerprint
+        || QFileInfo(backupInternal).exists()
+        || files::isLinkLike(QFileInfo(backupInternal))) {
+        bool internalRolledBack = true;
+        if (hadInternal) {
+            internalRolledBack = QDir().rename(stagingInternal,
+                                                backupInternal);
+        }
+        const bool rootRolledBack = parentDirectory.rename(backupName,
+                                                            assetName);
+        if (internalRolledBack) {
+            QDir(stagingRoot).removeRecursively();
+        }
+        if (internalRolledBack && rootRolledBack) {
+            return fail(
+                error,
+                QStringLiteral(
+                    "The working copy changed before publish; newer edits were kept"));
+        }
+        QStringList recoveryLocations;
+        if (!rootRolledBack) {
+            recoveryLocations.append(backupRoot);
+        }
+        if (!internalRolledBack) {
+            recoveryLocations.append(stagingInternal);
+        }
+        return fail(
+            error,
+            QStringLiteral(
+                "The working copy changed before publish and rollback was incomplete; recovery data remains at %1")
+                .arg(recoveryLocations.join(QStringLiteral(", "))));
+    }
+
+    Manifest intendedPublishedManifest;
+    QString intendedPublishedFingerprint;
+    QString intendedPublishedError;
+    const ManifestService manifestService;
+    const bool stagingVerified = strictFingerprintAtRoot(
+        stagingRoot,
+        manifest.id,
+        &intendedPublishedManifest,
+        &intendedPublishedFingerprint,
+        &intendedPublishedError);
+    const bool stagingManifestMatches =
+        stagingVerified
+        && json::canonicalJson(manifestService.toJson(intendedPublishedManifest))
+               == json::canonicalJson(manifestService.toJson(manifest));
+    if (!stagingVerified || !stagingManifestMatches) {
+        bool internalRolledBack = true;
+        if (hadInternal) {
+            internalRolledBack = QDir().rename(stagingInternal,
+                                                backupInternal);
+        }
+        const bool rootRolledBack = parentDirectory.rename(backupName,
+                                                            assetName);
+        if (internalRolledBack) {
+            QDir(stagingRoot).removeRecursively();
+        }
+        if (internalRolledBack && rootRolledBack) {
+            return fail(
+                error,
+                stagingVerified
+                    ? QStringLiteral(
+                          "The staged update manifest changed before publish; the existing working copy was kept")
+                    : QStringLiteral(
+                          "Cannot verify the staged update before publish: %1")
+                          .arg(intendedPublishedError));
+        }
+        QStringList recoveryLocations;
+        if (!rootRolledBack) {
+            recoveryLocations.append(backupRoot);
+        }
+        if (!internalRolledBack) {
+            recoveryLocations.append(stagingInternal);
+        }
+        return fail(
+            error,
+            QStringLiteral(
+                "Cannot verify or fully rollback the staged update; recovery data remains at %1")
+                .arg(recoveryLocations.join(QStringLiteral(", "))));
+    }
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::StagingVerifiedBeforePublish,
+        stagingRoot);
+#endif
     if (!parentDirectory.rename(stagingName, assetName)) {
         bool internalRolledBack = true;
         if (hadInternal) {
@@ -646,8 +1098,23 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                 .arg(recoveryLocations.join(QStringLiteral(", "))));
     }
 
+    Manifest actualPublishedManifest;
+    QString actualPublishedFingerprint;
+    QString actualPublishedError;
+    const bool publishedVerified = strictFingerprintAtRoot(
+        assetRoot,
+        manifest.id,
+        &actualPublishedManifest,
+        &actualPublishedFingerprint,
+        &actualPublishedError)
+        && actualPublishedFingerprint == intendedPublishedFingerprint
+        && json::canonicalJson(manifestService.toJson(actualPublishedManifest))
+               == json::canonicalJson(
+                   manifestService.toJson(intendedPublishedManifest));
+
     UpdateAssetResult completed;
     completed.preview = preview;
+    completed.publishedAsIntended = publishedVerified;
     const ScanResult scan = AssetScanner().scan(assetRoot);
     if (!scan.assets.isEmpty()) {
         completed.updated = scan.assets.first();
@@ -658,14 +1125,121 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         completed.warning = QStringLiteral(
             "Updated files were published but the asset could not be rescanned");
     }
-    QString removedPath;
-    if (!removeDirectory(backupRoot, recoveryMode, &removedPath)) {
-        completed.recoveryPath = backupRoot;
-        completed.warning = QStringLiteral(
-            "Updated files were published; the previous working copy remains at %1")
-                                .arg(backupRoot);
+    if (!publishedVerified) {
+        completed.retainedPaths.append(backupRoot);
+        appendWarning(
+            completed.warning,
+            actualPublishedError.isEmpty()
+                ? QStringLiteral(
+                      "The published working copy changed before it could be verified; Undo and automatic cleanup are unavailable, and the previous working copy remains at %1")
+                      .arg(backupRoot)
+                : QStringLiteral(
+                      "The published working copy could not be verified: %1; Undo and automatic cleanup are unavailable, and the previous working copy remains at %2")
+                      .arg(actualPublishedError, backupRoot));
+        if (result) {
+            *result = completed;
+        }
+        return true;
+    }
+    if (recoveryMode == WorkingCopyRecoveryMode::RetainForUndo) {
+        QString hashError;
+        Manifest recoveryManifest;
+        QString recoveryFingerprint;
+        const bool recoveryVerified = strictRecoveryFingerprintAtRoot(
+            backupRoot,
+            manifest.id,
+            &recoveryManifest,
+            &recoveryFingerprint,
+            &hashError);
+        const QFileInfo unexpectedRecoveryVersions(backupInternal);
+        const bool recoveryHasSavedVersions =
+            unexpectedRecoveryVersions.exists()
+            || files::isLinkLike(unexpectedRecoveryVersions);
+        if (!recoveryVerified) {
+            appendWarning(
+                completed.warning,
+                QStringLiteral("The retained recovery cannot be verified for Undo: %1")
+                    .arg(hashError));
+        } else if (recoveryHasSavedVersions) {
+            appendWarning(
+                completed.warning,
+                QStringLiteral(
+                    "The retained recovery contains saved-version data; Undo is unavailable and recovery remains at %1")
+                    .arg(backupRoot));
+        } else if (recoveryFingerprint != requiredCurrentFingerprint) {
+            appendWarning(
+                completed.warning,
+                QStringLiteral(
+                    "The retained recovery changed after publish; Undo is unavailable and recovery remains at %1")
+                    .arg(backupRoot));
+        }
+        if (recoveryVerified && !recoveryHasSavedVersions
+            && recoveryFingerprint == requiredCurrentFingerprint) {
+            completed.undoToken = WorkingCopyUndoToken{
+                .assetId = manifest.id,
+                .assetRoot = assetRoot,
+                .recoveryPath = backupRoot,
+                .publishedFingerprint = intendedPublishedFingerprint,
+                .recoveryFingerprint = recoveryFingerprint,
+            };
+        } else {
+            completed.retainedPaths.append(backupRoot);
+        }
     } else {
-        completed.recoveryPath = removedPath;
+        const RemovalMode removalMode =
+            recoveryMode == WorkingCopyRecoveryMode::MoveToTrash
+                ? RemovalMode::MoveToTrash
+                : RemovalMode::Permanent;
+        QString cleanupFingerprint;
+        QString cleanupError;
+        const QFileInfo unexpectedCleanupVersions(backupInternal);
+        const bool cleanupHasSavedVersions =
+            unexpectedCleanupVersions.exists()
+            || files::isLinkLike(unexpectedCleanupVersions);
+        const bool cleanupVerified = !cleanupHasSavedVersions
+                                     && strictRecoveryFingerprintAtRoot(
+                                         backupRoot,
+                                         manifest.id,
+                                         nullptr,
+                                         &cleanupFingerprint,
+                                         &cleanupError)
+                                     && cleanupFingerprint
+                                            == requiredCurrentFingerprint;
+        if (!cleanupVerified) {
+            completed.retainedPaths.append(backupRoot);
+            appendWarning(
+                completed.warning,
+                QStringLiteral(
+                    "Updated files were published, but the previous working copy changed before cleanup and remains at %1")
+                    .arg(backupRoot));
+        } else {
+            const WorkingCopyUndoToken cleanupToken{
+                .assetId = manifest.id,
+                .assetRoot = assetRoot,
+                .recoveryPath = backupRoot,
+                .publishedFingerprint = intendedPublishedFingerprint,
+                .recoveryFingerprint = cleanupFingerprint,
+            };
+            RecoveryDiscardResult discarded;
+            QString discardError;
+            if (!discardWorkingCopyRecovery(asset,
+                                            cleanupToken,
+                                            removalMode,
+                                            &discarded,
+                                            &discardError)) {
+                completed.retainedPaths.append(backupRoot);
+                appendWarning(
+                    completed.warning,
+                    QStringLiteral(
+                        "Updated files were published; the previous working copy remains at %1: %2")
+                        .arg(backupRoot, discardError));
+            } else if (!discarded.warning.isEmpty()) {
+                if (!discarded.retainedPath.isEmpty()) {
+                    completed.retainedPaths.append(discarded.retainedPath);
+                }
+                appendWarning(completed.warning, discarded.warning);
+            }
+        }
     }
     if (result) {
         *result = completed;
@@ -675,10 +1249,14 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
 
 bool AssetLibraryService::restoreVersion(const AssetRecord &asset,
                                          const QString &version,
-                                         const RemovalMode recoveryMode,
+                                         const WorkingCopyRecoveryMode recoveryMode,
                                          UpdateAssetResult *result,
                                          QString *error) const
 {
+    if (recoveryMode == WorkingCopyRecoveryMode::RetainForUndo && !result) {
+        return fail(error,
+                    QStringLiteral("Retained recovery requires an Undo result token"));
+    }
     const QString cleanVersion = version.trimmed();
     const UpdatePreview preview = previewRestore(asset, cleanVersion);
     if (!preview.ok()) {
@@ -733,6 +1311,7 @@ bool AssetLibraryService::restoreVersion(const AssetRecord &asset,
     completed.preview = preview;
     const QString stagingPath = restoreSource.path();
     if (!restoreSource.remove()) {
+        completed.retainedPaths.append(stagingPath);
         if (!completed.warning.isEmpty()) {
             completed.warning += QStringLiteral("; ");
         }
@@ -743,6 +1322,258 @@ bool AssetLibraryService::restoreVersion(const AssetRecord &asset,
     if (result) {
         *result = completed;
     }
+    return true;
+}
+
+bool AssetLibraryService::undoWorkingCopyChange(
+    const AssetRecord &asset,
+    const WorkingCopyUndoToken &token,
+    UpdateAssetResult *result,
+    QString *error) const
+{
+    if (!result) {
+        return fail(error,
+                    QStringLiteral("Undo requires a result for cleanup reporting"));
+    }
+    if (!validateAssetRecord(asset, nullptr, error)) {
+        return false;
+    }
+    if (!validateWorkingCopyUndoToken(asset,
+                                      token,
+                                      error)) {
+        return false;
+    }
+    QString currentHash;
+    QString hashError;
+    if (!strictFingerprintAtRoot(asset.assetRoot,
+                                 asset.manifest.id,
+                                 nullptr,
+                                 &currentHash,
+                                 &hashError)
+        || currentHash != token.publishedFingerprint) {
+        return fail(
+            error,
+            QStringLiteral(
+                "The working copy changed after the operation; Undo will not overwrite newer edits"));
+    }
+    Manifest recoveryManifest;
+    QString recoveryHash;
+    hashError.clear();
+    if (!strictRecoveryFingerprintAtRoot(token.recoveryPath,
+                                         asset.manifest.id,
+                                         &recoveryManifest,
+                                         &recoveryHash,
+                                         &hashError)
+        || recoveryHash != token.recoveryFingerprint) {
+        return fail(
+            error,
+            QStringLiteral(
+                "The retained recovery changed after the operation; Undo will not restore unverified files"));
+    }
+
+    const QString parent = QFileInfo(asset.assetRoot).absolutePath();
+    QTemporaryDir undoSource(
+        QDir(parent).absoluteFilePath(
+            QStringLiteral(".xips-create-undo-XXXXXX")));
+    undoSource.setAutoRemove(false);
+    if (!undoSource.isValid()) {
+        return fail(error,
+                    QStringLiteral("Cannot create the undo staging directory"));
+    }
+    QString operationError;
+    if (!copyPayload(token.recoveryPath,
+                     undoSource.path(),
+                     &operationError)) {
+        const QString stagingPath = undoSource.path();
+        if (!undoSource.remove()) {
+            operationError += QStringLiteral(
+                "; undo staging data remains at %1")
+                                  .arg(stagingPath);
+        }
+        return fail(error, operationError);
+    }
+    Manifest confirmedRecoveryManifest;
+    QString confirmedRecoveryHash;
+    operationError.clear();
+    if (!strictRecoveryFingerprintAtRoot(token.recoveryPath,
+                                         asset.manifest.id,
+                                         &confirmedRecoveryManifest,
+                                         &confirmedRecoveryHash,
+                                         &operationError)
+        || confirmedRecoveryHash != token.recoveryFingerprint) {
+        const QString stagingPath = undoSource.path();
+        if (!undoSource.remove()) {
+            operationError += QStringLiteral(
+                "; undo staging data remains at %1")
+                                  .arg(stagingPath);
+        }
+        return fail(
+            error,
+            QStringLiteral(
+                "The retained recovery changed while it was being copied; Undo was not applied: %1")
+                .arg(operationError));
+    }
+    QString copiedRecoveryHash;
+    operationError.clear();
+    if (!AssetScanner::strictContentHash(confirmedRecoveryManifest,
+                                         undoSource.path(),
+                                         &copiedRecoveryHash,
+                                         &operationError)
+        || copiedRecoveryHash != token.recoveryFingerprint) {
+        const QString stagingPath = undoSource.path();
+        if (!undoSource.remove()) {
+            operationError += QStringLiteral(
+                "; undo staging data remains at %1")
+                                  .arg(stagingPath);
+        }
+        return fail(
+            error,
+            QStringLiteral("Cannot verify the copied recovery before Undo: %1")
+                .arg(operationError));
+    }
+
+    UpdateAssetResult completed;
+    if (!updateAsset(asset,
+                     undoSource.path(),
+                     WorkingCopyRecoveryMode::Permanent,
+                     &completed,
+                     &operationError,
+                     token.publishedFingerprint)) {
+        const QString stagingPath = undoSource.path();
+        if (!undoSource.remove()) {
+            operationError += QStringLiteral(
+                "; undo staging data remains at %1")
+                                  .arg(stagingPath);
+        }
+        return fail(error, operationError);
+    }
+    const QString stagingPath = undoSource.path();
+    if (!undoSource.remove()) {
+        completed.retainedPaths.append(stagingPath);
+        appendWarning(
+            completed.warning,
+            QStringLiteral(
+                "restored the previous working copy, but temporary data remains at %1")
+                .arg(stagingPath));
+    }
+    if (!completed.publishedAsIntended) {
+        completed.retainedPaths.append(token.recoveryPath);
+        appendWarning(
+            completed.warning,
+            QStringLiteral(
+                "Undo could not be verified after publish; the original recovery remains at %1")
+                .arg(token.recoveryPath));
+        completed.retainedPaths.removeDuplicates();
+        *result = completed;
+        return fail(
+            error,
+            QStringLiteral(
+                "Undo could not be verified after publish; current files and recovery copies were kept"));
+    }
+
+    RecoveryDiscardResult discarded;
+    QString discardError;
+    if (!discardWorkingCopyRecovery(asset,
+                                    token,
+                                    RemovalMode::Permanent,
+                                    &discarded,
+                                    &discardError)) {
+        completed.retainedPaths.append(token.recoveryPath);
+        appendWarning(
+            completed.warning,
+            QStringLiteral(
+                "restored the previous working copy, but its recovery copy remains at %1: %2")
+                .arg(token.recoveryPath, discardError));
+    } else if (!discarded.warning.isEmpty()) {
+        if (!discarded.retainedPath.isEmpty()) {
+            completed.retainedPaths.append(discarded.retainedPath);
+        }
+        appendWarning(completed.warning, discarded.warning);
+    }
+    completed.retainedPaths.removeDuplicates();
+    *result = completed;
+    return true;
+}
+
+bool AssetLibraryService::discardWorkingCopyRecovery(
+    const AssetRecord &asset,
+    const WorkingCopyUndoToken &token,
+    const RemovalMode mode,
+    RecoveryDiscardResult *result,
+    QString *error) const
+{
+    if (!result) {
+        return fail(error,
+                    QStringLiteral(
+                        "Discard requires a result for cleanup reporting"));
+    }
+    *result = {};
+    if (!validateWorkingCopyUndoToken(asset,
+                                      token,
+                                      error)) {
+        return false;
+    }
+    QString recoveryHash;
+    QString hashError;
+    if (!strictRecoveryFingerprintAtRoot(token.recoveryPath,
+                                         asset.manifest.id,
+                                         nullptr,
+                                         &recoveryHash,
+                                         &hashError)
+        || recoveryHash != token.recoveryFingerprint) {
+        return fail(
+            error,
+            QStringLiteral(
+                "The retained recovery changed or contains unrecognized data; it was not discarded automatically: %1")
+                .arg(hashError));
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::RecoveryVerifiedBeforeDiscardIsolation,
+        token.recoveryPath);
+#endif
+
+    const QString parent = QFileInfo(token.recoveryPath).absolutePath();
+    const QString recoveryName = QFileInfo(token.recoveryPath).fileName();
+    const QString discardName = QStringLiteral(".xips-create-discard-%1")
+                                    .arg(QUuid::createUuid().toString(
+                                        QUuid::WithoutBraces));
+    QDir parentDirectory(parent);
+    if (!parentDirectory.rename(recoveryName, discardName)) {
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot isolate the previous working copy before discarding it"));
+    }
+    const QString discardPath = QDir(parent).absoluteFilePath(discardName);
+    RecoveryDiscardResult completed;
+    QString isolatedHash;
+    hashError.clear();
+    if (!strictRecoveryFingerprintAtRoot(discardPath,
+                                         asset.manifest.id,
+                                         nullptr,
+                                         &isolatedHash,
+                                         &hashError)
+        || isolatedHash != token.recoveryFingerprint) {
+        completed.retainedPath = discardPath;
+        completed.warning = QStringLiteral(
+            "The recovery was isolated but could not be reverified; data remains at %1%2")
+                                .arg(
+                                    discardPath,
+                                    hashError.isEmpty()
+                                        ? QString()
+                                        : QStringLiteral(": %1").arg(hashError));
+    } else if (!removeDirectory(discardPath, mode, nullptr)) {
+        completed.retainedPath = discardPath;
+        completed.warning =
+            (mode == RemovalMode::MoveToTrash
+                 ? QStringLiteral(
+                       "The recovery was retired but could not be moved to the recycle bin; data remains at %1")
+                 : QStringLiteral(
+                       "The recovery was retired but could not be deleted completely; data remains at %1"))
+                .arg(discardPath);
+    }
+    *result = completed;
     return true;
 }
 

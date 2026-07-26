@@ -1,4 +1,4 @@
-# xIPs 1.2.1 implementation status
+# xIPs 1.3.0 implementation status
 
 ## User workflow
 
@@ -8,10 +8,10 @@ Status: complete.
 2. Import files or folders by selection or mixed drag-and-drop; infer metadata, recover name collisions automatically, keep the current group filter view-only, create imports ungrouped, and offer one-step undo.
 3. Start searches across all assets, show any intentional group scope, display the matched file path directly, select it in details, and expose a contextual one-click open action.
 4. Open a single-file asset directly or open a directory asset in the file manager.
-5. Replace an existing working copy from a file or directory only after previewing additions, replacements, and removals; preserve identity, metadata, and saved versions.
+5. Replace an existing working copy from a file or directory only after previewing additions, replacements, and removals; preserve identity, metadata, and saved versions; offer one bounded Undo that refuses to overwrite newer edits.
 6. Save immutable versions only after content changes; show selected-asset change state and suggest the next patch version.
-7. Restore a selected saved version to the working copy only after previewing file differences; retain every saved version and keep the prior working copy recoverable.
-8. Copy payload from an explicitly named source version to an explicitly previewed final path without overwriting a destination.
+7. Restore a selected saved version to the working copy only after previewing file differences; retain every saved version and offer the same bounded one-step Undo.
+8. Copy payload from an explicitly named source version to an explicitly previewed final path without overwriting a destination or discarding a pending working-copy Undo.
 9. Assign, rename, and remove user groups; edit an asset by checking existing groups or entering one new group.
 10. Delete a saved version without touching the working copy, or delete the complete selected asset after a bounded confirmation without touching import sources.
 11. Refresh on startup and window activation for a Jianguoyun-backed library; surface retained problems in a non-modal action banner.
@@ -28,7 +28,7 @@ Status: complete.
 
 ## Excluded scope
 
-HDL parsing, source preview, dependency analysis, Git integration, simulation, synthesis, cloud accounts, installers, Windows URI registration, single-instance IPC, and ZeroSlack embedding are outside 1.2.
+HDL parsing, source preview, dependency analysis, Git integration, simulation, synthesis, cloud accounts, installers, Windows URI registration, single-instance IPC, and ZeroSlack embedding are outside 1.3.
 
 ## Acceptance
 

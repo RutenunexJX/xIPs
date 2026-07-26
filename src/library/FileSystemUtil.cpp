@@ -112,8 +112,14 @@ bool collectPayloadFiles(const QString &root,
 {
     relativeFiles.clear();
     const QString absoluteRoot = normalizedAbsolute(root);
-    if (!QFileInfo(absoluteRoot).isDir()) {
+    const QFileInfo rootInfo(absoluteRoot);
+    if (!rootInfo.isDir()) {
         return fail(error, QStringLiteral("Payload root does not exist"));
+    }
+    if (linkPolicy == LinkPolicy::Reject && isLinkLike(rootInfo)) {
+        return fail(error,
+                    QStringLiteral("Payload root cannot be a linked directory: %1")
+                        .arg(absoluteRoot));
     }
     if (!collect(absoluteRoot,
                  absoluteRoot,
