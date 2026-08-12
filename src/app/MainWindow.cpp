@@ -12,8 +12,10 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QDirIterator>
 #include <QFormLayout>
 #include <QFrame>
 #include <QFutureWatcher>
@@ -39,6 +41,7 @@
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTableView>
+#include <QTemporaryDir>
 #include <QTabWidget>
 #include <QTimer>
 #include <QToolBar>
@@ -58,6 +61,48 @@ namespace {
 constexpr int VersionRole = Qt::UserRole;
 constexpr int GroupRole = Qt::UserRole;
 constexpr int FilePathRole = Qt::UserRole;
+
+QString ungroupedFilterKey()
+{
+    return QString(1, QChar(0x1f));
+}
+
+bool isUngroupedFilter(const QString &group)
+{
+    return group == ungroupedFilterKey();
+}
+
+QString displayedGroup(const QString &group)
+{
+    return isUngroupedFilter(group) ? QStringLiteral("Ungrouped") : group;
+}
+
+bool isReservedGroupName(const QString &group)
+{
+    const QString name = group.trimmed();
+    return name.compare(QStringLiteral("All assets"), Qt::CaseInsensitive) == 0
+           || name.compare(QStringLiteral("Ungrouped"),
+                           Qt::CaseInsensitive) == 0;
+}
+
+void setPreviewFilesWritable(const QString &root, const bool writable)
+{
+    QDirIterator iterator(root,
+                          QDir::Files | QDir::Hidden | QDir::System,
+                          QDirIterator::Subdirectories);
+    while (iterator.hasNext()) {
+        const QString path = iterator.next();
+        QFileDevice::Permissions permissions = QFileInfo(path).permissions();
+        if (writable) {
+            permissions |= QFileDevice::WriteOwner | QFileDevice::WriteUser;
+        } else {
+            permissions &= ~(QFileDevice::WriteOwner | QFileDevice::WriteUser
+                             | QFileDevice::WriteGroup
+                             | QFileDevice::WriteOther);
+        }
+        QFile::setPermissions(path, permissions);
+    }
+}
 
 struct GroupSummary {
     QString name;
@@ -126,6 +171,13 @@ bool editMetadata(QWidget *parent,
             QMessageBox::warning(&dialog,
                                  QStringLiteral("Incomplete metadata"),
                                  QStringLiteral("Name is required."));
+            return;
+        }
+        if (isReservedGroupName(newGroup->text())) {
+            QMessageBox::warning(
+                &dialog,
+                QStringLiteral("Reserved group name"),
+                QStringLiteral("'All assets' and 'Ungrouped' are automatic filters. Choose another group name."));
             return;
         }
         dialog.accept();
@@ -248,6 +300,26 @@ MainWindow::MainWindow(QString libraryRoot,
                     m_pendingActivation.reset();
                     applyActivation(request);
                 }
+                if (!m_pendingVersionSelection.isEmpty()) {
+                    for (int index = 0;
+                         index < m_versionTree->topLevelItemCount();
+                         ++index) {
+                        QTreeWidgetItem *item = m_versionTree->topLevelItem(index);
+                        if (item->data(0, VersionRole).toString()
+                            == m_pendingVersionSelection) {
+                            m_versionTree->setCurrentItem(item);
+                            m_versionTree->scrollToItem(item);
+                            m_detailTabs->setCurrentWidget(
+                                m_versionTree->parentWidget());
+                            break;
+                        }
+                    }
+                    if (!m_pendingVersionMessage.isEmpty()) {
+                        showNotice(m_pendingVersionMessage);
+                    }
+                    m_pendingVersionSelection.clear();
+                    m_pendingVersionMessage.clear();
+                }
             });
     connect(m_controller,
             &LibraryController::refreshFailed,
@@ -274,6 +346,11 @@ MainWindow::MainWindow(QString libraryRoot,
 MainWindow::~MainWindow()
 {
     clearNotice();
+    for (const auto &preview : m_versionPreviews) {
+        if (preview) {
+            setPreviewFilesWritable(preview->path(), true);
+        }
+    }
 }
 
 void MainWindow::buildUi()
@@ -326,10 +403,11 @@ void MainWindow::buildUi()
     QAction *libraryAction = moreMenu->addAction(QStringLiteral("Choose library..."));
     connect(libraryAction, &QAction::triggered, this, &MainWindow::chooseLibrary);
     m_refreshAction = moreMenu->addAction(QStringLiteral("Refresh now"));
+    m_refreshAction->setObjectName(QStringLiteral("refreshAction"));
     connect(m_refreshAction,
             &QAction::triggered,
-            m_controller,
-            &LibraryController::rebuild);
+            this,
+            &MainWindow::refreshLibrary);
     moreMenu->addSeparator();
     m_updateAction = moreMenu->addAction(QStringLiteral("Update selected asset from..."));
     m_updateAction->setObjectName(QStringLiteral("updateAssetAction"));
@@ -439,6 +517,13 @@ void MainWindow::buildUi()
             &QAction::triggered,
             this,
             &MainWindow::assignNewGroup);
+    QAction *removeSelectedGroupAction = groupMenu->addAction(
+        QStringLiteral("Remove selected assets from current group"));
+    connect(removeSelectedGroupAction,
+            &QAction::triggered,
+            this,
+            &MainWindow::removeSelectedFromCurrentGroup);
+    groupMenu->addSeparator();
     QAction *renameGroupAction = groupMenu->addAction(
         QStringLiteral("Rename current group..."));
     connect(renameGroupAction,
@@ -511,10 +596,10 @@ void MainWindow::buildUi()
     m_description->setMaximumHeight(90);
     detailsLayout->addWidget(m_description);
 
-    auto *tabs = new QTabWidget(details);
-    tabs->setObjectName(QStringLiteral("detailTabs"));
-    tabs->setDocumentMode(true);
-    auto *filesPage = new QWidget(tabs);
+    m_detailTabs = new QTabWidget(details);
+    m_detailTabs->setObjectName(QStringLiteral("detailTabs"));
+    m_detailTabs->setDocumentMode(true);
+    auto *filesPage = new QWidget(m_detailTabs);
     auto *filesLayout = new QVBoxLayout(filesPage);
     filesLayout->setContentsMargins(0, 0, 0, 0);
     m_fileTree = new QTreeWidget(filesPage);
@@ -527,7 +612,7 @@ void MainWindow::buildUi()
     m_fileTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     filesLayout->addWidget(m_fileTree);
 
-    auto *versionsPage = new QWidget(tabs);
+    auto *versionsPage = new QWidget(m_detailTabs);
     auto *versionsLayout = new QVBoxLayout(versionsPage);
     versionsLayout->setContentsMargins(0, 0, 0, 0);
     m_versionTree = new QTreeWidget(versionsPage);
@@ -536,6 +621,8 @@ void MainWindow::buildUi()
         {QStringLiteral("Version"), QStringLiteral("Created")});
     m_versionTree->setRootIsDecorated(false);
     m_versionTree->setAlternatingRowColors(true);
+    m_versionTree->setToolTip(
+        QStringLiteral("Double-click or press Enter to open a temporary preview copy"));
     m_versionTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_versionTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_versionTree->header()->setStretchLastSection(true);
@@ -567,9 +654,9 @@ void MainWindow::buildUi()
     versionActions->addWidget(deleteVersionButton);
     versionActions->addStretch(1);
     versionsLayout->addLayout(versionActions);
-    tabs->addTab(filesPage, QStringLiteral("Files"));
-    tabs->addTab(versionsPage, QStringLiteral("Versions"));
-    detailsLayout->addWidget(tabs, 1);
+    m_detailTabs->addTab(filesPage, QStringLiteral("Files"));
+    m_detailTabs->addTab(versionsPage, QStringLiteral("Versions"));
+    detailsLayout->addWidget(m_detailTabs, 1);
     mainSplitter->setSizes({180, 460, 540});
     mainSplitter->setCollapsible(0, false);
     mainSplitter->setCollapsible(1, false);
@@ -661,10 +748,23 @@ void MainWindow::buildUi()
                 m_deleteAssetAction->setEnabled(selected);
                 updateDetails(currentRecord());
             });
-    connect(m_assetTable, &QTableView::doubleClicked,
-            this, &MainWindow::openCurrent);
+    connect(m_assetTable, &QTableView::doubleClicked, this, [this] {
+        if (currentMatchedFile().isEmpty()) {
+            openCurrent();
+        } else {
+            openMatchedFile();
+        }
+    });
     connect(m_fileTree, &QTreeWidget::itemActivated,
             this, &MainWindow::openSelectedFile);
+    connect(m_versionTree,
+            &QTreeWidget::itemActivated,
+            this,
+            [this](QTreeWidgetItem *item, int) {
+                if (item) {
+                    openVersion(item->data(0, VersionRole).toString());
+                }
+            });
     connect(m_versionTree,
             &QTreeWidget::currentItemChanged,
             this,
@@ -694,8 +794,8 @@ void MainWindow::buildUi()
     m_focusRefreshTimer->setInterval(500);
     connect(m_focusRefreshTimer,
             &QTimer::timeout,
-            m_controller,
-            &LibraryController::rebuild);
+            this,
+            &MainWindow::refreshLibrary);
     setAcceptDrops(true);
 
     m_editAction->setEnabled(false);
@@ -731,7 +831,10 @@ void MainWindow::runSearch()
         QList<SearchHit> grouped;
         grouped.reserve(hits.size());
         for (SearchHit &hit : hits) {
-            if (hasGroup(hit.asset, group)) {
+            if ((isUngroupedFilter(group)
+                 && hit.asset.manifest.tags.isEmpty())
+                || (!isUngroupedFilter(group)
+                    && hasGroup(hit.asset, group))) {
                 grouped.append(std::move(hit));
             }
         }
@@ -740,7 +843,7 @@ void MainWindow::runSearch()
     m_searchScopeLabel->setText(
         group.isEmpty()
             ? QStringLiteral("Scope: All assets")
-            : QStringLiteral("Scope: %1").arg(group));
+            : QStringLiteral("Scope: %1").arg(displayedGroup(group)));
     const bool hasResults = !hits.isEmpty();
     m_tableModel->setHits(std::move(hits));
     m_assetTable->verticalHeader()->setDefaultSectionSize(hasQuery ? 44 : 25);
@@ -756,9 +859,10 @@ void MainWindow::runSearch()
                             ? QStringLiteral("No assets match ‘%1’ in all assets")
                                   .arg(query)
                             : QStringLiteral("No assets match ‘%1’ in group %2")
-                                  .arg(query, group);
+                                  .arg(query, displayedGroup(group));
         } else if (!group.isEmpty()) {
-            emptyText = QStringLiteral("No assets in group %1").arg(group);
+            emptyText = QStringLiteral("No assets in group %1")
+                            .arg(displayedGroup(group));
         } else {
             emptyText = QStringLiteral(
                 "No assets in this library\nUse Add to copy a file or folder into it");
@@ -784,8 +888,27 @@ void MainWindow::rebuildGroups(const QList<AssetRecord> &assets)
         m_groupTree,
         {QStringLiteral("All assets"), QString::number(assets.size())});
     all->setData(0, GroupRole, QString());
+    all->setToolTip(0, QStringLiteral("Automatic filter; not a custom group"));
     all->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
     QTreeWidgetItem *selection = all;
+
+    const qsizetype ungroupedCount = std::count_if(
+        assets.cbegin(), assets.cend(), [](const AssetRecord &asset) {
+            return asset.manifest.tags.isEmpty();
+        });
+    if (ungroupedCount > 0) {
+        auto *ungrouped = new QTreeWidgetItem(
+            m_groupTree,
+            {QStringLiteral("Ungrouped"), QString::number(ungroupedCount)});
+        ungrouped->setData(0, GroupRole, ungroupedFilterKey());
+        ungrouped->setToolTip(
+            0,
+            QStringLiteral("Automatic filter for assets with no groups"));
+        ungrouped->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+        if (isUngroupedFilter(previous)) {
+            selection = ungrouped;
+        }
+    }
 
     QMap<QString, GroupSummary> groups;
     for (const AssetRecord &asset : assets) {
@@ -793,7 +916,8 @@ void MainWindow::rebuildGroups(const QList<AssetRecord> &assets)
         for (const QString &rawTag : asset.manifest.tags) {
             const QString name = rawTag.trimmed();
             const QString key = name.toCaseFolded();
-            if (name.isEmpty() || counted.contains(key)) {
+            if (name.isEmpty() || isReservedGroupName(name)
+                || counted.contains(key)) {
                 continue;
             }
             counted.insert(key);
@@ -833,6 +957,8 @@ void MainWindow::updateDetails(const AssetRecord *asset)
     m_openMatchedFileButton->hide();
     if (!asset) {
         m_nameLabel->setText(QStringLiteral("No asset selected"));
+        m_versionAction->setEnabled(false);
+        m_versionAction->setToolTip({});
         m_openAction->setText(QStringLiteral("Open"));
         m_copyAction->setText(QStringLiteral("Copy working copy..."));
         m_restoreVersionAction->setVisible(false);
@@ -841,6 +967,9 @@ void MainWindow::updateDetails(const AssetRecord *asset)
     }
 
     m_nameLabel->setText(asset->manifest.name);
+    m_versionAction->setEnabled(false);
+    m_versionAction->setToolTip(
+        QStringLiteral("Checking whether the working copy changed..."));
     m_openAction->setText(asset->files.size() == 1
                               ? QStringLiteral("Open file")
                               : QStringLiteral("Open folder"));
@@ -888,16 +1017,29 @@ void MainWindow::updateDetails(const AssetRecord *asset)
                     m_workingStateItem->setText(
                         1,
                         QStringLiteral("Could not check: %1").arg(state.error));
+                    m_versionAction->setEnabled(false);
+                    m_versionAction->setToolTip(
+                        QStringLiteral("Cannot save a version until the working copy can be checked"));
                 } else if (!state.hasSavedVersion) {
                     m_workingStateItem->setText(1, QStringLiteral("Not saved yet"));
+                    m_versionAction->setEnabled(true);
+                    m_versionAction->setToolTip({});
                 } else if (state.changed) {
                     m_workingStateItem->setText(
                         1,
-                        QStringLiteral("Changed since %1").arg(state.latestVersion));
+                        QStringLiteral("Changed since latest saved version %1")
+                            .arg(state.latestVersion));
+                    m_versionAction->setEnabled(true);
+                    m_versionAction->setToolTip({});
                 } else {
                     m_workingStateItem->setText(
                         1,
-                        QStringLiteral("Up to date with %1").arg(state.latestVersion));
+                        QStringLiteral("Matches latest saved version %1")
+                            .arg(state.latestVersion));
+                    m_versionAction->setEnabled(false);
+                    m_versionAction->setToolTip(
+                        QStringLiteral("The working copy already matches version %1")
+                            .arg(state.latestVersion));
                 }
             });
     watcher->setFuture(QtConcurrent::run([selectedAsset] {
@@ -931,16 +1073,26 @@ void MainWindow::populateFiles(const AssetRecord &asset,
 
 void MainWindow::populateVersions(const AssetRecord &asset)
 {
-    QString error;
-    const QList<VersionInfo> versions = m_libraryService.versions(asset.assetRoot, &error);
-    if (!error.isEmpty()) {
-        if (!m_lastProblems.contains(error)) {
-            m_lastProblems.append(error);
-        }
-        m_problemAction->setEnabled(true);
-        showPassiveReview(error);
+    const VersionInventoryResult inventory = m_libraryService.versionInventory(
+        asset.assetRoot);
+    QStringList problems = inventory.problems;
+    if (!inventory.fatalError.isEmpty()) {
+        problems.prepend(inventory.fatalError);
     }
-    for (const VersionInfo &version : versions) {
+    for (const QString &problem : problems) {
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+    }
+    if (!problems.isEmpty()) {
+        m_problemAction->setEnabled(true);
+        showPassiveReview(
+            inventory.fatalError.isEmpty()
+                ? QStringLiteral("%1 saved version(s) are unavailable; healthy versions remain listed")
+                      .arg(inventory.problems.size())
+                : inventory.fatalError);
+    }
+    for (const VersionInfo &version : inventory.validVersions) {
         auto *item = new QTreeWidgetItem(
             m_versionTree,
             {version.version,
@@ -948,9 +1100,9 @@ void MainWindow::populateVersions(const AssetRecord &asset)
         item->setData(0, VersionRole, version.version);
     }
     m_versionTree->setCurrentItem(nullptr);
-    m_restoreVersionAction->setVisible(!versions.isEmpty());
+    m_restoreVersionAction->setVisible(!inventory.validVersions.isEmpty());
     m_restoreVersionAction->setEnabled(false);
-    m_deleteVersionAction->setVisible(!versions.isEmpty());
+    m_deleteVersionAction->setVisible(!inventory.validVersions.isEmpty());
     m_deleteVersionAction->setEnabled(false);
     m_copyAction->setText(QStringLiteral("Copy working copy..."));
 }
@@ -1074,6 +1226,25 @@ void MainWindow::importPaths(const QStringList &sourcePaths)
         .value = result.created.first().manifest.id,
     };
     m_undoImportAssets = result.created;
+    m_undoImportProofs = result.createdProofs;
+    const bool undoVerified = m_undoImportProofs.size()
+                                  == m_undoImportAssets.size()
+                              && std::all_of(
+                                  m_undoImportProofs.cbegin(),
+                                  m_undoImportProofs.cend(),
+                                  [](const AssetDeletionProof &proof) {
+                                      return proof.ok();
+                                  });
+    if (!undoVerified) {
+        m_undoImportAssets.clear();
+        m_undoImportProofs.clear();
+        const QString problem = QStringLiteral(
+            "Import completed, but a verified Undo proof could not be recorded; imported assets were kept");
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+        m_problemAction->setEnabled(true);
+    }
     if (m_groupTree->topLevelItemCount() > 0) {
         m_groupTree->setCurrentItem(m_groupTree->topLevelItem(0));
     }
@@ -1084,6 +1255,11 @@ void MainWindow::importPaths(const QStringList &sourcePaths)
         status += QStringLiteral("; %1 skipped; open More > Problems")
                       .arg(result.errors.size());
     }
+    if (!undoVerified) {
+        status += QStringLiteral("; Undo unavailable; open More > Problems");
+        showPassiveReview(
+            QStringLiteral("Import completed, but Undo is unavailable; review Problems"));
+    }
     statusBar()->showMessage(status);
     m_controller->rebuild();
 }
@@ -1091,20 +1267,29 @@ void MainWindow::importPaths(const QStringList &sourcePaths)
 void MainWindow::undoLastImport()
 {
     const QList<AssetRecord> imported = std::exchange(m_undoImportAssets, {});
+    const QList<AssetDeletionProof> proofs = std::exchange(
+        m_undoImportProofs, {});
     if (imported.isEmpty()) {
         return;
     }
     int removed = 0;
     QStringList errors;
-    for (const AssetRecord &asset : imported) {
+    for (qsizetype index = 0; index < imported.size(); ++index) {
+        const AssetRecord &asset = imported.at(index);
         QString error;
-        if (m_libraryService.deleteAsset(m_libraryRoot,
-                                         asset,
-                                         m_removalMode,
-                                         nullptr,
-                                         &error)) {
+        if (index < proofs.size()
+            && m_libraryService.deleteAsset(m_libraryRoot,
+                                            asset,
+                                            proofs.at(index),
+                                            m_removalMode,
+                                            nullptr,
+                                            &error)) {
             ++removed;
         } else {
+            if (index >= proofs.size()) {
+                error = QStringLiteral(
+                    "The import Undo proof is unavailable; the asset was kept");
+            }
             errors.append(QStringLiteral("%1: %2")
                               .arg(asset.manifest.name, error));
         }
@@ -1139,11 +1324,12 @@ void MainWindow::editCurrentAsset()
     if (!asset) {
         return;
     }
+    const AssetRecord selectedAsset = *asset;
     AssetMetadata metadata{
-        .id = asset->manifest.id,
-        .name = asset->manifest.name,
-        .description = asset->manifest.description,
-        .tags = asset->manifest.tags,
+        .id = selectedAsset.manifest.id,
+        .name = selectedAsset.manifest.name,
+        .description = selectedAsset.manifest.description,
+        .tags = selectedAsset.manifest.tags,
     };
     if (!editMetadata(this,
                       QStringLiteral("Edit details"),
@@ -1158,13 +1344,50 @@ void MainWindow::editCurrentAsset()
     }
     m_undoImportAssets.clear();
     QString error;
-    if (!m_libraryService.updateMetadata(*asset, metadata, &error)) {
+    MetadataUpdateResult updated;
+    if (!m_libraryService.updateMetadata(selectedAsset,
+                                         metadata,
+                                         &updated,
+                                         &error)) {
+        QString problem = QStringLiteral("Cannot update %1: %2")
+                              .arg(selectedAsset.manifest.name, error);
+        if (!updated.retainedPath.isEmpty()) {
+            problem += QStringLiteral("; recovery data remains at %1")
+                           .arg(QDir::toNativeSeparators(
+                               updated.retainedPath));
+        }
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+        m_problemAction->setEnabled(true);
         QMessageBox::critical(this, QStringLiteral("Cannot update asset"), error);
+        m_controller->rebuild();
         return;
+    }
+    if (!updated.warning.isEmpty() || !updated.retainedPath.isEmpty()) {
+        QString problem = QStringLiteral("%1: %2")
+                              .arg(selectedAsset.manifest.name,
+                                   updated.warning.isEmpty()
+                                       ? QStringLiteral(
+                                             "manifest recovery data remains at %1")
+                                             .arg(QDir::toNativeSeparators(
+                                                 updated.retainedPath))
+                                       : updated.warning);
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+        m_problemAction->setEnabled(true);
+        showPassiveReview(
+            QStringLiteral("Asset details were updated; manifest recovery data needs review"));
+    } else {
+        showNotice(updated.changed
+                       ? QStringLiteral("Updated details for %1")
+                             .arg(metadata.name)
+                       : QStringLiteral("Asset details were unchanged"));
     }
     m_pendingActivation = ActivationRequest{
         .action = ActivationAction::OpenAsset,
-        .value = asset->manifest.id,
+        .value = selectedAsset.manifest.id,
     };
     m_controller->rebuild();
 }
@@ -1315,14 +1538,22 @@ void MainWindow::deleteCurrentAsset()
         return;
     }
     const AssetRecord selectedAsset = *asset;
-    QString versionsError;
-    const qsizetype savedVersions = m_libraryService.versions(
-        selectedAsset.assetRoot,
-        &versionsError).size();
-    if (!versionsError.isEmpty()) {
+    const VersionInventoryResult versionInventory =
+        m_libraryService.versionInventory(selectedAsset.assetRoot);
+    if (!versionInventory.fatalError.isEmpty()) {
         QMessageBox::critical(this,
                               QStringLiteral("Cannot inspect asset"),
-                              versionsError);
+                              versionInventory.fatalError);
+        return;
+    }
+    const qsizetype savedVersions = versionInventory.validVersions.size()
+                                       + versionInventory.problems.size();
+    const AssetDeletionProof deletionProof =
+        m_libraryService.assetDeletionProof(selectedAsset);
+    if (!deletionProof.ok()) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot inspect asset"),
+                              deletionProof.error);
         return;
     }
     QString deleteQuestion = QStringLiteral(
@@ -1332,6 +1563,11 @@ void MainWindow::deleteCurrentAsset()
                                  .arg(selectedAsset.manifest.name)
                                  .arg(selectedAsset.fileCount)
                                  .arg(savedVersions);
+    if (!versionInventory.problems.isEmpty()) {
+        deleteQuestion += QStringLiteral(
+            "\n\n%1 saved version(s) could not be verified; they will remain inside the asset moved to the recycle bin.")
+                              .arg(versionInventory.problems.size());
+    }
     if (m_noticeDismissCallback) {
         deleteQuestion += QStringLiteral(
             "\n\nThe pending Undo for the last working-copy change will also be discarded.");
@@ -1353,6 +1589,7 @@ void MainWindow::deleteCurrentAsset()
     QString error;
     if (!m_libraryService.deleteAsset(m_libraryRoot,
                                       selectedAsset,
+                                      deletionProof,
                                       m_removalMode,
                                       nullptr,
                                       &error)) {
@@ -1374,10 +1611,11 @@ void MainWindow::createCurrentVersion()
     if (!asset) {
         return;
     }
-    QString currentVersion = asset->manifest.version;
+    const AssetRecord selectedAsset = *asset;
+    QString currentVersion = selectedAsset.manifest.version;
     QString versionsError;
     const QList<VersionInfo> savedVersions = m_libraryService.versions(
-        asset->assetRoot,
+        selectedAsset.assetRoot,
         &versionsError);
     if (versionsError.isEmpty() && !savedVersions.isEmpty()) {
         currentVersion = savedVersions.first().version;
@@ -1401,21 +1639,25 @@ void MainWindow::createCurrentVersion()
     m_undoImportAssets.clear();
     QString error;
     VersionInfo created;
-    if (!m_libraryService.createVersion(*asset, version, &created, &error)) {
+    if (!m_libraryService.createVersion(selectedAsset, version, &created, &error)) {
         QMessageBox::critical(this, QStringLiteral("Cannot save version"), error);
         return;
     }
-    const QString assetId = asset->manifest.id;
+    const QString assetId = selectedAsset.manifest.id;
     m_pendingActivation = ActivationRequest{
         .action = ActivationAction::OpenAsset,
         .value = assetId,
     };
     const QString savedMessage = QStringLiteral("Saved immutable version %1")
                                      .arg(created.version);
+    m_pendingVersionSelection = created.version;
+    m_pendingVersionMessage = created.warning.isEmpty()
+                                  ? savedMessage
+                                  : QString();
     statusBar()->showMessage(savedMessage);
     if (!created.warning.isEmpty()) {
         const QString problem = QStringLiteral("%1: %2")
-                                    .arg(asset->manifest.name,
+                                    .arg(selectedAsset.manifest.name,
                                          created.warning);
         if (!m_lastProblems.contains(problem)) {
             m_lastProblems.append(problem);
@@ -1618,6 +1860,7 @@ void MainWindow::deleteSelectedVersion()
     if (!asset || version.isEmpty()) {
         return;
     }
+    const AssetRecord selectedAsset = *asset;
     if (QMessageBox::question(
             this,
             QStringLiteral("Delete saved version"),
@@ -1634,7 +1877,7 @@ void MainWindow::deleteSelectedVersion()
     m_undoImportAssets.clear();
     QString error;
     DeleteVersionResult deleted;
-    if (!m_libraryService.deleteVersion(*asset,
+    if (!m_libraryService.deleteVersion(selectedAsset,
                                         version,
                                         m_removalMode,
                                         &deleted,
@@ -1642,7 +1885,7 @@ void MainWindow::deleteSelectedVersion()
         for (const QString &path : deleted.retainedPaths) {
             const QString problem = QStringLiteral(
                 "%1: saved-version recovery data remains at %2")
-                                        .arg(asset->manifest.name,
+                                        .arg(selectedAsset.manifest.name,
                                              QDir::toNativeSeparators(path));
             if (!m_lastProblems.contains(problem)) {
                 m_lastProblems.append(problem);
@@ -1650,7 +1893,7 @@ void MainWindow::deleteSelectedVersion()
         }
         if (!deleted.warning.isEmpty()) {
             const QString problem = QStringLiteral("%1: %2")
-                                        .arg(asset->manifest.name,
+                                        .arg(selectedAsset.manifest.name,
                                              deleted.warning);
             if (!m_lastProblems.contains(problem)) {
                 m_lastProblems.append(problem);
@@ -1668,7 +1911,7 @@ void MainWindow::deleteSelectedVersion()
     for (const QString &path : deleted.retainedPaths) {
         const QString problem = QStringLiteral(
             "%1: saved-version transaction data remains at %2")
-                                    .arg(asset->manifest.name,
+                                    .arg(selectedAsset.manifest.name,
                                          QDir::toNativeSeparators(path));
         if (!m_lastProblems.contains(problem)) {
             m_lastProblems.append(problem);
@@ -1676,7 +1919,7 @@ void MainWindow::deleteSelectedVersion()
     }
     if (!deleted.warning.isEmpty()) {
         const QString problem = QStringLiteral("%1: %2")
-                                    .arg(asset->manifest.name,
+                                    .arg(selectedAsset.manifest.name,
                                          deleted.warning);
         if (!m_lastProblems.contains(problem)) {
             m_lastProblems.append(problem);
@@ -1687,7 +1930,7 @@ void MainWindow::deleteSelectedVersion()
     }
     m_pendingActivation = ActivationRequest{
         .action = ActivationAction::OpenAsset,
-        .value = asset->manifest.id,
+        .value = selectedAsset.manifest.id,
     };
     const QString deletedMessage =
         m_removalMode == RemovalMode::MoveToTrash
@@ -1733,15 +1976,30 @@ void MainWindow::restoreSelectedVersion()
 
     const QString recoveryText = QStringLiteral(
         "The current working copy will be kept temporarily so this action can be undone.");
+    QString removedFiles;
+    if (!preview.removedFiles.isEmpty()) {
+        QStringList examples = preview.removedFiles.mid(0, 4);
+        for (QString &path : examples) {
+            path = QDir::toNativeSeparators(path);
+        }
+        removedFiles = QStringLiteral("\nWill remove: %1")
+                           .arg(examples.join(QStringLiteral(", ")));
+        if (preview.removedFiles.size() > examples.size()) {
+            removedFiles += QStringLiteral(" and %1 more")
+                                .arg(preview.removedFiles.size()
+                                     - examples.size());
+        }
+    }
     const QString question = QStringLiteral(
         "Restore saved version %1 to the working copy?\n\n"
-        "Files added: %2\nFiles replaced: %3\nFiles removed: %4\n\n"
-        "%5\nSaved versions will not be changed.")
+        "Files added: %2\nFiles replaced: %3\nFiles removed: %4%5\n\n"
+        "%6\nSaved versions will not be changed.")
                                  .arg(version)
                                  .arg(preview.addedFiles.size())
                                  .arg(preview.replacedFiles.size())
                                  .arg(preview.removedFiles.size())
-                                 .arg(recoveryText);
+                                 .arg(removedFiles,
+                                      recoveryText);
     if (QMessageBox::question(this,
                               QStringLiteral("Restore saved version"),
                               question) != QMessageBox::Yes) {
@@ -1808,6 +2066,66 @@ void MainWindow::openCurrent()
     }
 }
 
+void MainWindow::openVersion(const QString &version)
+{
+    const AssetRecord *asset = currentRecord();
+    if (!asset || version.isEmpty()) {
+        return;
+    }
+    const AssetRecord selectedAsset = *asset;
+    const CopyPlan plan = m_libraryService.copyPlan(selectedAsset, version);
+    if (!plan.ok()) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot open saved version"),
+                              plan.error);
+        return;
+    }
+    auto preview = std::make_unique<QTemporaryDir>(
+        QDir(QDir::tempPath()).absoluteFilePath(
+            QStringLiteral("xips-version-preview-XXXXXX")));
+    if (!preview->isValid()) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot open saved version"),
+                              QStringLiteral("Cannot create a temporary preview directory"));
+        return;
+    }
+    const QString destination = QDir(preview->path()).absoluteFilePath(
+        plan.suggestedName);
+    QString target;
+    QString copyError;
+    if (!m_libraryService.copyVersionPayload(selectedAsset,
+                                              version,
+                                              destination,
+                                              &target,
+                                              &copyError)) {
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot open saved version"),
+                              copyError);
+        return;
+    }
+    const QFileInfo targetInfo(target);
+    if ((!plan.isSingleFile() && !targetInfo.isDir())
+        || (plan.isSingleFile() && !targetInfo.isFile())) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Cannot open saved version"),
+                             QDir::toNativeSeparators(target));
+        return;
+    }
+    setPreviewFilesWritable(preview->path(), false);
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(target))) {
+        setPreviewFilesWritable(preview->path(), true);
+        QMessageBox::warning(this,
+                             QStringLiteral("Cannot open saved version"),
+                             QDir::toNativeSeparators(target));
+        return;
+    }
+    m_versionPreviews.push_back(std::move(preview));
+    statusBar()->showMessage(
+        QStringLiteral("Opened a temporary preview of version %1; edits do not change the saved version")
+            .arg(version),
+        10000);
+}
+
 void MainWindow::openMatchedFile()
 {
     const QString target = m_openMatchedFileAction->data().toString();
@@ -1852,9 +2170,16 @@ void MainWindow::assignNewGroup()
         QStringLiteral("Add to group"),
         QStringLiteral("Group name:"),
         QLineEdit::Normal,
-        currentGroup(),
+        isUngroupedFilter(currentGroup()) ? QString() : currentGroup(),
         &accepted).trimmed();
     if (!accepted || group.isEmpty()) {
+        return;
+    }
+    if (isReservedGroupName(group)) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Reserved group name"),
+            QStringLiteral("'All assets' and 'Ungrouped' are automatic filters. Choose another group name."));
         return;
     }
     if (!clearNotice()) {
@@ -1863,22 +2188,86 @@ void MainWindow::assignNewGroup()
         return;
     }
     m_undoImportAssets.clear();
-    int changed = 0;
+    GroupChangeResult changed;
     QString error;
-    if (!m_libraryService.changeGroupMembership(
-            assets, QString(), group, &changed, &error)) {
-        QMessageBox::critical(this, QStringLiteral("Cannot update groups"), error);
+    const bool complete = m_libraryService.changeGroupMembership(
+        assets, QString(), group, &changed, &error);
+    const int problemsBefore = m_lastProblems.size();
+    recordGroupChangeProblems(changed);
+    if (!complete) {
+        const QString detail = changed.updated > 0
+                                   ? QStringLiteral("%1\n\n%2 asset(s) were updated before the remaining conflicts.")
+                                         .arg(error)
+                                         .arg(changed.updated)
+                                   : error;
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot update all groups"),
+                              detail);
+        m_controller->rebuild();
         return;
     }
     statusBar()->showMessage(
-        QStringLiteral("Added %1 asset(s) to %2").arg(changed).arg(group));
+        QStringLiteral("Added %1 asset(s) to %2")
+            .arg(changed.updated)
+            .arg(group));
+    if (m_lastProblems.size() > problemsBefore) {
+        showPassiveReview(
+            QStringLiteral("Groups were updated; manifest recovery data needs review"));
+    }
+    m_controller->rebuild();
+}
+
+void MainWindow::removeSelectedFromCurrentGroup()
+{
+    const QString group = currentGroup();
+    const QList<AssetRecord> assets = selectedRecords();
+    if (group.isEmpty() || isUngroupedFilter(group)) {
+        statusBar()->showMessage(QStringLiteral("Select a named group first"));
+        return;
+    }
+    if (assets.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Select one or more assets first"));
+        return;
+    }
+    if (!clearNotice()) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot retire the current Undo backup; groups were not changed"));
+        return;
+    }
+    m_undoImportAssets.clear();
+    GroupChangeResult changed;
+    QString error;
+    const bool complete = m_libraryService.changeGroupMembership(
+        assets, group, QString(), &changed, &error);
+    const int problemsBefore = m_lastProblems.size();
+    recordGroupChangeProblems(changed);
+    if (!complete) {
+        const QString detail = changed.updated > 0
+                                   ? QStringLiteral("%1\n\n%2 asset(s) were updated before the remaining conflicts.")
+                                         .arg(error)
+                                         .arg(changed.updated)
+                                   : error;
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot update all groups"),
+                              detail);
+        m_controller->rebuild();
+        return;
+    }
+    statusBar()->showMessage(
+        QStringLiteral("Removed %1 selected asset(s) from %2")
+            .arg(changed.updated)
+            .arg(group));
+    if (m_lastProblems.size() > problemsBefore) {
+        showPassiveReview(
+            QStringLiteral("Groups were updated; manifest recovery data needs review"));
+    }
     m_controller->rebuild();
 }
 
 void MainWindow::renameCurrentGroup()
 {
     const QString oldGroup = currentGroup();
-    if (oldGroup.isEmpty()) {
+    if (oldGroup.isEmpty() || isUngroupedFilter(oldGroup)) {
         statusBar()->showMessage(QStringLiteral("Select a named group first"));
         return;
     }
@@ -1893,28 +2282,51 @@ void MainWindow::renameCurrentGroup()
     if (!accepted || newGroup.isEmpty() || newGroup == oldGroup) {
         return;
     }
+    if (isReservedGroupName(newGroup)) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Reserved group name"),
+            QStringLiteral("'All assets' and 'Ungrouped' are automatic filters. Choose another group name."));
+        return;
+    }
     if (!clearNotice()) {
         statusBar()->showMessage(
             QStringLiteral("Cannot retire the current Undo backup; group was not renamed"));
         return;
     }
     m_undoImportAssets.clear();
-    int changed = 0;
+    GroupChangeResult changed;
     QString error;
-    if (!m_libraryService.changeGroupMembership(
-            m_controller->assets(), oldGroup, newGroup, &changed, &error)) {
-        QMessageBox::critical(this, QStringLiteral("Cannot rename group"), error);
+    const bool complete = m_libraryService.changeGroupMembership(
+        m_controller->assets(), oldGroup, newGroup, &changed, &error);
+    const int problemsBefore = m_lastProblems.size();
+    recordGroupChangeProblems(changed);
+    if (!complete) {
+        const QString detail = changed.updated > 0
+                                   ? QStringLiteral("%1\n\n%2 asset(s) were updated before the remaining conflicts.")
+                                         .arg(error)
+                                         .arg(changed.updated)
+                                   : error;
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot rename group everywhere"),
+                              detail);
+        m_controller->rebuild();
         return;
     }
     statusBar()->showMessage(
-        QStringLiteral("Renamed group for %1 asset(s)").arg(changed));
+        QStringLiteral("Renamed group for %1 asset(s)")
+            .arg(changed.updated));
+    if (m_lastProblems.size() > problemsBefore) {
+        showPassiveReview(
+            QStringLiteral("Groups were updated; manifest recovery data needs review"));
+    }
     m_controller->rebuild();
 }
 
 void MainWindow::removeCurrentGroup()
 {
     const QString group = currentGroup();
-    if (group.isEmpty()) {
+    if (group.isEmpty() || isUngroupedFilter(group)) {
         statusBar()->showMessage(QStringLiteral("Select a named group first"));
         return;
     }
@@ -1932,15 +2344,31 @@ void MainWindow::removeCurrentGroup()
         return;
     }
     m_undoImportAssets.clear();
-    int changed = 0;
+    GroupChangeResult changed;
     QString error;
-    if (!m_libraryService.changeGroupMembership(
-            m_controller->assets(), group, QString(), &changed, &error)) {
-        QMessageBox::critical(this, QStringLiteral("Cannot remove group"), error);
+    const bool complete = m_libraryService.changeGroupMembership(
+        m_controller->assets(), group, QString(), &changed, &error);
+    const int problemsBefore = m_lastProblems.size();
+    recordGroupChangeProblems(changed);
+    if (!complete) {
+        const QString detail = changed.updated > 0
+                                   ? QStringLiteral("%1\n\n%2 asset(s) were updated before the remaining conflicts.")
+                                         .arg(error)
+                                         .arg(changed.updated)
+                                   : error;
+        QMessageBox::critical(this,
+                              QStringLiteral("Cannot remove group everywhere"),
+                              detail);
+        m_controller->rebuild();
         return;
     }
     statusBar()->showMessage(
-        QStringLiteral("Removed group from %1 asset(s)").arg(changed));
+        QStringLiteral("Removed group from %1 asset(s)")
+            .arg(changed.updated));
+    if (m_lastProblems.size() > problemsBefore) {
+        showPassiveReview(
+            QStringLiteral("Groups were updated; manifest recovery data needs review"));
+    }
     m_controller->rebuild();
 }
 
@@ -1956,11 +2384,56 @@ void MainWindow::showProblems()
     m_problemAction->setEnabled(false);
 }
 
+void MainWindow::refreshLibrary()
+{
+    if (m_libraryRoot.isEmpty()) {
+        return;
+    }
+    reportUnfinishedOperationPaths();
+    m_controller->rebuild();
+}
+
 void MainWindow::reportUnfinishedOperationPaths()
 {
+    const int problemsBefore = m_lastProblems.size();
+    const ManifestTransactionRecoveryResult recovery =
+        m_libraryService.recoverManifestTransactions(m_libraryRoot);
+    if (!recovery.fatalError.isEmpty()) {
+        const QString problem = QStringLiteral(
+            "Manifest recovery could not inspect the library: %1")
+                                    .arg(recovery.fatalError);
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+    }
+
+    QSet<QString> reportedRecoveryPaths;
+    for (const ManifestTransactionRecoveryItem &item : recovery.items) {
+        const QFileInfo transaction(item.transactionPath);
+        const bool remains =
+            item.outcome == ManifestTransactionRecoveryOutcome::Retained
+            || transaction.exists() || transaction.isSymLink();
+        if (!remains) {
+            continue;
+        }
+        const QString path = QFileInfo(item.transactionPath).absoluteFilePath();
+        reportedRecoveryPaths.insert(path);
+        const QString problem = QStringLiteral(
+            "Interrupted manifest update needs review at %1: %2")
+                                    .arg(QDir::toNativeSeparators(path),
+                                         item.message);
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+    }
+
     const QStringList paths = AssetScanner::unfinishedOperationPaths(
         m_libraryRoot);
     for (const QString &path : paths) {
+        if (reportedRecoveryPaths.contains(
+                QFileInfo(path).absoluteFilePath())) {
+            continue;
+        }
         const QString problem = QStringLiteral(
             "Unfinished xIPs operation data remains at %1")
                                     .arg(QDir::toNativeSeparators(path));
@@ -1968,13 +2441,64 @@ void MainWindow::reportUnfinishedOperationPaths()
             m_lastProblems.append(problem);
         }
     }
-    if (paths.isEmpty()) {
+
+    const int recovered = recovery.restoredOriginal
+                          + recovery.cleanedExpected
+                          + recovery.cleanedReplacement;
+    const int newProblems = m_lastProblems.size() - problemsBefore;
+    if (newProblems <= 0) {
+        if (recovered > 0) {
+            const QString message = QStringLiteral(
+                "Resolved %1 interrupted manifest update(s); verified asset metadata was preserved")
+                                        .arg(recovered);
+            if (hasPendingUndo()) {
+                statusBar()->showMessage(message, 10000);
+            } else {
+                showNotice(message);
+            }
+        }
         return;
     }
     m_problemAction->setEnabled(true);
-    showPassiveReview(
-        QStringLiteral("%1 unfinished xIPs operation path(s) need review")
-            .arg(paths.size()));
+    const QString message = QStringLiteral(
+        "%1 unfinished xIPs operation item(s) need review")
+                                .arg(newProblems);
+    if (hasPendingUndo()) {
+        statusBar()->showMessage(message, 10000);
+    } else {
+        showPassiveReview(message);
+    }
+}
+
+void MainWindow::recordGroupChangeProblems(const GroupChangeResult &result)
+{
+    for (const GroupChangeItemResult &item : result.items) {
+        if (item.outcome != GroupChangeOutcome::Conflict
+            && item.outcome != GroupChangeOutcome::Failed
+            && item.warning.isEmpty() && item.retainedPath.isEmpty()) {
+            continue;
+        }
+        QString detail = !item.message.isEmpty() ? item.message : item.warning;
+        if (detail.isEmpty()) {
+            detail = QStringLiteral("Group metadata could not be updated safely");
+        }
+        if (!item.retainedPath.isEmpty()
+            && !detail.contains(item.retainedPath, Qt::CaseInsensitive)) {
+            detail += QStringLiteral("; recovery data remains at %1")
+                          .arg(QDir::toNativeSeparators(item.retainedPath));
+        }
+        const QString problem = QStringLiteral("%1: %2")
+                                    .arg(item.assetName.isEmpty()
+                                             ? item.assetId
+                                             : item.assetName,
+                                         detail);
+        if (!m_lastProblems.contains(problem)) {
+            m_lastProblems.append(problem);
+        }
+    }
+    if (!m_lastProblems.isEmpty()) {
+        m_problemAction->setEnabled(true);
+    }
 }
 
 void MainWindow::recordUpdateProblems(const AssetRecord &asset,

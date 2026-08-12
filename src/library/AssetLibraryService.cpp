@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QMap>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
@@ -1278,6 +1279,155 @@ bool removeExactTree(const QString &root,
     return QDir().rmdir(root);
 }
 
+struct AssetTreeProof {
+    QString root;
+    QString assetId;
+    QString fingerprint;
+    QStringList entries;
+};
+
+bool verifyAssetTreeProofAtRoot(const QString &root,
+                                const QString &expectedAssetId,
+                                AssetTreeProof *proof,
+                                QString *error)
+{
+    if (proof) {
+        *proof = {};
+    }
+    const QString normalizedRoot = files::normalizedAbsolute(root);
+    const QFileInfo rootInfo(normalizedRoot);
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
+        return fail(error,
+                    QStringLiteral("Asset deletion proof root is invalid or linked: %1")
+                        .arg(normalizedRoot));
+    }
+
+    const QString manifestPath = QDir(normalizedRoot).absoluteFilePath(
+        QStringLiteral(".xips.json"));
+    const ManifestService manifestService;
+    const ManifestLoadResult initialManifest = manifestService.load(manifestPath);
+    if (!initialManifest.ok()
+        || initialManifest.manifest->id != expectedAssetId) {
+        return fail(error,
+                    QStringLiteral(
+                        "The asset manifest changed before its deletion proof could be recorded"));
+    }
+    const QByteArray initialManifestCanonical = json::canonicalJson(
+        manifestService.toJson(*initialManifest.manifest));
+
+    QStringList initialEntries;
+    if (!collectSnapshotEntries(normalizedRoot,
+                                normalizedRoot,
+                                initialEntries,
+                                error)) {
+        return false;
+    }
+    std::sort(initialEntries.begin(), initialEntries.end());
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(QByteArrayLiteral("xips-asset-delete-v1"));
+    const auto addSizedData = [&hash](const QByteArray &data) {
+        hash.addData(QByteArray::number(static_cast<qlonglong>(data.size())));
+        hash.addData(QByteArrayView(":", 1));
+        hash.addData(data);
+    };
+    for (const QString &entry : initialEntries) {
+        hash.addData(QByteArrayView("\0entry\0", 7));
+        addSizedData(entry.toUtf8());
+        if (!entry.startsWith(QStringLiteral("f:"))) {
+            continue;
+        }
+
+        const QString path = QDir(normalizedRoot).absoluteFilePath(entry.mid(2));
+        const QFileInfo before(path);
+        if (!before.isFile() || files::isLinkLike(before)) {
+            return fail(error,
+                        QStringLiteral(
+                            "Asset data changed while its deletion proof was being recorded: %1")
+                            .arg(path));
+        }
+        QFile file(before.absoluteFilePath());
+        if (!file.open(QIODevice::ReadOnly)) {
+            return fail(error,
+                        QStringLiteral("Cannot read asset data for deletion proof: %1")
+                            .arg(before.absoluteFilePath()));
+        }
+        const qint64 expectedSize = file.size();
+        const QDateTime expectedModified = file.fileTime(
+            QFileDevice::FileModificationTime);
+        if (expectedSize < 0) {
+            return fail(error,
+                        QStringLiteral(
+                            "Cannot determine asset file size for deletion proof: %1")
+                            .arg(before.absoluteFilePath()));
+        }
+        hash.addData(QByteArrayView("\0data\0", 6));
+        hash.addData(QByteArray::number(expectedSize));
+        hash.addData(QByteArrayView(":", 1));
+        qint64 bytesRead = 0;
+        while (!file.atEnd()) {
+            const QByteArray chunk = file.read(1024 * 1024);
+            if (chunk.isEmpty() && file.error() != QFileDevice::NoError) {
+                return fail(error,
+                            QStringLiteral(
+                                "Cannot finish reading asset data for deletion proof: %1")
+                                .arg(before.absoluteFilePath()));
+            }
+            hash.addData(chunk);
+            bytesRead += static_cast<qint64>(chunk.size());
+        }
+        const QFileInfo after(path);
+        if (file.error() != QFileDevice::NoError
+            || bytesRead != expectedSize || !after.isFile()
+            || files::isLinkLike(after) || after.size() != expectedSize
+            || after.fileTime(QFileDevice::FileModificationTime)
+                   != expectedModified) {
+            return fail(error,
+                        QStringLiteral(
+                            "Asset data changed while its deletion proof was being recorded: %1")
+                            .arg(before.absoluteFilePath()));
+        }
+    }
+
+    QStringList confirmedEntries;
+    if (!collectSnapshotEntries(normalizedRoot,
+                                normalizedRoot,
+                                confirmedEntries,
+                                error)) {
+        return false;
+    }
+    std::sort(confirmedEntries.begin(), confirmedEntries.end());
+    const ManifestLoadResult confirmedManifest = manifestService.load(
+        manifestPath);
+    if (confirmedEntries != initialEntries || !confirmedManifest.ok()
+        || confirmedManifest.manifest->id != expectedAssetId
+        || json::canonicalJson(
+               manifestService.toJson(*confirmedManifest.manifest))
+               != initialManifestCanonical) {
+        return fail(error,
+                    QStringLiteral(
+                        "The asset changed while its deletion proof was being recorded"));
+    }
+
+    if (proof) {
+        proof->root = normalizedRoot;
+        proof->assetId = expectedAssetId;
+        proof->fingerprint = QStringLiteral("sha256:")
+                             + QString::fromLatin1(hash.result().toHex());
+        proof->entries = confirmedEntries;
+    }
+    return true;
+}
+
+bool sameAssetTreeContentProof(const AssetTreeProof &left,
+                               const AssetTreeProof &right)
+{
+    return !left.fingerprint.isEmpty()
+           && left.assetId == right.assetId
+           && left.fingerprint == right.fingerprint
+           && left.entries == right.entries;
+}
+
 bool removeExpectedEmptyDirectories(const QString &root,
                                     const QStringList &originalEntries)
 {
@@ -1554,6 +1704,1448 @@ bool verifyCopyPlanSource(const AssetRecord &asset,
     return true;
 }
 
+constexpr auto ManifestTransactionOwner = "xips-manifest-cas";
+constexpr auto ManifestTransactionFileName = "transaction.json";
+constexpr auto ManifestTransactionNextFileName = "next.xips.json";
+constexpr auto ManifestTransactionOriginalFileName = "original.xips.json";
+
+struct ManifestTransactionRecord {
+    QString operation;
+    QString transactionId;
+    QString assetDirectory;
+    QString assetId;
+    QString expectedCanonicalSha256;
+    QString replacementCanonicalSha256;
+};
+
+bool supportedManifestTransactionOperation(const QString &operation)
+{
+    return operation == QStringLiteral("metadata")
+           || operation == QStringLiteral("group-membership")
+           || operation == QStringLiteral("version-marker");
+}
+
+QString canonicalSha256(const QByteArray &canonical)
+{
+    return QString::fromLatin1(
+        QCryptographicHash::hash(canonical, QCryptographicHash::Sha256)
+            .toHex());
+}
+
+QString manifestCanonicalSha256(const Manifest &manifest)
+{
+    const ManifestService service;
+    return canonicalSha256(
+        json::canonicalJson(service.toJson(manifest)));
+}
+
+bool validCanonicalSha256(const QString &value)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^[0-9a-f]{64}$"));
+    return pattern.match(value).hasMatch();
+}
+
+bool validManifestTransactionId(const QString &value)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral(
+            "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+        QRegularExpression::CaseInsensitiveOption);
+    return pattern.match(value).hasMatch();
+}
+
+bool validAssetDirectoryName(const QString &value)
+{
+    return !value.isEmpty() && value != QStringLiteral(".")
+           && value != QStringLiteral("..")
+           && !value.contains(u'/') && !value.contains(u'\\')
+           && QFileInfo(value).fileName() == value;
+}
+
+QJsonObject manifestTransactionObject(
+    const ManifestTransactionRecord &record)
+{
+    return {
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("owner"), QString::fromLatin1(ManifestTransactionOwner)},
+        {QStringLiteral("operation"), record.operation},
+        {QStringLiteral("transactionId"), record.transactionId},
+        {QStringLiteral("assetDirectory"), record.assetDirectory},
+        {QStringLiteral("assetId"), record.assetId},
+        {QStringLiteral("expectedCanonicalSha256"),
+         record.expectedCanonicalSha256},
+        {QStringLiteral("replacementCanonicalSha256"),
+         record.replacementCanonicalSha256},
+    };
+}
+
+bool sameManifestTransactionRecord(
+    const ManifestTransactionRecord &left,
+    const ManifestTransactionRecord &right)
+{
+    return left.operation == right.operation
+           && left.transactionId.compare(right.transactionId,
+                                         Qt::CaseInsensitive)
+                  == 0
+           && left.assetDirectory == right.assetDirectory
+           && left.assetId == right.assetId
+           && left.expectedCanonicalSha256
+                  == right.expectedCanonicalSha256
+           && left.replacementCanonicalSha256
+                  == right.replacementCanonicalSha256;
+}
+
+bool writeManifestTransactionRecord(
+    const QString &path,
+    const ManifestTransactionRecord &record,
+    QString *error)
+{
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return fail(error,
+                    QStringLiteral("Cannot create manifest transaction record: %1")
+                        .arg(file.errorString()));
+    }
+    const QByteArray data = QJsonDocument(manifestTransactionObject(record))
+                                .toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size() || !file.commit()) {
+        return fail(error,
+                    QStringLiteral("Cannot publish manifest transaction record: %1")
+                        .arg(file.errorString()));
+    }
+    return true;
+}
+
+bool readManifestTransactionRecord(
+    const QString &path,
+    ManifestTransactionRecord *record,
+    QString *error)
+{
+    if (record) {
+        *record = {};
+    }
+    QByteArray contents;
+    if (!readStableFile(path, &contents, error)) {
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(contents,
+                                                            &parseError);
+    if (parseError.error != QJsonParseError::NoError
+        || !document.isObject()) {
+        return fail(error,
+                    QStringLiteral("Invalid manifest transaction record"));
+    }
+    const QJsonObject object = document.object();
+    const QJsonValue schema = object.value(QStringLiteral("schemaVersion"));
+    const QJsonValue owner = object.value(QStringLiteral("owner"));
+    const QJsonValue operation = object.value(QStringLiteral("operation"));
+    const QJsonValue transactionId = object.value(
+        QStringLiteral("transactionId"));
+    const QJsonValue assetDirectory = object.value(
+        QStringLiteral("assetDirectory"));
+    const QJsonValue assetId = object.value(QStringLiteral("assetId"));
+    const QJsonValue expectedHash = object.value(
+        QStringLiteral("expectedCanonicalSha256"));
+    const QJsonValue replacementHash = object.value(
+        QStringLiteral("replacementCanonicalSha256"));
+    if (object.size() != 8 || !schema.isDouble()
+        || schema.toDouble() != 1.0 || !owner.isString()
+        || owner.toString() != QString::fromLatin1(ManifestTransactionOwner)
+        || !operation.isString() || !transactionId.isString()
+        || !assetDirectory.isString() || !assetId.isString()
+        || !expectedHash.isString() || !replacementHash.isString()) {
+        return fail(error,
+                    QStringLiteral("Incomplete manifest transaction record"));
+    }
+    ManifestTransactionRecord parsed;
+    parsed.operation = operation.toString();
+    parsed.transactionId = transactionId.toString();
+    parsed.assetDirectory = assetDirectory.toString();
+    parsed.assetId = assetId.toString();
+    parsed.expectedCanonicalSha256 = expectedHash.toString();
+    parsed.replacementCanonicalSha256 = replacementHash.toString();
+    if (!supportedManifestTransactionOperation(parsed.operation)
+        || !validManifestTransactionId(parsed.transactionId)
+        || !validAssetDirectoryName(parsed.assetDirectory)
+        || parsed.assetId.isEmpty()
+        || parsed.assetId != parsed.assetId.trimmed()
+        || !validCanonicalSha256(parsed.expectedCanonicalSha256)
+        || !validCanonicalSha256(parsed.replacementCanonicalSha256)) {
+        return fail(error,
+                    QStringLiteral("Invalid manifest transaction fields"));
+    }
+    if (record) {
+        *record = parsed;
+    }
+    return true;
+}
+
+bool manifestTransactionName(const QString &name,
+                             QString *operation,
+                             QString *transactionId)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral(
+            "^\\.xips-create-(metadata|group-membership|version-marker)-"
+            "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch match = pattern.match(name);
+    if (!match.hasMatch()) {
+        return false;
+    }
+    if (operation) {
+        *operation = match.captured(1).toLower();
+    }
+    if (transactionId) {
+        *transactionId = match.captured(2);
+    }
+    return true;
+}
+
+bool manifestTransactionDirectoryHasKnownEntries(const QString &root,
+                                                 QString *error)
+{
+    const QFileInfo rootInfo(root);
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
+        return fail(error,
+                    QStringLiteral("Manifest transaction path is not a regular directory"));
+    }
+    const QStringList entries = QDir(root).entryList(
+        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden
+            | QDir::System,
+        QDir::Name);
+    const QSet<QString> allowed{
+        QString::fromLatin1(ManifestTransactionFileName),
+        QString::fromLatin1(ManifestTransactionNextFileName),
+        QString::fromLatin1(ManifestTransactionOriginalFileName),
+    };
+    for (const QString &entry : entries) {
+        if (!allowed.contains(entry)) {
+            return fail(error,
+                        QStringLiteral("Manifest transaction contains unexpected data: %1")
+                            .arg(entry));
+        }
+    }
+    if (!entries.contains(
+            QString::fromLatin1(ManifestTransactionFileName))) {
+        return fail(error,
+                    QStringLiteral("Manifest transaction record is missing"));
+    }
+    return true;
+}
+
+bool readManifestHashStable(const QString &path,
+                            const QString &expectedAssetId,
+                            Manifest *manifest,
+                            QString *hash,
+                            QString *error)
+{
+    QByteArray contents;
+    if (!readStableFile(path, &contents, error)) {
+        return false;
+    }
+    const ManifestLoadResult loaded = ManifestService().parse(contents);
+    if (!loaded.ok()
+        || (!expectedAssetId.isEmpty()
+            && loaded.manifest->id != expectedAssetId)) {
+        return fail(error,
+                    QStringLiteral("Manifest transaction file does not match its asset"));
+    }
+    if (manifest) {
+        *manifest = *loaded.manifest;
+    }
+    if (hash) {
+        *hash = manifestCanonicalSha256(*loaded.manifest);
+    }
+    return true;
+}
+
+bool validateManifestTransactionContents(
+    const QString &root,
+    const ManifestTransactionRecord &expectedRecord,
+    QString *error)
+{
+    if (!manifestTransactionDirectoryHasKnownEntries(root, error)) {
+        return false;
+    }
+    ManifestTransactionRecord confirmed;
+    if (!readManifestTransactionRecord(
+            QDir(root).absoluteFilePath(
+                QString::fromLatin1(ManifestTransactionFileName)),
+            &confirmed,
+            error)
+        || !sameManifestTransactionRecord(expectedRecord, confirmed)) {
+        return fail(error,
+                    QStringLiteral("Manifest transaction record changed"));
+    }
+    return true;
+}
+
+bool validateManifestTransactionRoot(
+    const QString &operationRoot,
+    const QString &expectedParent,
+    const ManifestTransactionRecord &expectedRecord,
+    QString *error)
+{
+    const QString root = files::normalizedAbsolute(operationRoot);
+    const QString parent = files::normalizedAbsolute(expectedParent);
+    const QString actualParent = files::normalizedAbsolute(
+        QFileInfo(root).absolutePath());
+    QString operation;
+    QString transactionId;
+    if (!files::isWithin(root, parent)
+        || !files::isWithin(parent, actualParent)
+        || !files::isWithin(actualParent, parent)
+        || !manifestTransactionName(QFileInfo(root).fileName(),
+                                    &operation,
+                                    &transactionId)
+        || operation != expectedRecord.operation
+        || transactionId.compare(expectedRecord.transactionId,
+                                 Qt::CaseInsensitive)
+               != 0) {
+        if (error && error->isEmpty()) {
+            *error = QStringLiteral("Manifest transaction path does not match its record");
+        }
+        return false;
+    }
+    return validateManifestTransactionContents(root,
+                                               expectedRecord,
+                                               error);
+}
+
+bool retireVerifiedManifestTransaction(
+    const QString &operationRoot,
+    const QString &expectedParent,
+    const ManifestTransactionRecord &record,
+    const QString &liveManifestPath,
+    const QString &anchoredLiveAssetId,
+    const QString &anchoredLiveHash,
+    QString *retainedPath,
+    QString *error
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    , const WorkingCopyTestHook &testHook = {}
+#endif
+    )
+{
+    if (retainedPath) {
+        retainedPath->clear();
+    }
+    const QString root = files::normalizedAbsolute(operationRoot);
+    const QString parent = files::normalizedAbsolute(expectedParent);
+    const auto retain = [&](const QString &path,
+                            const QString &message) {
+        if (retainedPath) {
+            *retainedPath = path;
+        }
+        return fail(error, message);
+    };
+    if (!validateManifestTransactionRoot(operationRoot,
+                                         expectedParent,
+                                         record,
+                                         error)) {
+        if (retainedPath) {
+            *retainedPath = root;
+        }
+        return false;
+    }
+    const QString nextPath = QDir(root).absoluteFilePath(
+        QString::fromLatin1(ManifestTransactionNextFileName));
+    const QString originalPath = QDir(root).absoluteFilePath(
+        QString::fromLatin1(ManifestTransactionOriginalFileName));
+    const auto verifyOptionalManifest = [&](const QString &path,
+                                            const QString &expectedHash,
+                                            bool *present) {
+        if (present) {
+            *present = false;
+        }
+        const QFileInfo info(path);
+        if (!info.exists() && !files::isLinkLike(info)) {
+            return true;
+        }
+        QString hash;
+        QString verificationError;
+        if (!readManifestHashStable(path,
+                                    record.assetId,
+                                    nullptr,
+                                    &hash,
+                                    &verificationError)
+            || hash != expectedHash) {
+            return fail(error,
+                        verificationError.isEmpty()
+                            ? QStringLiteral("Manifest transaction data changed before retirement")
+                            : verificationError);
+        }
+        if (present) {
+            *present = true;
+        }
+        return true;
+    };
+    bool hasNext = false;
+    bool hasOriginal = false;
+    if (!verifyOptionalManifest(nextPath,
+                                record.replacementCanonicalSha256,
+                                &hasNext)
+        || !verifyOptionalManifest(originalPath,
+                                   record.expectedCanonicalSha256,
+                                   &hasOriginal)) {
+        if (retainedPath) {
+            *retainedPath = root;
+        }
+        return false;
+    }
+    Manifest anchoredLive;
+    QString confirmedLiveHash;
+    QString liveError;
+    if (!validCanonicalSha256(anchoredLiveHash)
+        || !readManifestHashStable(liveManifestPath,
+                                   anchoredLiveAssetId,
+                                   &anchoredLive,
+                                   &confirmedLiveHash,
+                                   &liveError)
+        || confirmedLiveHash != anchoredLiveHash) {
+        return retain(root,
+                      liveError.isEmpty()
+                          ? QStringLiteral("Live manifest changed before transaction retirement")
+                          : liveError);
+    }
+
+    const QString originalName = QFileInfo(root).fileName();
+    const QString retireName = QStringLiteral(".xips-create-retire-%1")
+                                   .arg(QUuid::createUuid().toString(
+                                       QUuid::WithoutBraces));
+    const QString isolatedRoot = QDir(parent).absoluteFilePath(retireName);
+    QDir parentDirectory(parent);
+    if (QFileInfo::exists(isolatedRoot)
+        || !parentDirectory.rename(originalName, retireName)) {
+        return retain(root,
+                      QStringLiteral("Verified manifest transaction could not be isolated for retirement"));
+    }
+    const auto restoreIsolation = [&]() {
+        if (QFileInfo::exists(root)) {
+            return false;
+        }
+        return parentDirectory.rename(retireName, originalName);
+    };
+    const auto retainAfterIsolation = [&](const QString &message) {
+        const bool restored = restoreIsolation();
+        return retain(restored ? root : isolatedRoot,
+                      QStringLiteral("%1; recovery data remains at %2")
+                          .arg(message,
+                               restored ? root : isolatedRoot));
+    };
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    if (testHook) {
+        testHook(
+            WorkingCopyTestPoint::ManifestTransactionIsolatedBeforeRetireLiveVerification,
+            isolatedRoot);
+    }
+#endif
+
+    const QString isolatedNext = QDir(isolatedRoot).absoluteFilePath(
+        QString::fromLatin1(ManifestTransactionNextFileName));
+    const QString isolatedOriginal = QDir(isolatedRoot).absoluteFilePath(
+        QString::fromLatin1(ManifestTransactionOriginalFileName));
+    bool isolatedHasNext = false;
+    bool isolatedHasOriginal = false;
+    if (!validateManifestTransactionContents(isolatedRoot, record, error)
+        || !verifyOptionalManifest(isolatedNext,
+                                   record.replacementCanonicalSha256,
+                                   &isolatedHasNext)
+        || !verifyOptionalManifest(isolatedOriginal,
+                                   record.expectedCanonicalSha256,
+                                   &isolatedHasOriginal)
+        || isolatedHasNext != hasNext
+        || isolatedHasOriginal != hasOriginal) {
+        const QString message = error && !error->isEmpty()
+                                    ? *error
+                                    : QStringLiteral("Isolated manifest transaction changed before retirement");
+        return retainAfterIsolation(message);
+    }
+    liveError.clear();
+    confirmedLiveHash.clear();
+    if (!readManifestHashStable(liveManifestPath,
+                                anchoredLiveAssetId,
+                                nullptr,
+                                &confirmedLiveHash,
+                                &liveError)
+        || confirmedLiveHash != anchoredLiveHash) {
+        return retainAfterIsolation(
+            liveError.isEmpty()
+                ? QStringLiteral("Live manifest changed after transaction isolation")
+                : liveError);
+    }
+
+    const QString isolatedRecord = QDir(isolatedRoot).absoluteFilePath(
+        QString::fromLatin1(ManifestTransactionFileName));
+    if ((hasNext && !QFile::remove(isolatedNext))
+        || (hasOriginal && !QFile::remove(isolatedOriginal))
+        || !QFile::remove(isolatedRecord)
+        || !QDir().rmdir(isolatedRoot)) {
+        return retain(isolatedRoot,
+                      QStringLiteral("Manifest transaction could not be completely retired; recovery data remains at %1")
+                          .arg(isolatedRoot));
+    }
+    return true;
+}
+
+void collectManifestTransactionDirectories(const QString &directory,
+                                           QStringList *transactions)
+{
+    if (!transactions) {
+        return;
+    }
+    const QFileInfo directoryInfo(directory);
+    if (!directoryInfo.isDir() || files::isLinkLike(directoryInfo)) {
+        return;
+    }
+    const QFileInfoList entries = QDir(directory).entryInfoList(
+        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden
+            | QDir::System,
+        QDir::Name);
+    for (const QFileInfo &entry : entries) {
+        QString operation;
+        QString transactionId;
+        if (manifestTransactionName(entry.fileName(),
+                                    &operation,
+                                    &transactionId)) {
+            transactions->append(files::normalizedAbsolute(
+                entry.absoluteFilePath()));
+            continue;
+        }
+        if (!entry.isDir() || files::isLinkLike(entry)) {
+            continue;
+        }
+        if (files::isIgnoredDirectory(entry.fileName())) {
+            continue;
+        }
+        const QFileInfo manifestInfo(QDir(entry.absoluteFilePath())
+                                         .absoluteFilePath(
+                                             QStringLiteral(".xips.json")));
+        if (manifestInfo.exists() || files::isLinkLike(manifestInfo)) {
+            continue;
+        }
+        collectManifestTransactionDirectories(entry.absoluteFilePath(),
+                                              transactions);
+    }
+}
+
+QString manifestRecoveryPathKey(const QString &path)
+{
+    const QString normalized = QDir::fromNativeSeparators(
+        files::normalizedAbsolute(path));
+#ifdef Q_OS_WIN
+    return normalized.toCaseFolded();
+#else
+    return normalized;
+#endif
+}
+
+struct VerifiedManifestTransaction {
+    ManifestTransactionRecord record;
+    ManifestTransactionRecoveryItem item;
+    QString parent;
+    QString nextPath;
+    QString originalPath;
+    bool hasNext = false;
+    bool hasOriginal = false;
+};
+
+bool verifyOptionalTransactionManifest(const QString &path,
+                                       const QString &assetId,
+                                       const QString &expectedHash,
+                                       bool *present,
+                                       QString *error)
+{
+    if (present) {
+        *present = false;
+    }
+    const QFileInfo info(path);
+    if (!info.exists() && !files::isLinkLike(info)) {
+        return true;
+    }
+    QString actualHash;
+    if (!readManifestHashStable(path,
+                                assetId,
+                                nullptr,
+                                &actualHash,
+                                error)
+        || actualHash != expectedHash) {
+        return fail(error,
+                    QStringLiteral(
+                        "Manifest transaction data does not match its recorded hash"));
+    }
+    if (present) {
+        *present = true;
+    }
+    return true;
+}
+
+bool reverifyManifestTransaction(const VerifiedManifestTransaction &candidate,
+                                 QString *error)
+{
+    if (!validateManifestTransactionRoot(candidate.item.transactionPath,
+                                         candidate.parent,
+                                         candidate.record,
+                                         error)) {
+        return false;
+    }
+    bool hasNext = false;
+    bool hasOriginal = false;
+    if (!verifyOptionalTransactionManifest(
+            candidate.nextPath,
+            candidate.record.assetId,
+            candidate.record.replacementCanonicalSha256,
+            &hasNext,
+            error)
+        || !verifyOptionalTransactionManifest(
+            candidate.originalPath,
+            candidate.record.assetId,
+            candidate.record.expectedCanonicalSha256,
+            &hasOriginal,
+            error)
+        || hasNext != candidate.hasNext
+        || hasOriginal != candidate.hasOriginal) {
+        return fail(error,
+                    QStringLiteral(
+                        "Manifest transaction changed during recovery"));
+    }
+    return true;
+}
+
+ManifestTransactionRecoveryResult recoverManifestTransactionsGrouped(
+    const QString &libraryRoot
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    , const WorkingCopyTestHook &testHook = {}
+#endif
+    )
+{
+    ManifestTransactionRecoveryResult result;
+    const QString library = files::normalizedAbsolute(libraryRoot);
+    const QFileInfo libraryInfo(library);
+    if (!libraryInfo.exists()) {
+        return result;
+    }
+    if (!libraryInfo.isDir() || files::isLinkLike(libraryInfo)) {
+        result.fatalError = QStringLiteral(
+            "The library path is not a regular directory");
+        return result;
+    }
+
+    const auto appendRetained = [&](ManifestTransactionRecoveryItem item,
+                                    const QString &message) {
+        item.outcome = ManifestTransactionRecoveryOutcome::Retained;
+        item.message = message;
+        ++result.retained;
+        result.items.append(item);
+    };
+
+    QStringList transactionRoots;
+    collectManifestTransactionDirectories(library, &transactionRoots);
+    QMap<QString, QList<VerifiedManifestTransaction>> byAssetRoot;
+    QSet<QString> blockedParents;
+    QSet<QString> blockedAssetRoots;
+    for (const QString &transactionRoot : transactionRoots) {
+        VerifiedManifestTransaction candidate;
+        candidate.item.transactionPath = transactionRoot;
+        const QFileInfo transactionInfo(transactionRoot);
+        QString operation;
+        QString transactionId;
+        manifestTransactionName(transactionInfo.fileName(),
+                                &operation,
+                                &transactionId);
+        candidate.parent = files::normalizedAbsolute(
+            transactionInfo.absolutePath());
+        if (!files::isWithin(candidate.parent, library)) {
+            appendRetained(candidate.item,
+                           QStringLiteral(
+                               "Manifest transaction is outside the library boundary"));
+            continue;
+        }
+        if (!transactionInfo.isDir()
+            || files::isLinkLike(transactionInfo)) {
+            blockedParents.insert(manifestRecoveryPathKey(candidate.parent));
+            appendRetained(candidate.item,
+                           QStringLiteral(
+                               "Manifest transaction path is linked or is not a directory"));
+            continue;
+        }
+
+        QString verificationError;
+        const QString recordPath = QDir(transactionRoot).absoluteFilePath(
+            QString::fromLatin1(ManifestTransactionFileName));
+        if (!readManifestTransactionRecord(recordPath,
+                                           &candidate.record,
+                                           &verificationError)) {
+            blockedParents.insert(manifestRecoveryPathKey(candidate.parent));
+            appendRetained(candidate.item,
+                           verificationError.isEmpty()
+                               ? QStringLiteral(
+                                     "Manifest transaction record cannot be parsed safely")
+                               : verificationError);
+            continue;
+        }
+
+        candidate.item.assetId = candidate.record.assetId;
+        candidate.item.assetRoot = files::normalizedAbsolute(
+            QDir(candidate.parent).absoluteFilePath(
+                candidate.record.assetDirectory));
+        const QFileInfo assetInfo(candidate.item.assetRoot);
+        const QString targetParent = files::normalizedAbsolute(
+            assetInfo.absolutePath());
+        const bool sameParent = files::isWithin(targetParent,
+                                                candidate.parent)
+                                && files::isWithin(candidate.parent,
+                                                   targetParent);
+        const bool resolvedAssetRoot = sameParent
+                                       && files::isWithin(
+                                           candidate.item.assetRoot,
+                                           library)
+                                       && candidate.record.assetDirectory
+                                              != transactionInfo.fileName();
+        if (!resolvedAssetRoot) {
+            blockedParents.insert(manifestRecoveryPathKey(candidate.parent));
+            appendRetained(candidate.item,
+                           QStringLiteral(
+                               "Manifest transaction target is not a sibling regular asset directory"));
+            continue;
+        }
+        if (candidate.record.operation != operation
+            || candidate.record.transactionId.compare(transactionId,
+                                                       Qt::CaseInsensitive)
+                   != 0
+            || !validateManifestTransactionRoot(transactionRoot,
+                                                candidate.parent,
+                                                candidate.record,
+                                                &verificationError)
+            || !assetInfo.isDir() || files::isLinkLike(assetInfo)) {
+            blockedAssetRoots.insert(
+                manifestRecoveryPathKey(candidate.item.assetRoot));
+            appendRetained(candidate.item,
+                           verificationError.isEmpty()
+                               ? QStringLiteral(
+                                     "Manifest transaction validation failed after resolving its asset")
+                               : verificationError);
+            continue;
+        }
+
+        candidate.nextPath = QDir(transactionRoot).absoluteFilePath(
+            QString::fromLatin1(ManifestTransactionNextFileName));
+        candidate.originalPath = QDir(transactionRoot).absoluteFilePath(
+            QString::fromLatin1(ManifestTransactionOriginalFileName));
+        verificationError.clear();
+        if (!verifyOptionalTransactionManifest(
+                candidate.nextPath,
+                candidate.record.assetId,
+                candidate.record.replacementCanonicalSha256,
+                &candidate.hasNext,
+                &verificationError)
+            || !verifyOptionalTransactionManifest(
+                candidate.originalPath,
+                candidate.record.assetId,
+                candidate.record.expectedCanonicalSha256,
+                &candidate.hasOriginal,
+                &verificationError)) {
+            blockedAssetRoots.insert(
+                manifestRecoveryPathKey(candidate.item.assetRoot));
+            appendRetained(candidate.item,
+                           verificationError.isEmpty()
+                               ? QStringLiteral(
+                                     "Manifest transaction data could not be verified")
+                               : verificationError);
+            continue;
+        }
+        byAssetRoot[manifestRecoveryPathKey(candidate.item.assetRoot)]
+            .append(candidate);
+    }
+
+    for (auto groupIt = byAssetRoot.begin();
+         groupIt != byAssetRoot.end();
+         ++groupIt) {
+        QList<VerifiedManifestTransaction> &candidates = groupIt.value();
+        const bool parentBlocked = !candidates.isEmpty()
+                                   && blockedParents.contains(
+                                       manifestRecoveryPathKey(
+                                           candidates.first().parent));
+        if (parentBlocked || blockedAssetRoots.contains(groupIt.key())) {
+            for (const VerifiedManifestTransaction &candidate :
+                 std::as_const(candidates)) {
+                appendRetained(
+                    candidate.item,
+                    QStringLiteral(
+                        "Automatic recovery is blocked by another unverified transaction for this asset boundary"));
+            }
+            continue;
+        }
+        QString preflightError;
+        bool preflightValid = true;
+        for (const VerifiedManifestTransaction &candidate :
+             std::as_const(candidates)) {
+            preflightError.clear();
+            if (!reverifyManifestTransaction(candidate,
+                                             &preflightError)) {
+                preflightValid = false;
+                break;
+            }
+        }
+        if (!preflightValid) {
+            for (const VerifiedManifestTransaction &candidate :
+                 std::as_const(candidates)) {
+                appendRetained(
+                    candidate.item,
+                    preflightError.isEmpty()
+                        ? QStringLiteral(
+                              "A transaction changed during recovery preflight; all recovery data was preserved")
+                        : preflightError);
+            }
+            continue;
+        }
+        const QString livePath = QDir(candidates.first().item.assetRoot)
+                                     .absoluteFilePath(
+            QStringLiteral(".xips.json"));
+        const QFileInfo initialLiveInfo(livePath);
+        const bool liveWasMissing = !initialLiveInfo.exists()
+                                    && !files::isLinkLike(initialLiveInfo);
+        int restoredTerminal = -1;
+        Manifest liveManifest;
+        QString liveHash;
+        QString groupError;
+
+        if (liveWasMissing) {
+            bool linear = !candidates.isEmpty();
+            QString chainError;
+            QMap<QString, int> outgoing;
+            QMap<QString, int> incoming;
+            QSet<QString> nodes;
+            const QString chainAssetId = candidates.isEmpty()
+                                             ? QString()
+                                             : candidates.first().record.assetId;
+            for (int index = 0; index < candidates.size(); ++index) {
+                const VerifiedManifestTransaction &candidate =
+                    candidates.at(index);
+                const QString expected =
+                    candidate.record.expectedCanonicalSha256;
+                const QString replacement =
+                    candidate.record.replacementCanonicalSha256;
+                if (candidate.record.assetId != chainAssetId
+                    || expected == replacement
+                    || outgoing.contains(expected)
+                    || incoming.contains(replacement)) {
+                    linear = false;
+                    chainError = QStringLiteral(
+                        "Manifest transactions do not form a unique linear chain");
+                    break;
+                }
+                outgoing.insert(expected, index);
+                incoming.insert(replacement, index);
+                nodes.insert(expected);
+                nodes.insert(replacement);
+            }
+
+            QString startNode;
+            QString endNode;
+            int starts = 0;
+            int ends = 0;
+            if (linear) {
+                for (const QString &node : std::as_const(nodes)) {
+                    if (!incoming.contains(node)) {
+                        startNode = node;
+                        ++starts;
+                    }
+                    if (!outgoing.contains(node)) {
+                        endNode = node;
+                        ++ends;
+                    }
+                }
+                linear = starts == 1 && ends == 1;
+            }
+            QSet<int> visited;
+            QString cursor = startNode;
+            int terminal = -1;
+            while (linear && outgoing.contains(cursor)) {
+                const int index = outgoing.value(cursor);
+                if (visited.contains(index)) {
+                    linear = false;
+                    break;
+                }
+                visited.insert(index);
+                terminal = index;
+                cursor = candidates.at(index)
+                             .record.replacementCanonicalSha256;
+            }
+            if (linear
+                && (visited.size() != candidates.size()
+                    || cursor != endNode || terminal < 0
+                    || !candidates.at(terminal).hasOriginal)) {
+                linear = false;
+            }
+            if (!linear) {
+                const QString message = chainError.isEmpty()
+                                            ? QStringLiteral(
+                                                  "Live manifest is missing and transactions are not one verified linear chain")
+                                            : chainError;
+                for (const VerifiedManifestTransaction &candidate :
+                     std::as_const(candidates)) {
+                    appendRetained(candidate.item, message);
+                }
+                continue;
+            }
+
+            VerifiedManifestTransaction &terminalCandidate =
+                candidates[terminal];
+            QString terminalOriginalHash;
+            groupError.clear();
+            const QFileInfo confirmedLiveInfo(livePath);
+            if (confirmedLiveInfo.exists()
+                || files::isLinkLike(confirmedLiveInfo)
+                || !readManifestHashStable(
+                    terminalCandidate.originalPath,
+                    terminalCandidate.record.assetId,
+                    nullptr,
+                    &terminalOriginalHash,
+                    &groupError)
+                || terminalOriginalHash
+                       != terminalCandidate.record.expectedCanonicalSha256
+                || !QFile::rename(terminalCandidate.originalPath,
+                                  livePath)
+                || !readManifestHashStable(
+                    livePath,
+                    terminalCandidate.record.assetId,
+                    &liveManifest,
+                    &liveHash,
+                    &groupError)
+                || liveHash
+                       != terminalCandidate.record.expectedCanonicalSha256) {
+                const QString message = groupError.isEmpty()
+                                            ? QStringLiteral(
+                                                  "The terminal verified original could not be restored safely")
+                                            : groupError;
+                for (const VerifiedManifestTransaction &candidate :
+                     std::as_const(candidates)) {
+                    appendRetained(candidate.item, message);
+                }
+                continue;
+            }
+            restoredTerminal = terminal;
+        } else {
+            groupError.clear();
+            if (!readManifestHashStable(livePath,
+                                        {},
+                                        &liveManifest,
+                                        &liveHash,
+                                        &groupError)) {
+                for (const VerifiedManifestTransaction &candidate :
+                     std::as_const(candidates)) {
+                    appendRetained(
+                        candidate.item,
+                        QStringLiteral(
+                            "The live manifest is linked or unreadable; it was preserved"));
+                }
+                continue;
+            }
+        }
+
+        for (int index = 0; index < candidates.size(); ++index) {
+            const VerifiedManifestTransaction &candidate =
+                candidates.at(index);
+            Manifest confirmedLive;
+            QString confirmedLiveHash;
+            QString liveVerificationError;
+            if (!readManifestHashStable(livePath,
+                                        {},
+                                        &confirmedLive,
+                                        &confirmedLiveHash,
+                                        &liveVerificationError)
+                || confirmedLive.id != liveManifest.id
+                || confirmedLiveHash != liveHash) {
+                for (int remaining = index;
+                     remaining < candidates.size();
+                     ++remaining) {
+                    appendRetained(
+                        candidates.at(remaining).item,
+                        QStringLiteral(
+                            "The live manifest changed during transaction cleanup; remaining recovery data was preserved"));
+                }
+                break;
+            }
+            const bool liveIsExpected =
+                liveManifest.id == candidate.record.assetId
+                && liveHash
+                       == candidate.record.expectedCanonicalSha256;
+            const bool liveIsReplacement =
+                liveManifest.id == candidate.record.assetId
+                && liveHash
+                       == candidate.record.replacementCanonicalSha256;
+            const bool verifiedSupersededAncestor =
+                restoredTerminal >= 0 && index != restoredTerminal
+                && liveManifest.id == candidate.record.assetId;
+            if (!liveIsExpected && !liveIsReplacement
+                && !verifiedSupersededAncestor) {
+                appendRetained(
+                    candidate.item,
+                    QStringLiteral(
+                        "The live manifest contains a concurrent third-party state; the transaction was preserved"));
+                continue;
+            }
+            QString cleanupError;
+            QString retainedPath;
+            if (!retireVerifiedManifestTransaction(
+                    candidate.item.transactionPath,
+                    candidate.parent,
+                    candidate.record,
+                    livePath,
+                    liveManifest.id,
+                    liveHash,
+                    &retainedPath,
+                    &cleanupError
+#ifdef XIPS_ENABLE_TEST_HOOKS
+                    , testHook
+#endif
+                    )) {
+                ManifestTransactionRecoveryItem retainedItem =
+                    candidate.item;
+                if (!retainedPath.isEmpty()) {
+                    retainedItem.transactionPath = retainedPath;
+                }
+                if (index == restoredTerminal) {
+                    retainedItem.outcome =
+                        ManifestTransactionRecoveryOutcome::RestoredOriginal;
+                    retainedItem.message = QStringLiteral(
+                        "The terminal original was restored, but recovery data remains: %1")
+                                               .arg(cleanupError);
+                    ++result.restoredOriginal;
+                    ++result.retained;
+                    result.items.append(retainedItem);
+                } else {
+                    appendRetained(
+                        retainedItem,
+                        QStringLiteral(
+                            "Verified manifest recovery data could not be retired: %1")
+                            .arg(cleanupError));
+                }
+                for (int remaining = index + 1;
+                     remaining < candidates.size();
+                     ++remaining) {
+                    appendRetained(
+                        candidates.at(remaining).item,
+                        QStringLiteral(
+                            "A transaction failed final verification; remaining recovery data was preserved"));
+                }
+                break;
+            }
+
+            ManifestTransactionRecoveryItem completed = candidate.item;
+            if (index == restoredTerminal) {
+                completed.outcome =
+                    ManifestTransactionRecoveryOutcome::RestoredOriginal;
+                completed.message = QStringLiteral(
+                    "The terminal verified original manifest was restored");
+                ++result.restoredOriginal;
+            } else if (verifiedSupersededAncestor
+                       && !liveIsExpected && !liveIsReplacement) {
+                completed.outcome =
+                    ManifestTransactionRecoveryOutcome::KeptReplacement;
+                completed.message = QStringLiteral(
+                    "A verified superseded manifest transaction was retired");
+                ++result.cleanedReplacement;
+            } else if (liveIsExpected) {
+                completed.outcome =
+                    ManifestTransactionRecoveryOutcome::KeptExpected;
+                completed.message = QStringLiteral(
+                    "The expected live manifest was preserved");
+                ++result.cleanedExpected;
+            } else {
+                completed.outcome =
+                    ManifestTransactionRecoveryOutcome::KeptReplacement;
+                completed.message = QStringLiteral(
+                    "The published replacement manifest was preserved");
+                ++result.cleanedReplacement;
+            }
+            result.items.append(completed);
+        }
+    }
+    return result;
+}
+
+enum class ManifestCasOutcome {
+    Published,
+    ExpectedChanged,
+    Failed
+};
+
+struct ManifestCasResult {
+    ManifestCasOutcome outcome = ManifestCasOutcome::Failed;
+    Manifest publishedManifest;
+    Manifest observedManifest;
+    QString retainedPath;
+    QString warning;
+};
+
+ManifestCasResult compareAndSwapManifest(
+    const QString &assetRoot,
+    const QString &expectedAssetId,
+    const Manifest &expectedManifest,
+    const Manifest &replacementManifest,
+    const QString &operationLabel
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    , const WorkingCopyTestHook &testHook = {}
+#endif
+    )
+{
+    ManifestCasResult result;
+    const ManifestService manifestService;
+    if (expectedManifest.id != expectedAssetId
+        || replacementManifest.id != expectedAssetId
+        || !supportedManifestTransactionOperation(operationLabel)) {
+        result.warning = QStringLiteral(
+            "The manifest transaction does not match the selected asset");
+        return result;
+    }
+    const QByteArray expectedCanonical = json::canonicalJson(
+        manifestService.toJson(expectedManifest));
+    const QByteArray nextCanonical = json::canonicalJson(
+        manifestService.toJson(replacementManifest));
+    const QString expectedHash = canonicalSha256(expectedCanonical);
+    const QString replacementHash = canonicalSha256(nextCanonical);
+    if (expectedCanonical == nextCanonical) {
+        const QString root = files::normalizedAbsolute(assetRoot);
+        const QFileInfo rootInfo(root);
+        const QString liveManifestPath = QDir(root).absoluteFilePath(
+            QStringLiteral(".xips.json"));
+        Manifest current;
+        QString currentError;
+        if (!rootInfo.isDir() || files::isLinkLike(rootInfo)
+            || !readManifestHashStable(liveManifestPath,
+                                       expectedAssetId,
+                                       &current,
+                                       nullptr,
+                                       &currentError)) {
+            result.warning = currentError.isEmpty()
+                                 ? QStringLiteral(
+                                       "The asset manifest became unavailable before the no-op update could be verified")
+                                 : currentError;
+            return result;
+        }
+        const QByteArray currentCanonical = json::canonicalJson(
+            manifestService.toJson(current));
+        if (currentCanonical != expectedCanonical) {
+            result.outcome = ManifestCasOutcome::ExpectedChanged;
+            result.observedManifest = current;
+            result.warning = QStringLiteral(
+                "The asset manifest changed before the no-op update could be verified");
+            return result;
+        }
+        result.outcome = ManifestCasOutcome::Published;
+        result.publishedManifest = current;
+        return result;
+    }
+    const QString normalizedRoot = files::normalizedAbsolute(assetRoot);
+    const QFileInfo normalizedRootInfo(normalizedRoot);
+    if (!normalizedRootInfo.isDir()
+        || files::isLinkLike(normalizedRootInfo)) {
+        result.warning = QStringLiteral("The selected asset path is invalid");
+        return result;
+    }
+    const QString parent = QFileInfo(normalizedRoot).absolutePath();
+    const QString transactionId = QUuid::createUuid().toString(
+        QUuid::WithoutBraces);
+    const QString operationName = QStringLiteral(".xips-create-%1-%2")
+                                      .arg(operationLabel, transactionId);
+    const QString operationRoot = QDir(parent).absoluteFilePath(operationName);
+    const QString nextPath = QDir(operationRoot).absoluteFilePath(
+        QString::fromLatin1(ManifestTransactionNextFileName));
+    const QString backupPath = QDir(operationRoot).absoluteFilePath(
+        QString::fromLatin1(ManifestTransactionOriginalFileName));
+    const QString manifestPath = QDir(normalizedRoot).absoluteFilePath(
+        QStringLiteral(".xips.json"));
+    const QString transactionPath = QDir(operationRoot).absoluteFilePath(
+        QString::fromLatin1(ManifestTransactionFileName));
+    const ManifestTransactionRecord transaction{
+        .operation = operationLabel,
+        .transactionId = transactionId,
+        .assetDirectory = QFileInfo(normalizedRoot).fileName(),
+        .assetId = expectedAssetId,
+        .expectedCanonicalSha256 = expectedHash,
+        .replacementCanonicalSha256 = replacementHash,
+    };
+    QString actualRetainedOperationPath;
+    QString retirementWarning;
+    const auto setResult = [&result,
+                            &operationRoot,
+                            &actualRetainedOperationPath,
+                            &retirementWarning](
+                               const ManifestCasOutcome outcome,
+                               const QString &message,
+                               const bool retained) {
+        result.outcome = outcome;
+        const QString retainedPath = actualRetainedOperationPath.isEmpty()
+                                         ? operationRoot
+                                         : actualRetainedOperationPath;
+        result.retainedPath = retained ? retainedPath : QString();
+        result.warning = retained
+                             ? QStringLiteral("%1 Data remains at %2%3")
+                                   .arg(message,
+                                        retainedPath,
+                                        retirementWarning.isEmpty()
+                                            ? QString()
+                                            : QStringLiteral(": %1")
+                                                  .arg(retirementWarning))
+                             : message;
+    };
+    const auto removeVerifiedNextAndDirectory = [&]() {
+        QString actualHash;
+        QString cleanupError;
+        if (QFileInfo::exists(nextPath)
+            && (!readManifestHashStable(nextPath,
+                                        expectedAssetId,
+                                        nullptr,
+                                        &actualHash,
+                                        &cleanupError)
+                || actualHash != replacementHash
+                || !QFile::remove(nextPath))) {
+            return false;
+        }
+        return QDir().rmdir(operationRoot);
+    };
+    const auto retireTransaction = [&](const QString &anchoredLiveHash) {
+        return retireVerifiedManifestTransaction(operationRoot,
+                                                  parent,
+                                                  transaction,
+                                                  manifestPath,
+                                                  expectedAssetId,
+                                                  anchoredLiveHash,
+                                                  &actualRetainedOperationPath,
+                                                  &retirementWarning
+#ifdef XIPS_ENABLE_TEST_HOOKS
+                                                  , testHook
+#endif
+                                                  );
+    };
+
+    if (!QDir().mkpath(operationRoot)) {
+        setResult(ManifestCasOutcome::Failed,
+                  QStringLiteral("The manifest update could not be prepared"),
+                  false);
+        return result;
+    }
+    QString operationError;
+    if (!manifestService.write(nextPath,
+                               replacementManifest,
+                               &operationError)) {
+        setResult(ManifestCasOutcome::Failed,
+                  QStringLiteral("The manifest update could not be prepared: %1")
+                      .arg(operationError),
+                  !QDir().rmdir(operationRoot));
+        return result;
+    }
+    QString preparedHash;
+    operationError.clear();
+    if (!readManifestHashStable(nextPath,
+                                expectedAssetId,
+                                nullptr,
+                                &preparedHash,
+                                &operationError)
+        || preparedHash != replacementHash) {
+        setResult(ManifestCasOutcome::Failed,
+                  QStringLiteral(
+                      "The prepared manifest update could not be verified: %1")
+                      .arg(operationError),
+                  true);
+        return result;
+    }
+
+    Manifest current;
+    QString currentHash;
+    operationError.clear();
+    const bool currentReadable = readManifestHashStable(manifestPath,
+                                                        expectedAssetId,
+                                                        &current,
+                                                        &currentHash,
+                                                        &operationError);
+    if (!currentReadable || currentHash != expectedHash) {
+        const bool cleaned = removeVerifiedNextAndDirectory();
+        const bool expectedChanged = currentReadable;
+        if (expectedChanged) {
+            result.observedManifest = current;
+        }
+        setResult(expectedChanged ? ManifestCasOutcome::ExpectedChanged
+                                  : ManifestCasOutcome::Failed,
+                  expectedChanged
+                      ? QStringLiteral(
+                            "The asset manifest changed before it could be updated")
+                      : QStringLiteral(
+                            "The asset manifest became unavailable before it could be updated"),
+                  !cleaned);
+        return result;
+    }
+    operationError.clear();
+    if (!writeManifestTransactionRecord(transactionPath,
+                                        transaction,
+                                        &operationError)) {
+        const bool cleaned = removeVerifiedNextAndDirectory();
+        setResult(ManifestCasOutcome::Failed,
+                  QStringLiteral(
+                      "The manifest recovery record could not be prepared: %1")
+                      .arg(operationError),
+                  !cleaned);
+        return result;
+    }
+    ManifestTransactionRecord confirmedTransaction;
+    operationError.clear();
+    if (!readManifestTransactionRecord(transactionPath,
+                                       &confirmedTransaction,
+                                       &operationError)
+        || !sameManifestTransactionRecord(transaction,
+                                          confirmedTransaction)) {
+        setResult(ManifestCasOutcome::Failed,
+                  QStringLiteral(
+                      "The manifest recovery record could not be verified: %1")
+                      .arg(operationError),
+                  true);
+        return result;
+    }
+    if (!QFile::rename(manifestPath, backupPath)) {
+        const bool cleaned = retireTransaction(expectedHash);
+        const ManifestLoadResult observed = manifestService.load(manifestPath);
+        const bool expectedChanged = observed.ok()
+                                     && observed.manifest->id
+                                            == expectedAssetId
+                                     && json::canonicalJson(
+                                            manifestService.toJson(
+                                                *observed.manifest))
+                                            != expectedCanonical;
+        if (expectedChanged) {
+            result.observedManifest = *observed.manifest;
+        }
+        setResult(expectedChanged ? ManifestCasOutcome::ExpectedChanged
+                                  : ManifestCasOutcome::Failed,
+                  expectedChanged
+                      ? QStringLiteral(
+                            "The asset manifest changed before isolation")
+                      : QStringLiteral(
+                            "The asset manifest could not be isolated"),
+                  !cleaned);
+        return result;
+    }
+
+    QString isolatedHash;
+    operationError.clear();
+    const bool isolatedMatches = readManifestHashStable(backupPath,
+                                                        expectedAssetId,
+                                                        nullptr,
+                                                        &isolatedHash,
+                                                        &operationError)
+                                 && isolatedHash == expectedHash;
+    if (!isolatedMatches || QFileInfo::exists(manifestPath)) {
+        bool restored = false;
+        if (!QFileInfo::exists(manifestPath)) {
+            restored = QFile::rename(backupPath, manifestPath);
+        }
+        bool cleaned = false;
+        if (restored) {
+            cleaned = retireTransaction(expectedHash);
+        }
+        const ManifestLoadResult observed = manifestService.load(manifestPath);
+        const bool expectedChanged = cleaned && observed.ok()
+                                     && observed.manifest->id
+                                            == expectedAssetId
+                                     && json::canonicalJson(
+                                            manifestService.toJson(
+                                                *observed.manifest))
+                                            != expectedCanonical;
+        if (expectedChanged) {
+            result.observedManifest = *observed.manifest;
+        }
+        setResult(expectedChanged ? ManifestCasOutcome::ExpectedChanged
+                                  : ManifestCasOutcome::Failed,
+                  QStringLiteral(
+                      "A concurrent manifest change prevented the manifest update"),
+                  !cleaned);
+        return result;
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    if (testHook) {
+        testHook(WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+                 operationRoot);
+    }
+#endif
+
+    QString confirmedNextHash;
+    operationError.clear();
+    const bool nextStillMatches = readManifestHashStable(
+        nextPath,
+        expectedAssetId,
+        nullptr,
+        &confirmedNextHash,
+        &operationError)
+                                  && confirmedNextHash == replacementHash;
+    if (!nextStillMatches || QFileInfo::exists(manifestPath)
+        || !QFile::rename(nextPath, manifestPath)) {
+        bool restored = false;
+        if (!QFileInfo::exists(manifestPath)) {
+            restored = QFile::rename(backupPath, manifestPath);
+        }
+        bool cleaned = false;
+        if (restored) {
+            cleaned = retireTransaction(expectedHash);
+        }
+        const ManifestLoadResult observed = manifestService.load(manifestPath);
+        const bool expectedChanged = cleaned && observed.ok()
+                                     && observed.manifest->id
+                                            == expectedAssetId
+                                     && json::canonicalJson(
+                                            manifestService.toJson(
+                                                *observed.manifest))
+                                            != expectedCanonical;
+        if (expectedChanged) {
+            result.observedManifest = *observed.manifest;
+        }
+        setResult(expectedChanged ? ManifestCasOutcome::ExpectedChanged
+                                  : ManifestCasOutcome::Failed,
+                  QStringLiteral(
+                      "A concurrent manifest change prevented the manifest update"),
+                  !cleaned);
+        return result;
+    }
+
+    Manifest published;
+    QString publishedHash;
+    operationError.clear();
+    if (!readManifestHashStable(manifestPath,
+                                expectedAssetId,
+                                &published,
+                                &publishedHash,
+                                &operationError)
+        || publishedHash != replacementHash) {
+        setResult(ManifestCasOutcome::Failed,
+                  QStringLiteral(
+                      "The published asset manifest could not be verified"),
+                  true);
+        return result;
+    }
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    if (testHook) {
+        testHook(
+            WorkingCopyTestPoint::ManifestReplacementPublishedBeforeCleanup,
+            operationRoot);
+    }
+#endif
+    result.outcome = ManifestCasOutcome::Published;
+    result.publishedManifest = published;
+    if (!retireTransaction(replacementHash)) {
+        setResult(ManifestCasOutcome::Published,
+                  QStringLiteral(
+                      "The asset manifest was updated, but manifest recovery data could not be retired"),
+                  true);
+        return result;
+    }
+    return result;
+}
+
 struct VersionMarkerCasResult {
     bool published = false;
     Manifest publishedManifest;
@@ -1565,124 +3157,104 @@ VersionMarkerCasResult compareAndSwapVersionMarker(
     const QString &assetRoot,
     const QString &expectedAssetId,
     const Manifest &baselineManifest,
-    const QString &version)
+    const QString &version
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    , const WorkingCopyTestHook &testHook = {}
+#endif
+    )
 {
+    Manifest replacementManifest = baselineManifest;
+    replacementManifest.version = version;
+    const ManifestCasResult manifestResult = compareAndSwapManifest(
+        assetRoot,
+        expectedAssetId,
+        baselineManifest,
+        replacementManifest,
+        QStringLiteral("version-marker")
+#ifdef XIPS_ENABLE_TEST_HOOKS
+        , testHook
+#endif
+        );
     VersionMarkerCasResult result;
-    const ManifestService manifestService;
-    const QByteArray baselineCanonical = json::canonicalJson(
-        manifestService.toJson(baselineManifest));
-    Manifest nextManifest = baselineManifest;
-    nextManifest.version = version;
-    const QByteArray nextCanonical = json::canonicalJson(
-        manifestService.toJson(nextManifest));
-    const QString normalizedRoot = files::normalizedAbsolute(assetRoot);
-    const QString parent = QFileInfo(normalizedRoot).absolutePath();
-    const QString operationName = QStringLiteral(".xips-create-version-marker-%1")
-                                      .arg(QUuid::createUuid().toString(
-                                          QUuid::WithoutBraces));
-    const QString operationRoot = QDir(parent).absoluteFilePath(operationName);
-    const QString nextPath = QDir(operationRoot).absoluteFilePath(
-        QStringLiteral("next.xips.json"));
-    const QString backupPath = QDir(operationRoot).absoluteFilePath(
-        QStringLiteral("original.xips.json"));
-    const QString manifestPath = QDir(normalizedRoot).absoluteFilePath(
-        QStringLiteral(".xips.json"));
-    const auto setWarning = [&result, &operationRoot](const QString &message,
-                                                       const bool retained) {
-        result.retainedPath = retained ? operationRoot : QString();
-        result.warning = retained
-                             ? QStringLiteral("%1 Data remains at %2")
-                                   .arg(message, operationRoot)
-                             : message;
-    };
-    const auto removeVerifiedNextAndDirectory = [&]() {
-        const ManifestLoadResult next = manifestService.load(nextPath);
-        if (next.ok()
-            && json::canonicalJson(manifestService.toJson(*next.manifest))
-                   == nextCanonical) {
-            QFile::remove(nextPath);
-        }
-        return QDir().rmdir(operationRoot);
-    };
-
-    if (!QDir().mkpath(operationRoot)) {
-        setWarning(QStringLiteral(
-                       "The working-copy version marker could not be prepared"),
-                   false);
-        return result;
-    }
-    QString operationError;
-    if (!manifestService.write(nextPath, nextManifest, &operationError)) {
-        setWarning(QStringLiteral(
-                       "The working-copy version marker could not be prepared: %1")
-                       .arg(operationError),
-                   !QDir().rmdir(operationRoot));
-        return result;
-    }
-
-    const ManifestLoadResult current = manifestService.load(manifestPath);
-    if (!current.ok() || current.manifest->id != expectedAssetId
-        || json::canonicalJson(manifestService.toJson(*current.manifest))
-               != baselineCanonical) {
-        const bool cleaned = removeVerifiedNextAndDirectory();
-        setWarning(QStringLiteral(
-                       "The working copy changed before its version marker could be updated"),
-                   !cleaned);
-        return result;
-    }
-    if (!QFile::rename(manifestPath, backupPath)) {
-        const bool cleaned = removeVerifiedNextAndDirectory();
-        setWarning(QStringLiteral(
-                       "The working-copy version marker could not be isolated"),
-                   !cleaned);
-        return result;
-    }
-
-    const ManifestLoadResult isolated = manifestService.load(backupPath);
-    const bool isolatedMatches = isolated.ok()
-                                 && isolated.manifest->id == expectedAssetId
-                                 && json::canonicalJson(
-                                        manifestService.toJson(*isolated.manifest))
-                                        == baselineCanonical;
-    if (!isolatedMatches || QFileInfo::exists(manifestPath)
-        || !QFile::rename(nextPath, manifestPath)) {
-        bool restored = false;
-        if (!QFileInfo::exists(manifestPath)) {
-            restored = QFile::rename(backupPath, manifestPath);
-        }
-        bool cleaned = false;
-        if (restored) {
-            cleaned = removeVerifiedNextAndDirectory();
-        }
-        setWarning(QStringLiteral(
-                       "A concurrent manifest change prevented the working-copy version marker update"),
-                   !cleaned);
-        return result;
-    }
-
-    const ManifestLoadResult published = manifestService.load(manifestPath);
-    if (!published.ok() || published.manifest->id != expectedAssetId
-        || json::canonicalJson(manifestService.toJson(*published.manifest))
-               != nextCanonical) {
-        setWarning(QStringLiteral(
-                       "The published working-copy version marker could not be verified"),
-                   true);
-        return result;
-    }
-    result.published = true;
-    result.publishedManifest = *published.manifest;
-    const ManifestLoadResult confirmedBackup = manifestService.load(backupPath);
-    if (!confirmedBackup.ok()
-        || json::canonicalJson(
-               manifestService.toJson(*confirmedBackup.manifest))
-               != baselineCanonical
-        || !QFile::remove(backupPath) || !QDir().rmdir(operationRoot)) {
-        setWarning(QStringLiteral(
-                       "The working-copy version marker was updated, but marker recovery data could not be retired"),
-                   true);
-        return result;
-    }
+    result.published = manifestResult.outcome
+                       == ManifestCasOutcome::Published;
+    result.publishedManifest = manifestResult.publishedManifest;
+    result.retainedPath = manifestResult.retainedPath;
+    result.warning = manifestResult.warning;
     return result;
+}
+
+bool containsTag(const QStringList &tags, const QString &candidate)
+{
+    return std::any_of(tags.cbegin(), tags.cend(),
+                       [&candidate](const QString &tag) {
+                           return tag.trimmed().compare(
+                                      candidate.trimmed(),
+                                      Qt::CaseInsensitive)
+                                  == 0;
+                       });
+}
+
+void removeTag(QStringList &tags, const QString &candidate)
+{
+    tags.erase(std::remove_if(tags.begin(), tags.end(),
+                              [&candidate](const QString &tag) {
+                                  return tag.trimmed().compare(
+                                             candidate.trimmed(),
+                                             Qt::CaseInsensitive)
+                                         == 0;
+                              }),
+               tags.end());
+}
+
+QStringList applyTagDelta(const QStringList &baseline,
+                          const QStringList &desired,
+                          const QStringList &current)
+{
+    const QStringList cleanBaseline = cleanedTags(baseline);
+    const QStringList cleanDesired = cleanedTags(desired);
+    QStringList merged = cleanedTags(current);
+    for (const QString &tag : cleanBaseline) {
+        if (!containsTag(cleanDesired, tag)) {
+            removeTag(merged, tag);
+        }
+    }
+    for (const QString &tag : cleanDesired) {
+        if (!containsTag(cleanBaseline, tag)
+            && !containsTag(merged, tag)) {
+            merged.append(tag);
+        }
+    }
+    return cleanedTags(merged);
+}
+
+bool applyGroupMembershipChange(Manifest &manifest,
+                                const QString &oldGroup,
+                                const QString &newGroup)
+{
+    const QString oldName = oldGroup.trimmed();
+    const QString newName = newGroup.trimmed();
+    const QStringList before = cleanedTags(manifest.tags);
+    QStringList after = before;
+    if (oldName.isEmpty()) {
+        if (!containsTag(after, newName)) {
+            after.append(newName);
+        }
+    } else {
+        QStringList replaced;
+        for (const QString &tag : after) {
+            if (tag.compare(oldName, Qt::CaseInsensitive) == 0) {
+                if (!newName.isEmpty() && !containsTag(replaced, newName)) {
+                    replaced.append(newName);
+                }
+            } else if (!containsTag(replaced, tag)) {
+                replaced.append(tag);
+            }
+        }
+        after = std::move(replaced);
+    }
+    manifest.tags = cleanedTags(after);
+    return manifest.tags != before;
 }
 
 } // namespace
@@ -1882,6 +3454,7 @@ ImportBatchResult AssetLibraryService::importAssets(
                         &created,
                         &error)) {
             result.created.append(created);
+            result.createdProofs.append(assetDeletionProof(created));
             existingIds.insert(created.manifest.id.toCaseFolded());
         } else {
             result.errors.append(
@@ -1896,20 +3469,143 @@ bool AssetLibraryService::updateMetadata(const AssetRecord &asset,
                                          const AssetMetadata &metadata,
                                          QString *error) const
 {
-    const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
-    if (!loaded.ok()) {
-        return fail(error, QStringLiteral("Cannot reload the selected asset manifest"));
+    MetadataUpdateResult result;
+    return updateMetadata(asset, metadata, &result, error);
+}
+
+bool AssetLibraryService::updateMetadata(const AssetRecord &asset,
+                                         const AssetMetadata &metadata,
+                                         MetadataUpdateResult *result,
+                                         QString *error) const
+{
+    if (!result) {
+        return fail(error,
+                    QStringLiteral(
+                        "Updating asset details requires a merge result"));
     }
+    *result = {};
+    if (!validateAssetRecord(asset, nullptr, error)) {
+        return false;
+    }
+    const Manifest baseline = asset.manifest;
     if (!metadata.id.trimmed().isEmpty()
-        && metadata.id.trimmed() != loaded.manifest->id) {
+        && metadata.id.trimmed() != baseline.id) {
         return fail(error, QStringLiteral("Asset id is stable and cannot be changed"));
     }
 
-    Manifest manifest = *loaded.manifest;
-    manifest.name = metadata.name.trimmed();
-    manifest.description = metadata.description.trimmed();
-    manifest.tags = cleanedTags(metadata.tags);
-    return ManifestService().write(asset.manifestPath, manifest, error);
+    const QString desiredName = metadata.name.trimmed();
+    const QString desiredDescription = metadata.description.trimmed();
+    const QStringList desiredTags = cleanedTags(metadata.tags);
+    Manifest desiredValidation = baseline;
+    desiredValidation.name = desiredName;
+    desiredValidation.description = desiredDescription;
+    desiredValidation.tags = desiredTags;
+    const ManifestService manifestService;
+    const QStringList validationErrors = manifestService.validate(
+        desiredValidation);
+    if (!validationErrors.isEmpty()) {
+        return fail(error, validationErrors.first());
+    }
+
+    const QString baselineName = baseline.name.trimmed();
+    const QString baselineDescription = baseline.description.trimmed();
+    constexpr int MaximumMergeAttempts = 4;
+    for (int attempt = 0; attempt < MaximumMergeAttempts; ++attempt) {
+        const ManifestLoadResult loaded = manifestService.load(
+            asset.manifestPath);
+        if (!loaded.ok() || loaded.manifest->id != baseline.id) {
+            return fail(error,
+                        QStringLiteral(
+                            "Cannot reload the selected asset manifest for a safe merge"));
+        }
+        const Manifest current = *loaded.manifest;
+        Manifest next = current;
+        QStringList conflicts;
+        const auto mergeField = [&conflicts](const QString &field,
+                                             const QString &baselineValue,
+                                             const QString &desiredValue,
+                                             const QString &currentValue,
+                                             QString *target) {
+            const bool userChanged = desiredValue != baselineValue;
+            const bool currentChanged = currentValue != baselineValue;
+            if (userChanged && currentChanged
+                && desiredValue != currentValue) {
+                conflicts.append(field);
+                return;
+            }
+            if (userChanged) {
+                *target = desiredValue;
+            }
+        };
+        mergeField(QStringLiteral("name"),
+                   baselineName,
+                   desiredName,
+                   current.name.trimmed(),
+                   &next.name);
+        mergeField(QStringLiteral("description"),
+                   baselineDescription,
+                   desiredDescription,
+                   current.description.trimmed(),
+                   &next.description);
+        next.tags = applyTagDelta(baseline.tags,
+                                  desiredTags,
+                                  current.tags);
+        if (!conflicts.isEmpty()) {
+            result->conflictingFields = conflicts;
+            result->manifest = current;
+            return fail(
+                error,
+                QStringLiteral("Asset details changed concurrently: %1")
+                    .arg(conflicts.join(QStringLiteral(", "))));
+        }
+
+        const QByteArray currentCanonical = json::canonicalJson(
+            manifestService.toJson(current));
+        const QByteArray nextCanonical = json::canonicalJson(
+            manifestService.toJson(next));
+        const bool manifestChanged = currentCanonical != nextCanonical;
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+        invokeWorkingCopyTestHook(
+            WorkingCopyTestPoint::MetadataMergedBeforeManifestCas,
+            asset.manifestPath);
+#endif
+
+        const ManifestCasResult published = compareAndSwapManifest(
+            asset.assetRoot,
+            baseline.id,
+            current,
+            next,
+            QStringLiteral("metadata")
+#ifdef XIPS_ENABLE_TEST_HOOKS
+            , [this](const WorkingCopyTestPoint point,
+                     const QString &path) {
+                  invokeWorkingCopyTestHook(point, path);
+              }
+#endif
+            );
+        if (published.outcome == ManifestCasOutcome::Published) {
+            result->published = true;
+            result->changed = manifestChanged;
+            result->manifest = published.publishedManifest;
+            result->retainedPath = published.retainedPath;
+            result->warning = published.warning;
+            return true;
+        }
+        if (published.outcome == ManifestCasOutcome::ExpectedChanged
+            && published.retainedPath.isEmpty()) {
+            continue;
+        }
+        result->retainedPath = published.retainedPath;
+        result->warning = published.warning;
+        return fail(error,
+                    published.warning.isEmpty()
+                        ? QStringLiteral("Cannot safely update asset details")
+                        : published.warning);
+    }
+    return fail(error,
+                QStringLiteral(
+                    "The asset manifest kept changing; details were not overwritten"));
 }
 
 UpdatePreview AssetLibraryService::previewUpdate(
@@ -3124,12 +4820,55 @@ bool AssetLibraryService::discardWorkingCopyRecovery(
     return true;
 }
 
+AssetDeletionProof AssetLibraryService::assetDeletionProof(
+    const AssetRecord &asset) const
+{
+    AssetDeletionProof proof;
+    proof.assetId = asset.manifest.id;
+    proof.assetRoot = files::normalizedAbsolute(asset.assetRoot);
+    if (!validateAssetRecord(asset, nullptr, &proof.error)) {
+        return proof;
+    }
+    AssetTreeProof treeProof;
+    if (!verifyAssetTreeProofAtRoot(proof.assetRoot,
+                                    proof.assetId,
+                                    &treeProof,
+                                    &proof.error)) {
+        return proof;
+    }
+    proof.fingerprint = treeProof.fingerprint;
+    return proof;
+}
+
 bool AssetLibraryService::deleteAsset(const QString &libraryRoot,
                                       const AssetRecord &asset,
                                       const RemovalMode mode,
                                       QString *removedPath,
                                       QString *error) const
 {
+    const AssetDeletionProof proof = assetDeletionProof(asset);
+    if (!proof.ok()) {
+        return fail(error, proof.error);
+    }
+    return deleteAsset(libraryRoot,
+                       asset,
+                       proof,
+                       mode,
+                       removedPath,
+                       error);
+}
+
+bool AssetLibraryService::deleteAsset(
+    const QString &libraryRoot,
+    const AssetRecord &asset,
+    const AssetDeletionProof &expectedProof,
+    const RemovalMode mode,
+    QString *removedPath,
+    QString *error) const
+{
+    if (removedPath) {
+        removedPath->clear();
+    }
     const QString library = files::normalizedAbsolute(libraryRoot);
     const QString assetRoot = files::normalizedAbsolute(asset.assetRoot);
     const QFileInfo rootInfo(assetRoot);
@@ -3140,12 +4879,129 @@ bool AssetLibraryService::deleteAsset(const QString &libraryRoot,
     if (!validateAssetRecord(asset, nullptr, error)) {
         return false;
     }
-    if (!removeDirectory(assetRoot, mode, removedPath)) {
-        return fail(error,
-                    mode == RemovalMode::MoveToTrash
-                        ? QStringLiteral("Cannot move the asset to the recycle bin")
-                        : QStringLiteral("Cannot delete the asset"));
+    if (!expectedProof.ok() || expectedProof.assetId != asset.manifest.id
+        || !samePath(expectedProof.assetRoot, assetRoot)
+        || !validFingerprint(expectedProof.fingerprint)) {
+        return fail(error, QStringLiteral("The asset deletion proof is invalid"));
     }
+
+    AssetTreeProof initialProof;
+    QString proofError;
+    if (!verifyAssetTreeProofAtRoot(assetRoot,
+                                    asset.manifest.id,
+                                    &initialProof,
+                                    &proofError)
+        || initialProof.fingerprint != expectedProof.fingerprint) {
+        return fail(
+            error,
+            QStringLiteral(
+                "The asset changed after deletion was confirmed and was not deleted%1")
+                .arg(proofError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(proofError)));
+    }
+
+    const QString parent = QFileInfo(assetRoot).absolutePath();
+    const QString assetName = QFileInfo(assetRoot).fileName();
+    const QString operationName = QStringLiteral(".xips-create-delete-%1")
+                                      .arg(QUuid::createUuid().toString(
+                                          QUuid::WithoutBraces));
+    const QString operationRoot = QDir(parent).absoluteFilePath(operationName);
+    const QString isolatedRoot = QDir(operationRoot).absoluteFilePath(assetName);
+    if (!QDir().mkpath(operationRoot)) {
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot create the asset deletion isolation directory"));
+    }
+    if (!QDir().rename(assetRoot, isolatedRoot)) {
+        QDir().rmdir(operationRoot);
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot isolate the verified asset before deletion"));
+    }
+    const auto restoreIsolatedAsset = [&]() {
+        if (!QFileInfo::exists(assetRoot)
+            && QDir().rename(isolatedRoot, assetRoot)) {
+            QDir().rmdir(operationRoot);
+            return assetRoot;
+        }
+        return isolatedRoot;
+    };
+
+    AssetTreeProof isolatedProof;
+    proofError.clear();
+    if (!verifyAssetTreeProofAtRoot(isolatedRoot,
+                                    asset.manifest.id,
+                                    &isolatedProof,
+                                    &proofError)
+        || !sameAssetTreeContentProof(initialProof, isolatedProof)) {
+        const QString retainedPath = restoreIsolatedAsset();
+        return fail(
+            error,
+            QStringLiteral(
+                "The isolated asset changed before deletion and was not removed; data remains at %1%2")
+                .arg(retainedPath,
+                     proofError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(proofError)));
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::DeleteAssetIsolatedBeforeRemoval,
+        isolatedRoot);
+#endif
+
+    AssetTreeProof confirmedProof;
+    proofError.clear();
+    if (!verifyAssetTreeProofAtRoot(isolatedRoot,
+                                    asset.manifest.id,
+                                    &confirmedProof,
+                                    &proofError)
+        || !sameAssetTreeContentProof(isolatedProof, confirmedProof)) {
+        const QString retainedPath = restoreIsolatedAsset();
+        return fail(
+            error,
+            QStringLiteral(
+                "The isolated asset changed at the deletion boundary and was not removed; data remains at %1%2")
+                .arg(retainedPath,
+                     proofError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(proofError)));
+    }
+
+    QString actualRemovedPath;
+    const bool removed = mode == RemovalMode::MoveToTrash
+                             ? QFile::moveToTrash(isolatedRoot,
+                                                  &actualRemovedPath)
+                             : removeExactTree(isolatedRoot,
+                                               confirmedProof.entries);
+    if (!removed) {
+        AssetTreeProof remainingProof;
+        QString remainingError;
+        const bool stillComplete = verifyAssetTreeProofAtRoot(
+                                       isolatedRoot,
+                                       asset.manifest.id,
+                                       &remainingProof,
+                                       &remainingError)
+                                   && sameAssetTreeContentProof(
+                                       confirmedProof,
+                                       remainingProof);
+        const QString retainedPath = stillComplete ? restoreIsolatedAsset()
+                                                   : isolatedRoot;
+        return fail(
+            error,
+            (mode == RemovalMode::MoveToTrash
+                 ? QStringLiteral(
+                       "Cannot move the verified asset to the recycle bin; data remains at %1")
+                 : QStringLiteral(
+                       "Cannot completely delete the verified asset; remaining data is at %1"))
+                .arg(retainedPath));
+    }
+    if (removedPath) {
+        *removedPath = actualRemovedPath;
+    }
+    QDir().rmdir(operationRoot);
     return true;
 }
 
@@ -3156,81 +5012,156 @@ bool AssetLibraryService::changeGroupMembership(
     int *changed,
     QString *error) const
 {
+    GroupChangeResult result;
+    const bool complete = changeGroupMembership(assets,
+                                                oldGroup,
+                                                newGroup,
+                                                &result,
+                                                error);
+    if (changed) {
+        *changed = result.updated;
+    }
+    return complete;
+}
+
+bool AssetLibraryService::changeGroupMembership(
+    const QList<AssetRecord> &assets,
+    const QString &oldGroup,
+    const QString &newGroup,
+    GroupChangeResult *result,
+    QString *error) const
+{
+    if (!result) {
+        return fail(error,
+                    QStringLiteral(
+                        "Changing groups requires a per-asset result"));
+    }
+    *result = {};
     const QString oldName = oldGroup.trimmed();
     const QString newName = newGroup.trimmed();
     if (oldName.isEmpty() && newName.isEmpty()) {
         return fail(error, QStringLiteral("A group name is required"));
     }
 
-    struct PendingWrite {
-        QString path;
-        Manifest before;
-        Manifest after;
-    };
-    QList<PendingWrite> writes;
+    constexpr int MaximumMergeAttempts = 4;
+    const ManifestService manifestService;
     for (const AssetRecord &asset : assets) {
-        const ManifestLoadResult loaded = ManifestService().load(asset.manifestPath);
-        if (!loaded.ok()) {
-            return fail(error,
-                        QStringLiteral("Cannot reload asset '%1'")
-                            .arg(asset.manifest.name));
+        GroupChangeItemResult item;
+        item.assetId = asset.manifest.id;
+        item.assetName = asset.manifest.name;
+        QString validationError;
+        if (!validateAssetRecord(asset, nullptr, &validationError)) {
+            item.outcome = GroupChangeOutcome::Failed;
+            item.message = validationError;
+            ++result->failed;
+            result->items.append(item);
+            continue;
         }
-        Manifest updated = *loaded.manifest;
-        QStringList groups = updated.tags;
-        bool assetChanged = false;
-        if (oldName.isEmpty()) {
-            const bool alreadyAssigned = std::any_of(
-                groups.cbegin(), groups.cend(), [&newName](const QString &group) {
-                    return group.trimmed().compare(newName,
-                                                   Qt::CaseInsensitive) == 0;
-                });
-            if (!alreadyAssigned) {
-                groups.append(newName);
-                assetChanged = true;
+
+        bool completed = false;
+        for (int attempt = 0; attempt < MaximumMergeAttempts; ++attempt) {
+            const ManifestLoadResult loaded = manifestService.load(
+                asset.manifestPath);
+            if (!loaded.ok()
+                || loaded.manifest->id != asset.manifest.id) {
+                item.outcome = GroupChangeOutcome::Failed;
+                item.message = QStringLiteral("Cannot reload asset manifest");
+                ++result->failed;
+                completed = true;
+                break;
             }
-        } else {
-            for (QString &group : groups) {
-                if (group.trimmed().compare(oldName, Qt::CaseInsensitive) == 0) {
-                    group = newName;
-                    assetChanged = true;
-                }
+            const Manifest current = *loaded.manifest;
+            item.assetName = current.name;
+            Manifest next = current;
+            if (!applyGroupMembershipChange(next, oldName, newName)) {
+                item.outcome = GroupChangeOutcome::Unchanged;
+                ++result->unchanged;
+                completed = true;
+                break;
             }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+            invokeWorkingCopyTestHook(
+                WorkingCopyTestPoint::GroupMembershipMergedBeforeManifestCas,
+                asset.manifestPath);
+#endif
+
+            const ManifestCasResult published = compareAndSwapManifest(
+                asset.assetRoot,
+                asset.manifest.id,
+                current,
+                next,
+                QStringLiteral("group-membership")
+#ifdef XIPS_ENABLE_TEST_HOOKS
+                , [this](const WorkingCopyTestPoint point,
+                         const QString &path) {
+                      invokeWorkingCopyTestHook(point, path);
+                  }
+#endif
+                );
+            if (published.outcome == ManifestCasOutcome::Published) {
+                item.outcome = GroupChangeOutcome::Updated;
+                item.retainedPath = published.retainedPath;
+                item.warning = published.warning;
+                ++result->updated;
+                completed = true;
+                break;
+            }
+            if (published.outcome == ManifestCasOutcome::ExpectedChanged
+                && published.retainedPath.isEmpty()) {
+                continue;
+            }
+            item.outcome = GroupChangeOutcome::Failed;
+            item.retainedPath = published.retainedPath;
+            item.warning = published.warning;
+            item.message = published.warning.isEmpty()
+                               ? QStringLiteral(
+                                     "Cannot safely update asset groups")
+                               : published.warning;
+            ++result->failed;
+            completed = true;
+            break;
         }
-        updated.tags = cleanedTags(groups);
-        if (assetChanged) {
-            writes.append({.path = asset.manifestPath,
-                           .before = *loaded.manifest,
-                           .after = std::move(updated)});
+        if (!completed) {
+            item.outcome = GroupChangeOutcome::Conflict;
+            item.message = QStringLiteral(
+                "Asset groups kept changing and were not overwritten");
+            ++result->conflicts;
         }
+        result->items.append(item);
     }
 
-    int completed = 0;
-    for (const PendingWrite &write : writes) {
-        QString writeError;
-        if (!ManifestService().write(write.path, write.after, &writeError)) {
-            for (int index = completed - 1; index >= 0; --index) {
-                QString rollbackError;
-                ManifestService().write(writes.at(index).path,
-                                        writes.at(index).before,
-                                        &rollbackError);
-            }
-            return fail(error, writeError);
-        }
-        ++completed;
-    }
-    if (changed) {
-        *changed = completed;
+    if (!result->complete()) {
+        return fail(
+            error,
+            QStringLiteral(
+                "Group change was partially applied: %1 updated, %2 conflict(s), %3 failed")
+                .arg(result->updated)
+                .arg(result->conflicts)
+                .arg(result->failed));
     }
     return true;
 }
 
-QList<VersionInfo> AssetLibraryService::versions(const QString &assetRoot,
-                                                 QString *error) const
+ManifestTransactionRecoveryResult
+AssetLibraryService::recoverManifestTransactions(
+    const QString &libraryRoot) const
 {
-    QList<VersionInfo> result;
-    if (error) {
-        error->clear();
-    }
+    return recoverManifestTransactionsGrouped(
+        libraryRoot
+#ifdef XIPS_ENABLE_TEST_HOOKS
+        , [this](const WorkingCopyTestPoint point,
+                 const QString &path) {
+              invokeWorkingCopyTestHook(point, path);
+          }
+#endif
+        );
+}
+
+VersionInventoryResult AssetLibraryService::versionInventory(
+    const QString &assetRoot) const
+{
+    VersionInventoryResult result;
     const QString normalizedAssetRoot = files::normalizedAbsolute(assetRoot);
     const QFileInfo assetRootInfo(normalizedAssetRoot);
     const QString liveManifestPath = QDir(normalizedAssetRoot).absoluteFilePath(
@@ -3238,14 +5169,15 @@ QList<VersionInfo> AssetLibraryService::versions(const QString &assetRoot,
     const QFileInfo liveManifestInfo(liveManifestPath);
     if (!assetRootInfo.isDir() || files::isLinkLike(assetRootInfo)
         || !liveManifestInfo.isFile() || files::isLinkLike(liveManifestInfo)) {
-        fail(error, QStringLiteral("Asset path or manifest is invalid"));
-        return {};
+        result.fatalError = QStringLiteral("Asset path or manifest is invalid");
+        return result;
     }
     const ManifestLoadResult liveManifest = ManifestService().load(
         liveManifestPath);
     if (!liveManifest.ok()) {
-        fail(error, QStringLiteral("Cannot reload the selected asset manifest"));
-        return {};
+        result.fatalError = QStringLiteral(
+            "Cannot reload the selected asset manifest");
+        return result;
     }
     const QString root = QDir(normalizedAssetRoot).absoluteFilePath(
         QStringLiteral(".xips/versions"));
@@ -3254,10 +5186,10 @@ QList<VersionInfo> AssetLibraryService::versions(const QString &assetRoot,
         return result;
     }
     if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
-        fail(error,
-             QStringLiteral("Saved versions directory is invalid or linked: %1")
-                 .arg(root));
-        return {};
+        result.fatalError = QStringLiteral(
+            "Saved versions directory is invalid or linked: %1")
+                                .arg(root);
+        return result;
     }
     const QFileInfoList entries = QDir(root).entryInfoList(
         QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
@@ -3267,31 +5199,56 @@ QList<VersionInfo> AssetLibraryService::versions(const QString &assetRoot,
             continue;
         }
         if (files::isLinkLike(entry)) {
-            fail(error,
-                 QStringLiteral("Saved version directory is linked: %1")
-                     .arg(entry.absoluteFilePath()));
-            return {};
+            result.problems.append(
+                QStringLiteral("Saved version directory is linked: %1")
+                    .arg(entry.absoluteFilePath()));
+            continue;
         }
         SnapshotProof proof;
+        QString versionError;
         if (!verifySavedSnapshot(normalizedAssetRoot,
                                  liveManifest.manifest->id,
                                  entry.fileName(),
                                  entry.absoluteFilePath(),
                                  true,
                                  &proof,
-                                 error)) {
-            return {};
+                                 &versionError)) {
+            result.problems.append(
+                versionError.isEmpty()
+                    ? QStringLiteral("Cannot verify saved version: %1")
+                          .arg(entry.absoluteFilePath())
+                    : versionError);
+            continue;
         }
-        result.append(proof.info);
+        result.validVersions.append(proof.info);
     }
-    std::sort(result.begin(), result.end(), [](const VersionInfo &left,
-                                                const VersionInfo &right) {
-        if (left.createdAt != right.createdAt) {
-            return left.createdAt > right.createdAt;
-        }
-        return left.version > right.version;
-    });
+    std::sort(result.validVersions.begin(),
+              result.validVersions.end(),
+              [](const VersionInfo &left, const VersionInfo &right) {
+                  if (left.createdAt != right.createdAt) {
+                      return left.createdAt > right.createdAt;
+                  }
+                  return left.version > right.version;
+              });
     return result;
+}
+
+QList<VersionInfo> AssetLibraryService::versions(const QString &assetRoot,
+                                                 QString *error) const
+{
+    if (error) {
+        error->clear();
+    }
+    const VersionInventoryResult inventory = versionInventory(assetRoot);
+    if (!inventory.fatalError.isEmpty()) {
+        fail(error, inventory.fatalError);
+        return {};
+    }
+    if (!inventory.problems.isEmpty()) {
+        fail(error, inventory.problems.first());
+        return {};
+    }
+    return inventory.validVersions;
 }
 
 WorkingCopyState AssetLibraryService::workingCopyState(
@@ -3592,7 +5549,14 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
         asset.assetRoot,
         baselineManifest.id,
         baselineManifest,
-        cleanVersion);
+        cleanVersion
+#ifdef XIPS_ENABLE_TEST_HOOKS
+        , [this](const WorkingCopyTestPoint point,
+                 const QString &path) {
+              invokeWorkingCopyTestHook(point, path);
+          }
+#endif
+        );
     versionInfo = publishedProof.info;
     versionInfo.warning = marker.warning;
     if (created) {
@@ -3801,7 +5765,14 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
             asset.assetRoot,
             selectedManifest.id,
             liveManifest,
-            nextVersion);
+            nextVersion
+#ifdef XIPS_ENABLE_TEST_HOOKS
+            , [this](const WorkingCopyTestPoint point,
+                     const QString &path) {
+                  invokeWorkingCopyTestHook(point, path);
+              }
+#endif
+            );
         if (!marker.retainedPath.isEmpty()) {
             appendRetained(marker.retainedPath, marker.warning);
         }
@@ -3852,7 +5823,14 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
             asset.assetRoot,
             selectedManifest.id,
             currentManifest,
-            cleanVersion);
+            cleanVersion
+#ifdef XIPS_ENABLE_TEST_HOOKS
+            , [this](const WorkingCopyTestPoint point,
+                     const QString &path) {
+                  invokeWorkingCopyTestHook(point, path);
+              }
+#endif
+            );
         if (!rollback.retainedPath.isEmpty()) {
             appendRetained(rollback.retainedPath, rollback.warning);
         }

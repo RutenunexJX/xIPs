@@ -80,7 +80,7 @@ QVariant AssetTableModel::headerData(const int section,
     static const QStringList headers{
         QStringLiteral("Asset"),
         QStringLiteral("Groups"),
-        QStringLiteral("Version"),
+        QStringLiteral("Latest saved"),
     };
     return section >= 0 && section < headers.size() ? headers.at(section)
                                                     : QVariant();

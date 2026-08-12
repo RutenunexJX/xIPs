@@ -9,6 +9,8 @@
 
 #include <optional>
 #include <functional>
+#include <memory>
+#include <vector>
 
 class QAction;
 class QDragEnterEvent;
@@ -20,7 +22,9 @@ class QPlainTextEdit;
 class QSortFilterProxyModel;
 class QStackedWidget;
 class QTableView;
+class QTabWidget;
 class QTimer;
+class QTemporaryDir;
 class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -67,13 +71,17 @@ private:
     void restoreSelectedVersion();
     void deleteSelectedVersion();
     void openCurrent();
+    void openVersion(const QString &version);
     void openMatchedFile();
     void openSelectedFile();
     void assignNewGroup();
+    void removeSelectedFromCurrentGroup();
     void renameCurrentGroup();
     void removeCurrentGroup();
     void showProblems();
+    void refreshLibrary();
     void reportUnfinishedOperationPaths();
+    void recordGroupChangeProblems(const GroupChangeResult &result);
     void recordUpdateProblems(const AssetRecord &asset,
                               const UpdateAssetResult &result);
     void offerWorkingCopyUndo(const AssetRecord &asset,
@@ -109,9 +117,13 @@ private:
     int m_stateGeneration = 0;
     QStringList m_lastProblems;
     QList<AssetRecord> m_undoImportAssets;
+    QList<AssetDeletionProof> m_undoImportProofs;
     std::function<void()> m_noticeCallback;
     std::function<bool()> m_noticeDismissCallback;
     bool m_allowChangedLiveForNoticeDismiss = false;
+    std::vector<std::unique_ptr<QTemporaryDir>> m_versionPreviews;
+    QString m_pendingVersionSelection;
+    QString m_pendingVersionMessage;
 
     QStackedWidget *m_contentStack = nullptr;
     QWidget *m_libraryPage = nullptr;
@@ -120,6 +132,7 @@ private:
     QLabel *m_searchScopeLabel = nullptr;
     QTreeWidget *m_groupTree = nullptr;
     QTableView *m_assetTable = nullptr;
+    QTabWidget *m_detailTabs = nullptr;
     QStackedWidget *m_resultsStack = nullptr;
     QLabel *m_emptyResultsLabel = nullptr;
     AssetTableModel *m_tableModel = nullptr;

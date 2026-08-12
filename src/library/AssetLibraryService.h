@@ -20,6 +20,74 @@ struct AssetMetadata {
     QStringList tags;
 };
 
+struct MetadataUpdateResult {
+    bool published = false;
+    bool changed = false;
+    QStringList conflictingFields;
+    Manifest manifest;
+    QString retainedPath;
+    QString warning;
+};
+
+enum class GroupChangeOutcome {
+    Updated,
+    Unchanged,
+    Conflict,
+    Failed
+};
+
+struct GroupChangeItemResult {
+    QString assetId;
+    QString assetName;
+    GroupChangeOutcome outcome = GroupChangeOutcome::Failed;
+    QString retainedPath;
+    QString warning;
+    QString message;
+};
+
+struct GroupChangeResult {
+    QList<GroupChangeItemResult> items;
+    int updated = 0;
+    int unchanged = 0;
+    int conflicts = 0;
+    int failed = 0;
+
+    [[nodiscard]] bool complete() const
+    {
+        return conflicts == 0 && failed == 0;
+    }
+};
+
+enum class ManifestTransactionRecoveryOutcome {
+    RestoredOriginal,
+    KeptExpected,
+    KeptReplacement,
+    Retained
+};
+
+struct ManifestTransactionRecoveryItem {
+    QString transactionPath;
+    QString assetRoot;
+    QString assetId;
+    ManifestTransactionRecoveryOutcome outcome =
+        ManifestTransactionRecoveryOutcome::Retained;
+    QString message;
+};
+
+struct ManifestTransactionRecoveryResult {
+    QList<ManifestTransactionRecoveryItem> items;
+    int restoredOriginal = 0;
+    int cleanedExpected = 0;
+    int cleanedReplacement = 0;
+    int retained = 0;
+    QString fatalError;
+
+    [[nodiscard]] bool complete() const
+    {
+        return fatalError.isEmpty() && retained == 0;
+    }
+};
+
 struct ImportAssetRequest {
     QString libraryRoot;
     QString sourcePath;
@@ -36,8 +104,30 @@ struct VersionInfo {
     QString warning;
 };
 
+struct VersionInventoryResult {
+    QList<VersionInfo> validVersions;
+    QStringList problems;
+    QString fatalError;
+
+    [[nodiscard]] bool usable() const { return fatalError.isEmpty(); }
+};
+
+struct AssetDeletionProof {
+    QString assetId;
+    QString assetRoot;
+    QString fingerprint;
+    QString error;
+
+    [[nodiscard]] bool ok() const
+    {
+        return error.isEmpty() && !assetId.isEmpty() && !assetRoot.isEmpty()
+               && !fingerprint.isEmpty();
+    }
+};
+
 struct ImportBatchResult {
     QList<AssetRecord> created;
+    QList<AssetDeletionProof> createdProofs;
     QStringList errors;
 };
 
@@ -148,7 +238,13 @@ enum class WorkingCopyTestPoint {
     DeleteVersionVerifiedBeforeIsolation,
     DeleteVersionIsolatedBeforeMarkerCas,
     DeleteVersionMarkerPublishedBeforeFinalProof,
-    DeleteVersionVerifiedBeforeRemoval
+    DeleteVersionVerifiedBeforeRemoval,
+    DeleteAssetIsolatedBeforeRemoval,
+    MetadataMergedBeforeManifestCas,
+    GroupMembershipMergedBeforeManifestCas,
+    ManifestOriginalIsolatedBeforePublish,
+    ManifestReplacementPublishedBeforeCleanup,
+    ManifestTransactionIsolatedBeforeRetireLiveVerification
 };
 
 using WorkingCopyTestHook = std::function<void(WorkingCopyTestPoint,
@@ -177,6 +273,10 @@ public:
         const QStringList &groups = {}) const;
     bool updateMetadata(const AssetRecord &asset,
                         const AssetMetadata &metadata,
+                        QString *error = nullptr) const;
+    bool updateMetadata(const AssetRecord &asset,
+                        const AssetMetadata &metadata,
+                        MetadataUpdateResult *result,
                         QString *error = nullptr) const;
     [[nodiscard]] UpdatePreview previewUpdate(
         const AssetRecord &asset,
@@ -208,8 +308,16 @@ public:
                                     RecoveryDiscardResult *result,
                                     QString *error = nullptr,
                                     WorkingCopyDiscardPolicy policy = WorkingCopyDiscardPolicy::RequirePublishedCopy) const;
+    [[nodiscard]] AssetDeletionProof assetDeletionProof(
+        const AssetRecord &asset) const;
     bool deleteAsset(const QString &libraryRoot,
                      const AssetRecord &asset,
+                     RemovalMode mode = RemovalMode::MoveToTrash,
+                     QString *removedPath = nullptr,
+                     QString *error = nullptr) const;
+    bool deleteAsset(const QString &libraryRoot,
+                     const AssetRecord &asset,
+                     const AssetDeletionProof &expectedProof,
                      RemovalMode mode = RemovalMode::MoveToTrash,
                      QString *removedPath = nullptr,
                      QString *error = nullptr) const;
@@ -218,10 +326,19 @@ public:
                                const QString &newGroup,
                                int *changed = nullptr,
                                QString *error = nullptr) const;
+    bool changeGroupMembership(const QList<AssetRecord> &assets,
+                               const QString &oldGroup,
+                               const QString &newGroup,
+                               GroupChangeResult *result,
+                               QString *error = nullptr) const;
+    [[nodiscard]] ManifestTransactionRecoveryResult
+    recoverManifestTransactions(const QString &libraryRoot) const;
 
     [[nodiscard]] QList<VersionInfo> versions(
         const QString &assetRoot,
         QString *error = nullptr) const;
+    [[nodiscard]] VersionInventoryResult versionInventory(
+        const QString &assetRoot) const;
     bool createVersion(const AssetRecord &asset,
                        const QString &version,
                        VersionInfo *created,

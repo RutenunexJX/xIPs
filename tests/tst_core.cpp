@@ -6,9 +6,12 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QtTest>
+
+#include <utility>
 
 using namespace xips;
 
@@ -44,6 +47,38 @@ QString createSourceIp(const QString &root)
     return source;
 }
 
+struct SimulatedManifestCrash final {
+};
+
+bool leaveMetadataTransaction(AssetLibraryService &service,
+                              const AssetRecord &asset,
+                              const QString &replacementName,
+                              const WorkingCopyTestPoint crashPoint,
+                              QString *error)
+{
+    service.setWorkingCopyTestHook(
+        crashPoint,
+        [crashPoint](const WorkingCopyTestPoint point, const QString &) {
+            if (point == crashPoint) {
+                throw SimulatedManifestCrash{};
+            }
+        });
+    try {
+        MetadataUpdateResult ignored;
+        service.updateMetadata(
+            asset,
+            {.id = asset.manifest.id,
+             .name = replacementName,
+             .description = asset.manifest.description,
+             .tags = asset.manifest.tags},
+            &ignored,
+            error);
+    } catch (const SimulatedManifestCrash &) {
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 class CoreTest final : public QObject {
@@ -56,6 +91,17 @@ private slots:
     void batchImportRecoversCollisionsAndAssignsGroups();
     void scannerListsPayloadAndHashesOnDemand();
     void metadataKeepsStableId();
+    void metadataMergesConcurrentManifestChangesAndRejectsConflicts();
+    void metadataNoOpRechecksLiveManifest();
+    void manifestTransactionsRecoverCrashWindows();
+    void manifestTransactionsRecoverNestedAssets();
+    void manifestTransactionChainsRestoreLatestOriginal();
+    void corruptManifestTransactionBlocksAssetRecovery();
+    void manifestTransactionChainsRetireAllAncestors();
+    void corruptAncestorTransactionDoesNotHideNestedRecovery();
+    void manifestTransactionRetirementPreservesDataWhenLiveChanges();
+    void manifestCasRetirementRejectsThirdPartyLive();
+    void manifestRecoveryPathIdentityIsCaseInsensitiveOnWindows();
     void updateReplacesWorkingCopyAndPreservesSavedVersions();
     void workingCopyUndoFailsClosedAtSecurityBoundaries();
     void workingCopyTransactionsRejectConcurrentMutation();
@@ -64,10 +110,13 @@ private slots:
     void recoveryIsolationRacePreservesUndoData_data();
     void recoveryIsolationRacePreservesUndoData();
     void assetDeletionIsBoundedAndLeavesSourcesUntouched();
+    void assetDeletionProofRejectsStaleAndBoundaryChanges();
     void versionsAreImmutableAndCopyable();
     void versionStateCopyToAndDeletionFormASafeWorkflow();
     void corruptSavedVersionIsRejectedEverywhere_data();
     void corruptSavedVersionIsRejectedEverywhere();
+    void versionInventoryKeepsValidVersionsWhenOneIsCorrupt();
+    void versionInventorySkipsLinkedVersionDirectories();
     void createVersionRejectsConcurrentWorkingCopyMutation_data();
     void createVersionRejectsConcurrentWorkingCopyMutation();
     void savedVersionConsumersRejectPostCopyMutation_data();
@@ -79,6 +128,7 @@ private slots:
     void deleteVersionRejectsConcurrentBoundaryMutation_data();
     void deleteVersionRejectsConcurrentBoundaryMutation();
     void groupChangesApplyAcrossAssets();
+    void groupChangesMergeConcurrencyAndKeepPartialSuccess();
     void activationUrisParse();
     void cliListsAndResolvesAssets();
 };
@@ -333,6 +383,1097 @@ void CoreTest::metadataKeepsStableId()
     QCOMPARE(loaded.manifest->id, QStringLiteral("stable_ip"));
     QCOMPARE(loaded.manifest->name, QStringLiteral("Updated name"));
     QCOMPARE(loaded.manifest->version, QStringLiteral("1.0.0"));
+}
+
+void CoreTest::metadataMergesConcurrentManifestChangesAndRejectsConflicts()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("metadata.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module metadata; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord baseline;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("metadata_merge"),
+                               .name = QStringLiteral("Baseline name"),
+                               .description = QString(),
+                               .tags = {}}},
+                 &baseline,
+                 &error),
+             qPrintable(error));
+
+    ManifestLoadResult loaded = ManifestService().load(baseline.manifestPath);
+    QVERIFY(loaded.ok());
+    Manifest remote = *loaded.manifest;
+    remote.version = QStringLiteral("2.0.0");
+    remote.description = QStringLiteral("Remote description");
+    remote.tags = {QStringLiteral("remote-group")};
+    remote.rawObject.insert(QStringLiteral("remoteCustom"),
+                            QStringLiteral("preserved"));
+    QVERIFY2(ManifestService().write(baseline.manifestPath, remote, &error),
+             qPrintable(error));
+
+    MetadataUpdateResult merged;
+    error.clear();
+    QVERIFY2(service.updateMetadata(
+                 baseline,
+                 {.id = baseline.manifest.id,
+                  .name = QStringLiteral("User name"),
+                  .description = baseline.manifest.description,
+                  .tags = {QStringLiteral("user-group")}},
+                 &merged,
+                 &error),
+             qPrintable(error));
+    QVERIFY(merged.published);
+    QVERIFY(merged.changed);
+    QVERIFY(merged.conflictingFields.isEmpty());
+    loaded = ManifestService().load(baseline.manifestPath);
+    QVERIFY(loaded.ok());
+    QCOMPARE(loaded.manifest->name, QStringLiteral("User name"));
+    QCOMPARE(loaded.manifest->description,
+             QStringLiteral("Remote description"));
+    QCOMPARE(loaded.manifest->version, QStringLiteral("2.0.0"));
+    QVERIFY(loaded.manifest->tags.contains(QStringLiteral("remote-group")));
+    QVERIFY(loaded.manifest->tags.contains(QStringLiteral("user-group")));
+    QCOMPARE(loaded.manifest->rawObject.value(QStringLiteral("remoteCustom"))
+                 .toString(),
+             QStringLiteral("preserved"));
+
+    ScanResult scan = AssetScanner().scan(library);
+    QCOMPARE(scan.assets.size(), 1);
+    const AssetRecord retryBaseline = scan.assets.first();
+    bool unrelatedMutationSucceeded = false;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::MetadataMergedBeforeManifestCas,
+        [&](const WorkingCopyTestPoint point, const QString &manifestPath) {
+            if (point
+                != WorkingCopyTestPoint::MetadataMergedBeforeManifestCas) {
+                return;
+            }
+            const ManifestLoadResult concurrent = ManifestService().load(
+                manifestPath);
+            if (!concurrent.ok()) {
+                return;
+            }
+            Manifest changed = *concurrent.manifest;
+            changed.version = QStringLiteral("3.0.0");
+            changed.rawObject.insert(QStringLiteral("hookCustom"), 3);
+            QString writeError;
+            unrelatedMutationSucceeded = ManifestService().write(
+                manifestPath,
+                changed,
+                &writeError);
+        });
+    MetadataUpdateResult retried;
+    error.clear();
+    QVERIFY2(service.updateMetadata(
+                 retryBaseline,
+                 {.id = retryBaseline.manifest.id,
+                  .name = retryBaseline.manifest.name,
+                  .description = QStringLiteral("User description"),
+                  .tags = retryBaseline.manifest.tags},
+                 &retried,
+                 &error),
+             qPrintable(error));
+    QVERIFY(unrelatedMutationSucceeded);
+    QVERIFY(retried.published);
+    loaded = ManifestService().load(retryBaseline.manifestPath);
+    QVERIFY(loaded.ok());
+    QCOMPARE(loaded.manifest->description,
+             QStringLiteral("User description"));
+    QCOMPARE(loaded.manifest->version, QStringLiteral("3.0.0"));
+    QCOMPARE(loaded.manifest->rawObject.value(QStringLiteral("hookCustom"))
+                 .toInt(),
+             3);
+
+    scan = AssetScanner().scan(library);
+    QCOMPARE(scan.assets.size(), 1);
+    const AssetRecord conflictBaseline = scan.assets.first();
+    bool conflictingMutationSucceeded = false;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::MetadataMergedBeforeManifestCas,
+        [&](const WorkingCopyTestPoint point, const QString &manifestPath) {
+            if (point
+                != WorkingCopyTestPoint::MetadataMergedBeforeManifestCas) {
+                return;
+            }
+            const ManifestLoadResult concurrent = ManifestService().load(
+                manifestPath);
+            if (!concurrent.ok()) {
+                return;
+            }
+            Manifest changed = *concurrent.manifest;
+            changed.name = QStringLiteral("Remote conflicting name");
+            QString writeError;
+            conflictingMutationSucceeded = ManifestService().write(
+                manifestPath,
+                changed,
+                &writeError);
+        });
+    MetadataUpdateResult conflict;
+    error.clear();
+    QVERIFY(!service.updateMetadata(
+        conflictBaseline,
+        {.id = conflictBaseline.manifest.id,
+         .name = QStringLiteral("Local conflicting name"),
+         .description = conflictBaseline.manifest.description,
+         .tags = conflictBaseline.manifest.tags},
+        &conflict,
+        &error));
+    QVERIFY(conflictingMutationSucceeded);
+    QCOMPARE(conflict.conflictingFields,
+             QStringList{QStringLiteral("name")});
+    QVERIFY(error.contains(QStringLiteral("name")));
+    loaded = ManifestService().load(conflictBaseline.manifestPath);
+    QVERIFY(loaded.ok());
+    QCOMPARE(loaded.manifest->name,
+             QStringLiteral("Remote conflicting name"));
+    QVERIFY(QDir(library)
+                .entryList({QStringLiteral(".xips-create-metadata-*")},
+                           QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
+}
+
+void CoreTest::metadataNoOpRechecksLiveManifest()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("noop.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module noop; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("metadata_noop"),
+                               .name = QStringLiteral("No-op"),
+                               .description = QStringLiteral("Baseline"),
+                               .tags = {QStringLiteral("BASE")}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+
+    bool concurrentWriteSucceeded = false;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::MetadataMergedBeforeManifestCas,
+        [&](const WorkingCopyTestPoint, const QString &manifestPath) {
+            const ManifestLoadResult loaded = ManifestService().load(
+                manifestPath);
+            if (!loaded.ok()) {
+                return;
+            }
+            Manifest concurrent = *loaded.manifest;
+            concurrent.version = QStringLiteral("7.0.0");
+            concurrent.rawObject.insert(QStringLiteral("remoteNoOp"), true);
+            QString writeError;
+            concurrentWriteSucceeded = ManifestService().write(
+                manifestPath,
+                concurrent,
+                &writeError);
+        });
+
+    MetadataUpdateResult update;
+    QVERIFY2(service.updateMetadata(
+                 asset,
+                 {.id = asset.manifest.id,
+                  .name = asset.manifest.name,
+                  .description = asset.manifest.description,
+                  .tags = asset.manifest.tags},
+                 &update,
+                 &error),
+             qPrintable(error));
+    QVERIFY(concurrentWriteSucceeded);
+    QVERIFY(update.published);
+    QVERIFY(!update.changed);
+    QCOMPARE(update.manifest.version, QStringLiteral("7.0.0"));
+    QVERIFY(update.manifest.rawObject.value(QStringLiteral("remoteNoOp"))
+                .toBool());
+    const ManifestLoadResult live = ManifestService().load(
+        asset.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->version, QStringLiteral("7.0.0"));
+    QVERIFY(live.manifest->rawObject.value(QStringLiteral("remoteNoOp"))
+                .toBool());
+}
+
+void CoreTest::manifestTransactionsRecoverCrashWindows()
+{
+    struct SimulatedCrash final {
+    };
+
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    QString error;
+    const auto transactionDirectories = [&]() {
+        return QDir(library).entryList(
+            {QStringLiteral(".xips-create-metadata-*")},
+            QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot,
+            QDir::Name);
+    };
+
+    const QString restoreSource = temporary.filePath(
+        QStringLiteral("restore_original.sv"));
+    QVERIFY(writeFile(
+        restoreSource,
+        QByteArrayLiteral("module restore_original; endmodule\n")));
+    AssetRecord restoreAsset;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = restoreSource,
+                  .metadata = {.id = QStringLiteral("restore_original"),
+                               .name = QStringLiteral("Original"),
+                               .description = {},
+                               .tags = {}}},
+                 &restoreAsset,
+                 &error),
+             qPrintable(error));
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+        [](const WorkingCopyTestPoint, const QString &) {
+            throw SimulatedCrash{};
+        });
+    bool crashed = false;
+    try {
+        MetadataUpdateResult ignored;
+        service.updateMetadata(
+            restoreAsset,
+            {.id = restoreAsset.manifest.id,
+             .name = QStringLiteral("Replacement"),
+             .description = restoreAsset.manifest.description,
+             .tags = restoreAsset.manifest.tags},
+            &ignored,
+            &error);
+    } catch (const SimulatedCrash &) {
+        crashed = true;
+    }
+    QVERIFY(crashed);
+    QVERIFY(!QFileInfo::exists(restoreAsset.manifestPath));
+    QCOMPARE(transactionDirectories().size(), 1);
+    ManifestTransactionRecoveryResult recovery =
+        service.recoverManifestTransactions(library);
+    QVERIFY2(recovery.fatalError.isEmpty(),
+             qPrintable(recovery.fatalError));
+    QCOMPARE(recovery.restoredOriginal, 1);
+    QCOMPARE(recovery.retained, 0);
+    QCOMPARE(recovery.items.size(), 1);
+    QCOMPARE(recovery.items.first().outcome,
+             ManifestTransactionRecoveryOutcome::RestoredOriginal);
+    ManifestLoadResult live = ManifestService().load(
+        restoreAsset.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name, QStringLiteral("Original"));
+    QVERIFY(transactionDirectories().isEmpty());
+
+    const QString publishedSource = temporary.filePath(
+        QStringLiteral("keep_replacement.sv"));
+    QVERIFY(writeFile(
+        publishedSource,
+        QByteArrayLiteral("module keep_replacement; endmodule\n")));
+    AssetRecord publishedAsset;
+    error.clear();
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = publishedSource,
+                  .metadata = {.id = QStringLiteral("keep_replacement"),
+                               .name = QStringLiteral("Before publish"),
+                               .description = {},
+                               .tags = {}}},
+                 &publishedAsset,
+                 &error),
+             qPrintable(error));
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::ManifestReplacementPublishedBeforeCleanup,
+        [](const WorkingCopyTestPoint, const QString &) {
+            throw SimulatedCrash{};
+        });
+    crashed = false;
+    try {
+        MetadataUpdateResult ignored;
+        service.updateMetadata(
+            publishedAsset,
+            {.id = publishedAsset.manifest.id,
+             .name = QStringLiteral("Published replacement"),
+             .description = publishedAsset.manifest.description,
+             .tags = publishedAsset.manifest.tags},
+            &ignored,
+            &error);
+    } catch (const SimulatedCrash &) {
+        crashed = true;
+    }
+    QVERIFY(crashed);
+    live = ManifestService().load(publishedAsset.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name,
+             QStringLiteral("Published replacement"));
+    QCOMPARE(transactionDirectories().size(), 1);
+    recovery = service.recoverManifestTransactions(library);
+    QVERIFY2(recovery.fatalError.isEmpty(),
+             qPrintable(recovery.fatalError));
+    QCOMPARE(recovery.cleanedReplacement, 1);
+    QCOMPARE(recovery.retained, 0);
+    QCOMPARE(recovery.items.size(), 1);
+    QCOMPARE(recovery.items.first().outcome,
+             ManifestTransactionRecoveryOutcome::KeptReplacement);
+    live = ManifestService().load(publishedAsset.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name,
+             QStringLiteral("Published replacement"));
+    QVERIFY(transactionDirectories().isEmpty());
+
+    const QString concurrentSource = temporary.filePath(
+        QStringLiteral("keep_concurrent.sv"));
+    QVERIFY(writeFile(
+        concurrentSource,
+        QByteArrayLiteral("module keep_concurrent; endmodule\n")));
+    AssetRecord concurrentAsset;
+    error.clear();
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = concurrentSource,
+                  .metadata = {.id = QStringLiteral("keep_concurrent"),
+                               .name = QStringLiteral("Concurrent baseline"),
+                               .description = {},
+                               .tags = {}}},
+                 &concurrentAsset,
+                 &error),
+             qPrintable(error));
+    bool concurrentManifestWritten = false;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+        [&](const WorkingCopyTestPoint, const QString &) {
+            Manifest concurrent = concurrentAsset.manifest;
+            concurrent.name = QStringLiteral("Third-party live manifest");
+            concurrent.rawObject.insert(QStringLiteral("thirdParty"), 1);
+            QString writeError;
+            concurrentManifestWritten = ManifestService().write(
+                concurrentAsset.manifestPath,
+                concurrent,
+                &writeError);
+            throw SimulatedCrash{};
+        });
+    crashed = false;
+    try {
+        MetadataUpdateResult ignored;
+        service.updateMetadata(
+            concurrentAsset,
+            {.id = concurrentAsset.manifest.id,
+             .name = QStringLiteral("Transaction replacement"),
+             .description = concurrentAsset.manifest.description,
+             .tags = concurrentAsset.manifest.tags},
+            &ignored,
+            &error);
+    } catch (const SimulatedCrash &) {
+        crashed = true;
+    }
+    QVERIFY(crashed);
+    QVERIFY(concurrentManifestWritten);
+    const QStringList retainedTransactions = transactionDirectories();
+    QCOMPARE(retainedTransactions.size(), 1);
+    const QString retainedTransactionPath = QDir(library).absoluteFilePath(
+        retainedTransactions.first());
+    recovery = service.recoverManifestTransactions(library);
+    QVERIFY2(recovery.fatalError.isEmpty(),
+             qPrintable(recovery.fatalError));
+    QCOMPARE(recovery.retained, 1);
+    QCOMPARE(recovery.items.size(), 1);
+    QCOMPARE(recovery.items.first().outcome,
+             ManifestTransactionRecoveryOutcome::Retained);
+    QVERIFY(QFileInfo(retainedTransactionPath).isDir());
+    live = ManifestService().load(concurrentAsset.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name,
+             QStringLiteral("Third-party live manifest"));
+    QCOMPARE(live.manifest->rawObject.value(QStringLiteral("thirdParty"))
+                 .toInt(),
+             1);
+}
+
+void CoreTest::manifestTransactionsRecoverNestedAssets()
+{
+    struct SimulatedCrash final {
+    };
+
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    const QString nestedLibrary = QDir(library).absoluteFilePath(
+        QStringLiteral("protocols/uart"));
+    QVERIFY(QDir().mkpath(nestedLibrary));
+    const QString source = temporary.filePath(QStringLiteral("nested.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module nested; endmodule\n")));
+
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = nestedLibrary,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("nested_asset"),
+                               .name = QStringLiteral("Nested original"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+        [](const WorkingCopyTestPoint, const QString &) {
+            throw SimulatedCrash{};
+        });
+    bool crashed = false;
+    try {
+        MetadataUpdateResult ignored;
+        service.updateMetadata(
+            asset,
+            {.id = asset.manifest.id,
+             .name = QStringLiteral("Nested replacement"),
+             .description = asset.manifest.description,
+             .tags = asset.manifest.tags},
+            &ignored,
+            &error);
+    } catch (const SimulatedCrash &) {
+        crashed = true;
+    }
+    QVERIFY(crashed);
+    QVERIFY(!QFileInfo::exists(asset.manifestPath));
+    QCOMPARE(QDir(nestedLibrary)
+                 .entryList({QStringLiteral(".xips-create-metadata-*")},
+                            QDir::Dirs | QDir::Hidden
+                                | QDir::NoDotAndDotDot)
+                 .size(),
+             1);
+
+    const ManifestTransactionRecoveryResult recovery =
+        service.recoverManifestTransactions(library);
+    QVERIFY2(recovery.fatalError.isEmpty(),
+             qPrintable(recovery.fatalError));
+    QCOMPARE(recovery.restoredOriginal, 1);
+    QCOMPARE(recovery.retained, 0);
+    const ManifestLoadResult live = ManifestService().load(
+        asset.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name, QStringLiteral("Nested original"));
+    QVERIFY(QDir(nestedLibrary)
+                .entryList({QStringLiteral(".xips-create-metadata-*")},
+                           QDir::Dirs | QDir::Hidden
+                               | QDir::NoDotAndDotDot)
+                .isEmpty());
+}
+
+void CoreTest::manifestTransactionChainsRestoreLatestOriginal()
+{
+    struct SimulatedCrash final {
+    };
+
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("chain.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module chain; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord stateA;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("chain_asset"),
+                               .name = QStringLiteral("State A"),
+                               .description = {},
+                               .tags = {}}},
+                 &stateA,
+                 &error),
+             qPrintable(error));
+    const auto transactions = [&]() {
+        return QDir(library).entryList(
+            {QStringLiteral(".xips-create-metadata-*")},
+            QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot,
+            QDir::Name);
+    };
+
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::ManifestReplacementPublishedBeforeCleanup,
+        [](const WorkingCopyTestPoint, const QString &) {
+            throw SimulatedCrash{};
+        });
+    bool crashed = false;
+    try {
+        MetadataUpdateResult ignored;
+        service.updateMetadata(
+            stateA,
+            {.id = stateA.manifest.id,
+             .name = QStringLiteral("State B"),
+             .description = stateA.manifest.description,
+             .tags = stateA.manifest.tags},
+            &ignored,
+            &error);
+    } catch (const SimulatedCrash &) {
+        crashed = true;
+    }
+    QVERIFY(crashed);
+    QStringList transactionNames = transactions();
+    QCOMPARE(transactionNames.size(), 1);
+    const QString firstTransaction = transactionNames.first();
+
+    const ScanResult scanB = AssetScanner().scan(library);
+    QCOMPARE(scanB.assets.size(), 1);
+    const AssetRecord stateB = scanB.assets.first();
+    QCOMPARE(stateB.manifest.name, QStringLiteral("State B"));
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+        [](const WorkingCopyTestPoint, const QString &) {
+            throw SimulatedCrash{};
+        });
+    crashed = false;
+    try {
+        MetadataUpdateResult ignored;
+        service.updateMetadata(
+            stateB,
+            {.id = stateB.manifest.id,
+             .name = QStringLiteral("State C"),
+             .description = stateB.manifest.description,
+             .tags = stateB.manifest.tags},
+            &ignored,
+            &error);
+    } catch (const SimulatedCrash &) {
+        crashed = true;
+    }
+    QVERIFY(crashed);
+    QVERIFY(!QFileInfo::exists(stateB.manifestPath));
+    transactionNames = transactions();
+    QCOMPARE(transactionNames.size(), 2);
+    QString secondTransaction;
+    for (const QString &name : std::as_const(transactionNames)) {
+        if (name != firstTransaction) {
+            secondTransaction = name;
+        }
+    }
+    QVERIFY(!secondTransaction.isEmpty());
+
+    const auto renameTransaction = [&](const QString &oldName,
+                                       const QString &newName,
+                                       const QString &newId) {
+        if (!QDir(library).rename(oldName, newName)) {
+            return false;
+        }
+        const QString recordPath = QDir(library).absoluteFilePath(
+            QStringLiteral("%1/transaction.json").arg(newName));
+        QJsonParseError parseError;
+        QJsonDocument document = QJsonDocument::fromJson(
+            readFile(recordPath),
+            &parseError);
+        if (parseError.error != QJsonParseError::NoError
+            || !document.isObject()) {
+            return false;
+        }
+        QJsonObject object = document.object();
+        object.insert(QStringLiteral("transactionId"), newId);
+        return writeFile(recordPath,
+                         QJsonDocument(object).toJson(
+                             QJsonDocument::Indented));
+    };
+    const QString earlyId = QStringLiteral(
+        "00000000-0000-4000-8000-000000000001");
+    const QString lateId = QStringLiteral(
+        "ffffffff-ffff-4fff-8fff-ffffffffffff");
+    const QString earlyName = QStringLiteral(
+        ".xips-create-metadata-%1").arg(earlyId);
+    const QString lateName = QStringLiteral(
+        ".xips-create-metadata-%1").arg(lateId);
+    QVERIFY(renameTransaction(firstTransaction, earlyName, earlyId));
+    QVERIFY(renameTransaction(secondTransaction, lateName, lateId));
+    transactionNames = transactions();
+    QCOMPARE(transactionNames,
+             QStringList({earlyName, lateName}));
+
+    const ManifestTransactionRecoveryResult recovery =
+        service.recoverManifestTransactions(library);
+    QVERIFY2(recovery.fatalError.isEmpty(),
+             qPrintable(recovery.fatalError));
+    QCOMPARE(recovery.restoredOriginal, 1);
+    QCOMPARE(recovery.cleanedReplacement, 1);
+    QCOMPARE(recovery.retained, 0);
+    QCOMPARE(recovery.items.size(), 2);
+    const ManifestLoadResult live = ManifestService().load(
+        stateB.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name, QStringLiteral("State B"));
+    QVERIFY(transactions().isEmpty());
+}
+
+void CoreTest::corruptManifestTransactionBlocksAssetRecovery()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("blocked.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module blocked; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord stateA;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("blocked_asset"),
+                               .name = QStringLiteral("State A"),
+                               .description = {},
+                               .tags = {}}},
+                 &stateA,
+                 &error),
+             qPrintable(error));
+    const auto transactions = [&]() {
+        return QDir(library).entryList(
+            {QStringLiteral(".xips-create-metadata-*")},
+            QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot,
+            QDir::Name);
+    };
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        stateA,
+        QStringLiteral("State B"),
+        WorkingCopyTestPoint::ManifestReplacementPublishedBeforeCleanup,
+        &error));
+    const QString firstTransaction = transactions().first();
+    const ScanResult scanB = AssetScanner().scan(library);
+    QCOMPARE(scanB.assets.size(), 1);
+    const AssetRecord stateB = scanB.assets.first();
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        stateB,
+        QStringLiteral("State C"),
+        WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+        &error));
+    const QStringList allTransactions = transactions();
+    QCOMPARE(allTransactions.size(), 2);
+    QString secondTransaction;
+    for (const QString &name : allTransactions) {
+        if (name != firstTransaction) {
+            secondTransaction = name;
+        }
+    }
+    QVERIFY(!secondTransaction.isEmpty());
+    const QString secondRoot = QDir(library).absoluteFilePath(
+        secondTransaction);
+    QVERIFY(writeFile(QDir(secondRoot).absoluteFilePath(
+                          QStringLiteral("next.xips.json")),
+                      QByteArrayLiteral("{corrupt next")));
+    const QString secondOriginal = QDir(secondRoot).absoluteFilePath(
+        QStringLiteral("original.xips.json"));
+    ManifestLoadResult original = ManifestService().load(secondOriginal);
+    QVERIFY(original.ok());
+    QCOMPARE(original.manifest->name, QStringLiteral("State B"));
+
+    const ManifestTransactionRecoveryResult recovery =
+        service.recoverManifestTransactions(library);
+    QCOMPARE(recovery.retained, 2);
+    QCOMPARE(recovery.items.size(), 2);
+    QVERIFY(!QFileInfo::exists(stateB.manifestPath));
+    QCOMPARE(transactions().size(), 2);
+    original = ManifestService().load(secondOriginal);
+    QVERIFY(original.ok());
+    QCOMPARE(original.manifest->name, QStringLiteral("State B"));
+}
+
+void CoreTest::manifestTransactionChainsRetireAllAncestors()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("long_chain.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module long_chain; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord current;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("long_chain"),
+                               .name = QStringLiteral("State A"),
+                               .description = {},
+                               .tags = {}}},
+                 &current,
+                 &error),
+             qPrintable(error));
+    const auto transactions = [&]() {
+        return QDir(library).entryList(
+            {QStringLiteral(".xips-create-metadata-*")},
+            QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot,
+            QDir::Name);
+    };
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        current,
+        QStringLiteral("State B"),
+        WorkingCopyTestPoint::ManifestReplacementPublishedBeforeCleanup,
+        &error));
+    ScanResult scan = AssetScanner().scan(library);
+    QCOMPARE(scan.assets.size(), 1);
+    current = scan.assets.first();
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        current,
+        QStringLiteral("State C"),
+        WorkingCopyTestPoint::ManifestReplacementPublishedBeforeCleanup,
+        &error));
+    scan = AssetScanner().scan(library);
+    QCOMPARE(scan.assets.size(), 1);
+    current = scan.assets.first();
+    QCOMPARE(current.manifest.name, QStringLiteral("State C"));
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        current,
+        QStringLiteral("State D"),
+        WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+        &error));
+    QCOMPARE(transactions().size(), 3);
+    QVERIFY(!QFileInfo::exists(current.manifestPath));
+
+    ManifestTransactionRecoveryResult recovery =
+        service.recoverManifestTransactions(library);
+    QCOMPARE(recovery.restoredOriginal, 1);
+    QCOMPARE(recovery.cleanedReplacement, 2);
+    QCOMPARE(recovery.retained, 0);
+    QVERIFY(transactions().isEmpty());
+    ManifestLoadResult live = ManifestService().load(current.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name, QStringLiteral("State C"));
+
+    scan = AssetScanner().scan(library);
+    QCOMPARE(scan.assets.size(), 1);
+    current = scan.assets.first();
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        current,
+        QStringLiteral("State E"),
+        WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+        &error));
+    QCOMPARE(transactions().size(), 1);
+    recovery = service.recoverManifestTransactions(library);
+    QCOMPARE(recovery.restoredOriginal, 1);
+    QCOMPARE(recovery.retained, 0);
+    QVERIFY(transactions().isEmpty());
+    live = ManifestService().load(current.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name, QStringLiteral("State C"));
+}
+
+void CoreTest::corruptAncestorTransactionDoesNotHideNestedRecovery()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    const QString protocols = QDir(library).absoluteFilePath(
+        QStringLiteral("Protocols"));
+    QVERIFY(QDir().mkpath(protocols));
+    const QString source = temporary.filePath(QStringLiteral("nested_valid.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module nested_valid; endmodule\n")));
+    AssetLibraryService service;
+    AssetRecord nested;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = protocols,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("nested_valid"),
+                               .name = QStringLiteral("Nested original"),
+                               .description = {},
+                               .tags = {}}},
+                 &nested,
+                 &error),
+             qPrintable(error));
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        nested,
+        QStringLiteral("Nested replacement"),
+        WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+        &error));
+    QVERIFY(!QFileInfo::exists(nested.manifestPath));
+
+    const QString damagedId = QStringLiteral(
+        "11111111-1111-4111-8111-111111111111");
+    const QString damagedName = QStringLiteral(
+        ".xips-create-metadata-%1").arg(damagedId);
+    const QString damagedRoot = QDir(library).absoluteFilePath(damagedName);
+    QVERIFY(QDir().mkpath(damagedRoot));
+    const QJsonObject record{
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("owner"), QStringLiteral("xips-manifest-cas")},
+        {QStringLiteral("operation"), QStringLiteral("metadata")},
+        {QStringLiteral("transactionId"), damagedId},
+        {QStringLiteral("assetDirectory"), QStringLiteral("Protocols")},
+        {QStringLiteral("assetId"), QStringLiteral("protocols_container")},
+        {QStringLiteral("expectedCanonicalSha256"), QString(64, u'0')},
+        {QStringLiteral("replacementCanonicalSha256"), QString(64, u'1')},
+    };
+    QVERIFY(writeFile(QDir(damagedRoot).absoluteFilePath(
+                          QStringLiteral("transaction.json")),
+                      QJsonDocument(record).toJson(
+                          QJsonDocument::Indented)));
+    QVERIFY(writeFile(QDir(damagedRoot).absoluteFilePath(
+                          QStringLiteral("next.xips.json")),
+                      QByteArrayLiteral("{damaged ancestor")));
+
+    const ManifestTransactionRecoveryResult recovery =
+        service.recoverManifestTransactions(library);
+    QCOMPARE(recovery.restoredOriginal, 1);
+    QCOMPARE(recovery.retained, 1);
+    const ManifestLoadResult live = ManifestService().load(
+        nested.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name, QStringLiteral("Nested original"));
+    QVERIFY(QFileInfo(damagedRoot).isDir());
+}
+
+void CoreTest::manifestTransactionRetirementPreservesDataWhenLiveChanges()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("retire_race.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module retire_race; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord stateA;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("retire_race"),
+                               .name = QStringLiteral("State A"),
+                               .description = {},
+                               .tags = {}}},
+                 &stateA,
+                 &error),
+             qPrintable(error));
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        stateA,
+        QStringLiteral("State B"),
+        WorkingCopyTestPoint::ManifestReplacementPublishedBeforeCleanup,
+        &error));
+    const ScanResult scanB = AssetScanner().scan(library);
+    QCOMPARE(scanB.assets.size(), 1);
+    const AssetRecord stateB = scanB.assets.first();
+
+    bool liveChanged = false;
+    bool originalPathBlocked = false;
+    QString isolatedPath;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::ManifestTransactionIsolatedBeforeRetireLiveVerification,
+        [&](const WorkingCopyTestPoint, const QString &path) {
+            isolatedPath = path;
+            const QJsonObject record = QJsonDocument::fromJson(
+                                           readFile(QDir(path).absoluteFilePath(
+                                               QStringLiteral("transaction.json"))))
+                                           .object();
+            const QString originalName = QStringLiteral(
+                ".xips-create-%1-%2")
+                                             .arg(
+                                                 record.value(QStringLiteral("operation"))
+                                                     .toString(),
+                                                 record.value(QStringLiteral("transactionId"))
+                                                     .toString());
+            originalPathBlocked = QDir().mkpath(
+                QDir(QFileInfo(path).absolutePath()).absoluteFilePath(
+                    originalName));
+            const ManifestLoadResult loaded = ManifestService().load(
+                stateB.manifestPath);
+            if (!loaded.ok()) {
+                return;
+            }
+            Manifest concurrent = *loaded.manifest;
+            concurrent.name = QStringLiteral("Concurrent live state");
+            concurrent.rawObject.insert(QStringLiteral("retireRace"), true);
+            QString writeError;
+            liveChanged = ManifestService().write(stateB.manifestPath,
+                                                  concurrent,
+                                                  &writeError);
+        });
+
+    const ManifestTransactionRecoveryResult recovery =
+        service.recoverManifestTransactions(library);
+    QVERIFY(liveChanged);
+    QVERIFY(originalPathBlocked);
+    QVERIFY(!isolatedPath.isEmpty());
+    QCOMPARE(recovery.retained, 1);
+    QCOMPARE(recovery.items.size(), 1);
+    QCOMPARE(recovery.items.first().transactionPath, isolatedPath);
+    QVERIFY(QFileInfo(isolatedPath).isDir());
+    const QStringList unfinished =
+        AssetScanner::unfinishedOperationPaths(library);
+    QVERIFY(unfinished.contains(isolatedPath));
+    const ManifestLoadResult live = ManifestService().load(
+        stateB.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name,
+             QStringLiteral("Concurrent live state"));
+    QVERIFY(live.manifest->rawObject.value(QStringLiteral("retireRace"))
+                .toBool());
+    QVERIFY(QFileInfo(QDir(isolatedPath).absoluteFilePath(
+                          QStringLiteral("original.xips.json")))
+                .isFile());
+}
+
+void CoreTest::manifestCasRetirementRejectsThirdPartyLive()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("cas_retire.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module cas_retire; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("cas_retire"),
+                               .name = QStringLiteral("State A"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+
+    bool concurrentWriteSucceeded = false;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::ManifestReplacementPublishedBeforeCleanup,
+        [&](const WorkingCopyTestPoint, const QString &) {
+            const ManifestLoadResult loaded = ManifestService().load(
+                asset.manifestPath);
+            if (!loaded.ok()) {
+                return;
+            }
+            Manifest concurrent = *loaded.manifest;
+            concurrent.name = QStringLiteral("Third-party state");
+            concurrent.rawObject.insert(QStringLiteral("casRetireRace"), 1);
+            QString writeError;
+            concurrentWriteSucceeded = ManifestService().write(
+                asset.manifestPath,
+                concurrent,
+                &writeError);
+        });
+    MetadataUpdateResult update;
+    QVERIFY2(service.updateMetadata(
+                 asset,
+                 {.id = asset.manifest.id,
+                  .name = QStringLiteral("State B"),
+                  .description = asset.manifest.description,
+                  .tags = asset.manifest.tags},
+                 &update,
+                 &error),
+             qPrintable(error));
+    QVERIFY(concurrentWriteSucceeded);
+    QVERIFY(!update.retainedPath.isEmpty());
+    QVERIFY(QFileInfo(update.retainedPath).isDir());
+    QVERIFY(AssetScanner::unfinishedOperationPaths(library)
+                .contains(update.retainedPath));
+    const ManifestLoadResult live = ManifestService().load(
+        asset.manifestPath);
+    QVERIFY(live.ok());
+    QCOMPARE(live.manifest->name, QStringLiteral("Third-party state"));
+    QCOMPARE(live.manifest->rawObject.value(QStringLiteral("casRetireRace"))
+                 .toInt(),
+             1);
+    QVERIFY(QFileInfo(QDir(update.retainedPath).absoluteFilePath(
+                          QStringLiteral("original.xips.json")))
+                .isFile());
+}
+
+void CoreTest::manifestRecoveryPathIdentityIsCaseInsensitiveOnWindows()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows path identity regression");
+#else
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("case_path.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module case_path; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    AssetRecord stateA;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("CaseAsset"),
+                               .name = QStringLiteral("State A"),
+                               .description = {},
+                               .tags = {}}},
+                 &stateA,
+                 &error),
+             qPrintable(error));
+    const auto transactions = [&]() {
+        return QDir(library).entryList(
+            {QStringLiteral(".xips-create-metadata-*")},
+            QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot,
+            QDir::Name);
+    };
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        stateA,
+        QStringLiteral("State B"),
+        WorkingCopyTestPoint::ManifestReplacementPublishedBeforeCleanup,
+        &error));
+    const QString firstTransaction = transactions().first();
+    QDir libraryDirectory(library);
+    QVERIFY(libraryDirectory.rename(QStringLiteral("CaseAsset"),
+                                    QStringLiteral("CaseAsset_rename")));
+    QVERIFY(libraryDirectory.rename(QStringLiteral("CaseAsset_rename"),
+                                    QStringLiteral("caseasset")));
+    const ScanResult scanB = AssetScanner().scan(library);
+    QCOMPARE(scanB.assets.size(), 1);
+    const AssetRecord stateB = scanB.assets.first();
+    QCOMPARE(QFileInfo(stateB.assetRoot).fileName(),
+             QStringLiteral("caseasset"));
+    QVERIFY(leaveMetadataTransaction(
+        service,
+        stateB,
+        QStringLiteral("State C"),
+        WorkingCopyTestPoint::ManifestOriginalIsolatedBeforePublish,
+        &error));
+    const QStringList allTransactions = transactions();
+    QCOMPARE(allTransactions.size(), 2);
+    QString secondTransaction;
+    for (const QString &name : allTransactions) {
+        if (name != firstTransaction) {
+            secondTransaction = name;
+        }
+    }
+    QVERIFY(!secondTransaction.isEmpty());
+    const QString secondRoot = QDir(library).absoluteFilePath(
+        secondTransaction);
+    QVERIFY(writeFile(QDir(secondRoot).absoluteFilePath(
+                          QStringLiteral("next.xips.json")),
+                      QByteArrayLiteral("{corrupt case transaction")));
+
+    const ManifestTransactionRecoveryResult recovery =
+        service.recoverManifestTransactions(library);
+    QCOMPARE(recovery.retained, 2);
+    QVERIFY(!QFileInfo::exists(stateB.manifestPath));
+    QCOMPARE(transactions().size(), 2);
+    const ManifestLoadResult preservedOriginal = ManifestService().load(
+        QDir(secondRoot).absoluteFilePath(
+            QStringLiteral("original.xips.json")));
+    QVERIFY(preservedOriginal.ok());
+    QCOMPARE(preservedOriginal.manifest->name,
+             QStringLiteral("State B"));
+#endif
 }
 
 void CoreTest::updateReplacesWorkingCopyAndPreservesSavedVersions()
@@ -1331,6 +2472,113 @@ void CoreTest::assetDeletionIsBoundedAndLeavesSourcesUntouched()
     QVERIFY(removedPath.isEmpty());
 }
 
+void CoreTest::assetDeletionProofRejectsStaleAndBoundaryChanges()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("delete_me.sv"));
+    const QByteArray importedBytes = QByteArrayLiteral(
+        "module delete_me; localparam REV = 1; endmodule\n");
+    QVERIFY(writeFile(source, importedBytes));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    const ImportBatchResult imported = service.importAssets(library, {source});
+    QCOMPARE(imported.errors.size(), 0);
+    QCOMPARE(imported.created.size(), 1);
+    QCOMPARE(imported.createdProofs.size(), 1);
+    const AssetRecord asset = imported.created.first();
+    const AssetDeletionProof importUndoProof = imported.createdProofs.first();
+    QVERIFY2(importUndoProof.ok(), qPrintable(importUndoProof.error));
+    const QString workingFile = QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("delete_me.sv"));
+
+    const QByteArray editedAfterImport = QByteArrayLiteral(
+        "module delete_me; localparam REV = 2; endmodule\n");
+    QVERIFY(writeFile(workingFile, editedAfterImport));
+    QString removedPath;
+    QString error;
+    QVERIFY(!service.deleteAsset(library,
+                                 asset,
+                                 importUndoProof,
+                                 RemovalMode::Permanent,
+                                 &removedPath,
+                                 &error));
+    QVERIFY(error.contains(QStringLiteral("changed after deletion was confirmed")));
+    QVERIFY(removedPath.isEmpty());
+    QCOMPARE(readFile(workingFile), editedAfterImport);
+    QVERIFY(QDir(library)
+                .entryList({QStringLiteral(".xips-create-delete-*")},
+                           QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
+
+    const AssetDeletionProof confirmedProof = service.assetDeletionProof(asset);
+    QVERIFY2(confirmedProof.ok(), qPrintable(confirmedProof.error));
+    const QByteArray editedAtBoundary = QByteArrayLiteral(
+        "module delete_me; localparam REV = 3; endmodule\n");
+    int hookCount = 0;
+    bool mutationSucceeded = false;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::DeleteAssetIsolatedBeforeRemoval,
+        [&](const WorkingCopyTestPoint point, const QString &isolatedRoot) {
+            if (point != WorkingCopyTestPoint::DeleteAssetIsolatedBeforeRemoval) {
+                return;
+            }
+            ++hookCount;
+            mutationSucceeded = writeFile(
+                QDir(isolatedRoot).absoluteFilePath(
+                    QStringLiteral("delete_me.sv")),
+                editedAtBoundary);
+        });
+    error.clear();
+    QVERIFY(!service.deleteAsset(library,
+                                 asset,
+                                 confirmedProof,
+                                 RemovalMode::Permanent,
+                                 &removedPath,
+                                 &error));
+    QCOMPARE(hookCount, 1);
+    QVERIFY(mutationSucceeded);
+    QVERIFY(error.contains(QStringLiteral("changed at the deletion boundary")));
+    QVERIFY(removedPath.isEmpty());
+    QCOMPARE(readFile(workingFile), editedAtBoundary);
+    QVERIFY(QDir(library)
+                .entryList({QStringLiteral(".xips-create-delete-*")},
+                           QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
+
+    const AssetDeletionProof beforeVersionProof = service.assetDeletionProof(asset);
+    QVERIFY2(beforeVersionProof.ok(), qPrintable(beforeVersionProof.error));
+    VersionInfo saved;
+    error.clear();
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   &saved,
+                                   &error),
+             qPrintable(error));
+    error.clear();
+    QVERIFY(!service.deleteAsset(library,
+                                 asset,
+                                 beforeVersionProof,
+                                 RemovalMode::Permanent,
+                                 &removedPath,
+                                 &error));
+    QVERIFY(error.contains(QStringLiteral("changed after deletion was confirmed")));
+    QVERIFY(QFileInfo(saved.path).isDir());
+
+    const AssetDeletionProof finalProof = service.assetDeletionProof(asset);
+    QVERIFY2(finalProof.ok(), qPrintable(finalProof.error));
+    error.clear();
+    QVERIFY2(service.deleteAsset(library,
+                                 asset,
+                                 finalProof,
+                                 RemovalMode::Permanent,
+                                 &removedPath,
+                                 &error),
+             qPrintable(error));
+    QVERIFY(!QFileInfo::exists(asset.assetRoot));
+    QCOMPARE(readFile(source), importedBytes);
+}
+
 void CoreTest::versionsAreImmutableAndCopyable()
 {
     QTemporaryDir temporary;
@@ -1789,6 +3037,141 @@ void CoreTest::corruptSavedVersionIsRejectedEverywhere()
                 .entryList({QStringLiteral(".xips-create-*")},
                            QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
                 .isEmpty());
+}
+
+void CoreTest::versionInventoryKeepsValidVersionsWhenOneIsCorrupt()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("counter.v"));
+    QVERIFY(writeFile(
+        source,
+        QByteArrayLiteral("module counter; localparam REV = 1; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = service.suggestedMetadata(source)},
+                 &asset,
+                 &error),
+             qPrintable(error));
+
+    VersionInfo first;
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   &first,
+                                   &error),
+             qPrintable(error));
+    const QString workingFile = QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("counter.v"));
+    QVERIFY(writeFile(
+        workingFile,
+        QByteArrayLiteral("module counter; localparam REV = 2; endmodule\n")));
+    VersionInfo second;
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.1"),
+                                   &second,
+                                   &error),
+             qPrintable(error));
+
+    const QString corruptPayload = QDir(first.path).absoluteFilePath(
+        QStringLiteral("counter.v"));
+    QVERIFY(writeFile(
+        corruptPayload,
+        QByteArrayLiteral("module counter; localparam CORRUPT = 1; endmodule\n")));
+
+    const VersionInventoryResult inventory = service.versionInventory(
+        asset.assetRoot);
+    QVERIFY2(inventory.fatalError.isEmpty(),
+             qPrintable(inventory.fatalError));
+    QCOMPARE(inventory.validVersions.size(), 1);
+    QCOMPARE(inventory.validVersions.first().version, QStringLiteral("1.0.1"));
+    QCOMPARE(inventory.problems.size(), 1);
+    QVERIFY(inventory.problems.first().contains(first.path));
+
+    error.clear();
+    const QList<VersionInfo> strictVersions = service.versions(asset.assetRoot,
+                                                               &error);
+    QVERIFY(strictVersions.isEmpty());
+    QVERIFY(!error.isEmpty());
+}
+
+void CoreTest::versionInventorySkipsLinkedVersionDirectories()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("safe_link.v"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module safe_link; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = service.suggestedMetadata(source)},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    VersionInfo saved;
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   &saved,
+                                   &error),
+             qPrintable(error));
+
+    const QString linkedTarget = temporary.filePath(
+        QStringLiteral("outside-version-target"));
+    const QString sentinel = QDir(linkedTarget).absoluteFilePath(
+        QStringLiteral("must-not-be-traversed.txt"));
+    QVERIFY(writeFile(sentinel, QByteArrayLiteral("outside\n")));
+    const QString linkedVersion = QDir(QFileInfo(saved.path).absolutePath())
+                                      .absoluteFilePath(
+                                          QStringLiteral("9.9.9"));
+#ifdef Q_OS_WIN
+    QProcess junction;
+    junction.start(QStringLiteral("cmd.exe"),
+                   {QStringLiteral("/d"),
+                    QStringLiteral("/c"),
+                    QStringLiteral("mklink"),
+                    QStringLiteral("/J"),
+                    QDir::toNativeSeparators(linkedVersion),
+                    QDir::toNativeSeparators(linkedTarget)});
+    QVERIFY(junction.waitForFinished(10000));
+    QCOMPARE(junction.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(junction.exitCode(), 0);
+#else
+    QVERIFY2(QFile::link(linkedTarget, linkedVersion),
+             qPrintable(QStringLiteral("Cannot create directory link: %1")
+                            .arg(linkedVersion)));
+#endif
+
+    const VersionInventoryResult inventory = service.versionInventory(
+        asset.assetRoot);
+    QVERIFY2(inventory.fatalError.isEmpty(),
+             qPrintable(inventory.fatalError));
+    QCOMPARE(inventory.validVersions.size(), 1);
+    QCOMPARE(inventory.validVersions.first().version, QStringLiteral("1.0.0"));
+    QCOMPARE(inventory.problems.size(), 1);
+    QVERIFY(inventory.problems.first().contains(linkedVersion));
+    QVERIFY(QFileInfo(sentinel).isFile());
+
+    error.clear();
+    QVERIFY(service.versions(asset.assetRoot, &error).isEmpty());
+    QVERIFY(error.contains(linkedVersion));
+
+#ifdef Q_OS_WIN
+    QVERIFY(QDir().rmdir(linkedVersion));
+#else
+    QVERIFY(QFile::remove(linkedVersion));
+#endif
+    QVERIFY(QFileInfo(sentinel).isFile());
 }
 
 void CoreTest::createVersionRejectsConcurrentWorkingCopyMutation_data()
@@ -2474,6 +3857,104 @@ void CoreTest::groupChangesApplyAcrossAssets()
     for (const AssetRecord &asset : removed.assets) {
         QVERIFY(asset.manifest.tags.isEmpty());
     }
+}
+
+void CoreTest::groupChangesMergeConcurrencyAndKeepPartialSuccess()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString firstSource = temporary.filePath(QStringLiteral("first.sv"));
+    const QString secondSource = temporary.filePath(QStringLiteral("second.sv"));
+    QVERIFY(writeFile(firstSource,
+                      QByteArrayLiteral("module first; endmodule\n")));
+    QVERIFY(writeFile(secondSource,
+                      QByteArrayLiteral("module second; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    AssetLibraryService service;
+    const ImportBatchResult imported = service.importAssets(
+        library,
+        {firstSource, secondSource});
+    QCOMPARE(imported.created.size(), 2);
+    const AssetRecord first = imported.created.at(0);
+    const AssetRecord second = imported.created.at(1);
+
+    bool orthogonalMutationSucceeded = false;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::GroupMembershipMergedBeforeManifestCas,
+        [&](const WorkingCopyTestPoint point, const QString &manifestPath) {
+            if (point
+                != WorkingCopyTestPoint::GroupMembershipMergedBeforeManifestCas) {
+                return;
+            }
+            const ManifestLoadResult concurrent = ManifestService().load(
+                manifestPath);
+            if (!concurrent.ok()) {
+                return;
+            }
+            Manifest changed = *concurrent.manifest;
+            changed.tags.append(QStringLiteral("REMOTE"));
+            changed.version = QStringLiteral("9.0.0");
+            changed.rawObject.insert(QStringLiteral("groupCustom"), true);
+            QString writeError;
+            orthogonalMutationSucceeded = ManifestService().write(
+                manifestPath,
+                changed,
+                &writeError);
+        });
+    GroupChangeResult merged;
+    QString error;
+    QVERIFY2(service.changeGroupMembership({first},
+                                           QString(),
+                                           QStringLiteral("LOCAL"),
+                                           &merged,
+                                           &error),
+             qPrintable(error));
+    QVERIFY(orthogonalMutationSucceeded);
+    QVERIFY(merged.complete());
+    QCOMPARE(merged.updated, 1);
+    QCOMPARE(merged.failed, 0);
+    QCOMPARE(merged.items.size(), 1);
+    QCOMPARE(merged.items.first().outcome, GroupChangeOutcome::Updated);
+    ManifestLoadResult loaded = ManifestService().load(first.manifestPath);
+    QVERIFY(loaded.ok());
+    QVERIFY(loaded.manifest->tags.contains(QStringLiteral("LOCAL")));
+    QVERIFY(loaded.manifest->tags.contains(QStringLiteral("REMOTE")));
+    QCOMPARE(loaded.manifest->version, QStringLiteral("9.0.0"));
+    QCOMPARE(loaded.manifest->rawObject.value(QStringLiteral("groupCustom"))
+                 .toBool(),
+             true);
+
+    const QByteArray malformedManifest = QByteArrayLiteral("{broken sync");
+    QVERIFY(writeFile(second.manifestPath, malformedManifest));
+    GroupChangeResult partial;
+    error.clear();
+    QVERIFY(!service.changeGroupMembership({first, second},
+                                           QString(),
+                                           QStringLiteral("BATCH"),
+                                           &partial,
+                                           &error));
+    QCOMPARE(partial.updated, 1);
+    QCOMPARE(partial.failed, 1);
+    QCOMPARE(partial.conflicts, 0);
+    QCOMPARE(partial.items.size(), 2);
+    QCOMPARE(partial.items.at(0).outcome, GroupChangeOutcome::Updated);
+    QCOMPARE(partial.items.at(1).outcome, GroupChangeOutcome::Failed);
+    QVERIFY(error.contains(QStringLiteral("partially applied")));
+
+    loaded = ManifestService().load(first.manifestPath);
+    QVERIFY(loaded.ok());
+    QVERIFY(loaded.manifest->tags.contains(QStringLiteral("LOCAL")));
+    QVERIFY(loaded.manifest->tags.contains(QStringLiteral("REMOTE")));
+    QVERIFY(loaded.manifest->tags.contains(QStringLiteral("BATCH")));
+    QCOMPARE(loaded.manifest->version, QStringLiteral("9.0.0"));
+    QCOMPARE(loaded.manifest->rawObject.value(QStringLiteral("groupCustom"))
+                 .toBool(),
+             true);
+    QCOMPARE(readFile(second.manifestPath), malformedManifest);
+    QVERIFY(QDir(library)
+                .entryList({QStringLiteral(".xips-create-group-membership-*")},
+                           QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)
+                .isEmpty());
 }
 
 void CoreTest::activationUrisParse()
