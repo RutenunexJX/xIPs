@@ -53,7 +53,7 @@ add_executable(tst_interactions tst_interactions.cpp)
 target_compile_definitions(tst_interactions PRIVATE XIPS_EXAMPLE_LIBRARY="${CMAKE_SOURCE_DIR}/examples/library")
 target_link_libraries(tst_interactions PRIVATE xips_app Qt6::Test)
 xips_enable_strict_warnings(tst_interactions)
-add_test(NAME interactions COMMAND tst_interactions)
+add_test(NAME interactions COMMAND tst_interactions -o -,txt)
 
 get_target_property(_xips_qt_core_location Qt6::Core IMPORTED_LOCATION_RELEASE)
 if(NOT _xips_qt_core_location)

@@ -104,6 +104,7 @@ int ElaScrollBarPrivate::_pixelPosToRangeValue(int pos) const
 void ElaScrollBarPrivate::_initAllConfig()
 {
     Q_Q(ElaScrollBar);
+    if (!_originScrollBar) return;
     _handleScrollBarRangeChanged(_originScrollBar->minimum(), _originScrollBar->maximum());
     q->setSingleStep(_originScrollBar->singleStep());
     q->setPageStep(_originScrollBar->pageStep());
@@ -111,7 +112,7 @@ void ElaScrollBarPrivate::_initAllConfig()
 
 void ElaScrollBarPrivate::_handleScrollBarValueChanged(QScrollBar* scrollBar, int value)
 {
-    scrollBar->setValue(value);
+    if (scrollBar) scrollBar->setValue(value);
 }
 
 void ElaScrollBarPrivate::_handleScrollBarRangeChanged(int min, int max)
@@ -131,6 +132,10 @@ void ElaScrollBarPrivate::_handleScrollBarRangeChanged(int min, int max)
 void ElaScrollBarPrivate::_handleScrollBarGeometry()
 {
     Q_Q(ElaScrollBar);
+    if (!_originScrollBar || !_originScrollArea) {
+        q->hide();
+        return;
+    }
     q->raise();
     q->setSingleStep(_originScrollBar->singleStep());
     q->setPageStep(_originScrollBar->pageStep());

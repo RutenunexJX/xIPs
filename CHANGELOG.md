@@ -12,6 +12,7 @@
 - Require the shared p27 Ela API, export capability/source provenance, and include
   replayable vendor patches and DLL checksums in the formal directory package.
 - Fix focused ElaListView teardown by retaining its style through Qt cleanup.
+- Guard overlay scrollbar origins and retain Qt text units for touchpad gestures.
 
 ## 2.1.0 — 2026-09-24
 

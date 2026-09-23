@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QHelpEvent>
 #include <QPointer>
+#include <QPlainTextEdit>
 #include <QScreen>
 #include <QTimer>
 #include <QWheelEvent>
@@ -16,14 +17,32 @@ namespace xips
 {
 namespace
 {
+class TextUnitScrollBar final : public ElaScrollBar
+{
+  public:
+    using ElaScrollBar::ElaScrollBar;
+  protected:
+    void wheelEvent(QWheelEvent *event) override
+    {
+        if (!event->pixelDelta().isNull())
+        {
+            stopSmoothWheel();
+            QScrollBar::wheelEvent(event);
+        }
+        else
+            ElaScrollBar::wheelEvent(event);
+    }
+};
 class WheelRouter final : public QObject
 {
     QPointer<ElaScrollBar> horizontal;
     QPointer<ElaScrollBar> vertical;
+    bool textUnits;
   public:
     explicit WheelRouter(QAbstractScrollArea *area) : QObject(area),
         horizontal(qobject_cast<ElaScrollBar *>(area->horizontalScrollBar())),
-        vertical(qobject_cast<ElaScrollBar *>(area->verticalScrollBar()))
+        vertical(qobject_cast<ElaScrollBar *>(area->verticalScrollBar())),
+        textUnits(qobject_cast<QPlainTextEdit *>(area) != nullptr)
     {
         area->installEventFilter(this);
         area->viewport()->installEventFilter(this);
@@ -42,6 +61,13 @@ class WheelRouter final : public QObject
         const auto pixels = wheel->pixelDelta();
         if (pixels.isNull())
             return false;
+        if (textUnits)
+        {
+            for (const auto &bar : {horizontal, vertical})
+                if (bar)
+                    bar->stopSmoothWheel();
+            return false;
+        }
         const auto bar = qAbs(pixels.x()) > qAbs(pixels.y()) || wheel->modifiers().testFlag(Qt::ShiftModifier)
             ? horizontal : vertical;
         if (!bar)
@@ -138,6 +164,11 @@ void enableSmoothScrolling(QAbstractScrollArea *area)
     if (area->property("xipsSmoothScrolling").toBool())
         return;
     area->setProperty("xipsSmoothScrolling", true);
+    if (qobject_cast<QPlainTextEdit *>(area))
+    {
+        area->setHorizontalScrollBar(new TextUnitScrollBar(Qt::Horizontal, area));
+        area->setVerticalScrollBar(new TextUnitScrollBar(Qt::Vertical, area));
+    }
     new WheelRouter(area);
     for (auto *scroll : {area->horizontalScrollBar(), area->verticalScrollBar()})
         if (auto *bar = qobject_cast<ElaScrollBar *>(scroll))

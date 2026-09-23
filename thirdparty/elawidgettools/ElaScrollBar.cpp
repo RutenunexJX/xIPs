@@ -85,6 +85,12 @@ ElaScrollBar::ElaScrollBar(QScrollBar* originScrollBar, QAbstractScrollArea* par
 
     d->_originScrollBar = originScrollBar;
     d->_initAllConfig();
+    connect(originScrollBar, &QObject::destroyed, this, [this, d] {
+        d->_originScrollBar.clear();
+        if (d->_originScrollArea) d->_originScrollArea->removeEventFilter(this);
+        stopSmoothWheel();
+        hide();
+    });
 
     connect(d->_originScrollBar, &QScrollBar::valueChanged, this, [=](int value) {
         d->_handleScrollBarValueChanged(this, value);

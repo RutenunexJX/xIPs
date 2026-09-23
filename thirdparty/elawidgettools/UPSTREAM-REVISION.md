@@ -314,5 +314,12 @@ QWidget teardown. This changes no public API or object layout; the capability AB
 remains `454cac2d-p27`, while the source fingerprint identifies this additional fix.
 The xIPs interaction regression retains focused list teardown and pending input.
 
+Apply `patches/29-wave-overlay-origin-lifetime.patch` after patch 28.
+Overlay scrollbar origin/area references are QPointers. Replacing or destroying
+the origin removes the observer, stops pending wheel motion and hides the overlay;
+queued value/geometry callbacks guard expired objects. This private implementation
+fix preserves the p27 public capability ABI. The application keeps QPlainTextEdit
+pixel gestures in Qt's native text units while angle-only input uses Ela motion.
+
 Both `LICENSE` (ElaWidgetTools) and `Font/FontAwesome-LICENSE.txt` must
 accompany redistributed binaries.

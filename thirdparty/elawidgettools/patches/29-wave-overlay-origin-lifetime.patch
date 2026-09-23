@@ -1,0 +1,92 @@
+diff --git a/ElaScrollBar.cpp b/ElaScrollBar.cpp
+index f7d65df..07ee2c2 100644
+--- a/ElaScrollBar.cpp
++++ b/ElaScrollBar.cpp
+@@ -83,8 +83,14 @@ ElaScrollBar::ElaScrollBar(QScrollBar* originScrollBar, QAbstractScrollArea* par
+     orientation == Qt::Horizontal ? parent->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff) : parent->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+     parent->installEventFilter(this);
+ 
+-    d->_originScrollBar = originScrollBar;
+-    d->_initAllConfig();
++    d->_originScrollBar = originScrollBar;
++    d->_initAllConfig();
++    connect(originScrollBar, &QObject::destroyed, this, [this, d] {
++        d->_originScrollBar.clear();
++        if (d->_originScrollArea) d->_originScrollArea->removeEventFilter(this);
++        stopSmoothWheel();
++        hide();
++    });
+ 
+     connect(d->_originScrollBar, &QScrollBar::valueChanged, this, [=](int value) {
+         d->_handleScrollBarValueChanged(this, value);
+diff --git a/private/ElaScrollBarPrivate.cpp b/private/ElaScrollBarPrivate.cpp
+index 8ca1639..0e08f89 100644
+--- a/private/ElaScrollBarPrivate.cpp
++++ b/private/ElaScrollBarPrivate.cpp
+@@ -101,17 +101,18 @@ int ElaScrollBarPrivate::_pixelPosToRangeValue(int pos) const
+                                            sliderMax - sliderMin, opt.upsideDown);
+ }
+ 
+-void ElaScrollBarPrivate::_initAllConfig()
+-{
+-    Q_Q(ElaScrollBar);
++void ElaScrollBarPrivate::_initAllConfig()
++{
++    Q_Q(ElaScrollBar);
++    if (!_originScrollBar) return;
+     _handleScrollBarRangeChanged(_originScrollBar->minimum(), _originScrollBar->maximum());
+     q->setSingleStep(_originScrollBar->singleStep());
+     q->setPageStep(_originScrollBar->pageStep());
+ }
+ 
+-void ElaScrollBarPrivate::_handleScrollBarValueChanged(QScrollBar* scrollBar, int value)
+-{
+-    scrollBar->setValue(value);
++void ElaScrollBarPrivate::_handleScrollBarValueChanged(QScrollBar* scrollBar, int value)
++{
++    if (scrollBar) scrollBar->setValue(value);
+ }
+ 
+ void ElaScrollBarPrivate::_handleScrollBarRangeChanged(int min, int max)
+@@ -128,9 +129,13 @@ void ElaScrollBarPrivate::_handleScrollBarRangeChanged(int min, int max)
+     }
+ }
+ 
+-void ElaScrollBarPrivate::_handleScrollBarGeometry()
+-{
+-    Q_Q(ElaScrollBar);
++void ElaScrollBarPrivate::_handleScrollBarGeometry()
++{
++    Q_Q(ElaScrollBar);
++    if (!_originScrollBar || !_originScrollArea) {
++        q->hide();
++        return;
++    }
+     q->raise();
+     q->setSingleStep(_originScrollBar->singleStep());
+     q->setPageStep(_originScrollBar->pageStep());
+diff --git a/private/ElaScrollBarPrivate.h b/private/ElaScrollBarPrivate.h
+index 09a9b56..845f2a5 100644
+--- a/private/ElaScrollBarPrivate.h
++++ b/private/ElaScrollBarPrivate.h
+@@ -3,7 +3,8 @@
+ 
+ #include <QAbstractScrollArea>
+ #include <QObject>
+-#include <QScrollBar>
++#include <QScrollBar>
++#include <QPointer>
+ 
+ #include "ElaWidgetToolsExport.h"
+ #include "ElaPropertyMacro.h"
+@@ -24,8 +25,8 @@ public:
+     Q_SLOT void onRangeChanged(int min, int max);
+ 
+ private:
+-    QScrollBar* _originScrollBar{nullptr};
+-    QAbstractScrollArea* _originScrollArea{nullptr};
++    QPointer<QScrollBar> _originScrollBar;
++    QPointer<QAbstractScrollArea> _originScrollArea;
+     QTimer* _expandTimer{nullptr};
+     bool _isExpand{false};
+     QPropertyAnimation* _slideSmoothAnimation{nullptr};

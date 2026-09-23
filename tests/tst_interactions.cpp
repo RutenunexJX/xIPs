@@ -14,6 +14,7 @@
 #include <QFile>
 #include <QHelpEvent>
 #include <QPainter>
+#include <QPlainTextEdit>
 #include <QSemaphore>
 #include <QSplitter>
 #include <QStringListModel>
@@ -346,6 +347,38 @@ class Interactions final : public QObject
                 QVERIFY(qAbs(actual.blue() - expected.blue()) <= 1);
             }
         }
+    }
+    void plainTextPrecisionRetainsNativeUnits()
+    {
+        QPlainTextEdit reference, adapted;
+        QStringList lines;
+        for (int i = 0; i < 300; ++i)
+            lines.append(QStringLiteral("Line %1").arg(i));
+        for (auto *editor : {&reference, &adapted})
+        {
+            editor->setPlainText(lines.join('\n'));
+            editor->resize(400, 400);
+            editor->show();
+        }
+        enableSmoothScrolling(&adapted);
+        QVERIFY(QTest::qWaitForWindowExposed(&reference));
+        QVERIFY(QTest::qWaitForWindowExposed(&adapted));
+        QCoreApplication::processEvents();
+        QTRY_VERIFY(adapted.verticalScrollBar()->maximum() > 100);
+        const auto wheel = [](QPlainTextEdit *editor, QPoint pixels, QPoint angles) {
+            QWheelEvent event(QPointF(10, 10), editor->viewport()->mapToGlobal(QPoint(10, 10)),
+                pixels, angles, Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+            QApplication::sendEvent(editor->viewport(), &event);
+        };
+        for (auto *editor : {&reference, &adapted})
+        {
+            editor->verticalScrollBar()->setValue(20);
+            wheel(editor, QPoint(0, -37), {});
+        }
+        QCOMPARE(adapted.verticalScrollBar()->value(), reference.verticalScrollBar()->value());
+        for (auto *editor : {&reference, &adapted})
+            wheel(editor, {}, QPoint(0, -120));
+        QTRY_COMPARE(adapted.verticalScrollBar()->value(), reference.verticalScrollBar()->value());
     }
 };
 QTEST_MAIN(Interactions)

@@ -4,6 +4,7 @@
 #include <QAbstractScrollArea>
 #include <QObject>
 #include <QScrollBar>
+#include <QPointer>
 
 #include "ElaWidgetToolsExport.h"
 #include "ElaPropertyMacro.h"
@@ -24,8 +25,8 @@ public:
     Q_SLOT void onRangeChanged(int min, int max);
 
 private:
-    QScrollBar* _originScrollBar{nullptr};
-    QAbstractScrollArea* _originScrollArea{nullptr};
+    QPointer<QScrollBar> _originScrollBar;
+    QPointer<QAbstractScrollArea> _originScrollArea;
     QTimer* _expandTimer{nullptr};
     bool _isExpand{false};
     QPropertyAnimation* _slideSmoothAnimation{nullptr};

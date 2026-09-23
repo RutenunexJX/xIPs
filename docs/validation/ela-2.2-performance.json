@@ -541,14 +541,15 @@
   ],
   "patchReplay": {
     "base": "c5bdd8e",
-    "sharedBaseline": "75180fad5e5f5142684cf092649deffe5720994d",
+    "sharedBaseline": "8f7abf69e464c582387394944b873b8364d85bec",
     "patches": [
       25,
       26,
       27,
-      28
+      28,
+      29
     ],
-    "verifiedFiles": 34,
+    "verifiedFiles": 37,
     "files": [
       "Development/ElaCentralStackedWidget.cpp",
       "Development/ElaCentralStackedWidget.h",
@@ -583,7 +584,10 @@
       "private/ElaTabWidgetHost.cpp",
       "private/ElaTabWidgetHost.h",
       "private/ElaTabWidgetPrivate.cpp",
-      "private/ElaWindowPrivate.cpp"
+      "private/ElaWindowPrivate.cpp",
+      "ElaScrollBar.cpp",
+      "private/ElaScrollBarPrivate.cpp",
+      "private/ElaScrollBarPrivate.h"
     ]
   }
 }

@@ -43,7 +43,7 @@ foreach(_ela_source IN LISTS _ela_sources)
     string(APPEND _ela_inventory "${_ela_source}:${_ela_hash}\n")
 endforeach()
 string(SHA256 XIPS_ELA_SOURCE_SHA256 "${_ela_inventory}")
-set(XIPS_CAPABILITIES_JSON "{\"schema\":\"xips.browser-capabilities/v1\",\"version\":\"${PROJECT_VERSION}\",\"nativeSurfaceAbi\":1,\"elaBaseline\":\"454cac2d-p27\",\"elaSourceSha256\":\"${XIPS_ELA_SOURCE_SHA256}\",\"qt\":\"${Qt6_VERSION}\",\"capabilities\":[\"immutable-revisions\",\"interruptible-combo\",\"precision-wheel\",\"split-ratios\",\"english-edit-menu\",\"interruptible-menu\"]}")
+set(XIPS_CAPABILITIES_JSON "{\"schema\":\"xips.browser-capabilities/v1\",\"version\":\"${PROJECT_VERSION}\",\"nativeSurfaceAbi\":1,\"elaBaseline\":\"454cac2d-p27\",\"elaPatchLevel\":29,\"elaSourceSha256\":\"${XIPS_ELA_SOURCE_SHA256}\",\"qt\":\"${Qt6_VERSION}\",\"capabilities\":[\"immutable-revisions\",\"interruptible-combo\",\"precision-wheel\",\"native-text-scroll-units\",\"split-ratios\",\"english-edit-menu\",\"interruptible-menu\"]}")
 file(WRITE "${CMAKE_BINARY_DIR}/xips-capabilities.json" "${XIPS_CAPABILITIES_JSON}\n")
 configure_file(src/app/BuildCapabilities.h.in generated/BuildCapabilities.h @ONLY)
 

@@ -90,6 +90,7 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs') -Destination (Join-Path $o
     backend = 'ela'; qt = '6.10.2'; compiler = 'MinGW 13.1'; nativeSurfaceAbi = 1
     suiteProtocol = 'suite-app/v1'; suiteSdk = $suiteVersionMatch.Groups[1].Value
     elaBaseline = $capabilities.elaBaseline; elaSourceSha256 = $capabilities.elaSourceSha256
+    elaPatchLevel = $capabilities.elaPatchLevel
     elaDllSha256 = (Get-FileHash -LiteralPath (Join-Path $outputRoot 'ElaWidgetTools.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
     builtAtUtc = [DateTime]::UtcNow.ToString('o')
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputRoot 'build-info.json') -Encoding utf8
