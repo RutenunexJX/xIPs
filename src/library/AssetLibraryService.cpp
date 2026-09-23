@@ -1,4 +1,4 @@
-#include "library/AssetLibraryService.h"
+﻿#include "library/AssetLibraryService.h"
 
 #include "assetcore/JsonUtil.h"
 #include "library/AssetScanner.h"
@@ -15,6 +15,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QStorageInfo>
 #include <QUuid>
 
 #include <algorithm>
@@ -32,33 +33,11 @@ bool fail(QString *error, const QString &message)
     return false;
 }
 
-bool copyPayload(const QString &sourceRoot,
-                 const QString &destinationRoot,
-                 QString *error)
-{
-    QStringList payloadFiles;
-    if (!files::collectPayloadFiles(sourceRoot,
-                                    payloadFiles,
-                                    files::LinkPolicy::Reject,
-                                    error)) {
-        return false;
-    }
-    for (const QString &relative : payloadFiles) {
-        const QString source = QDir(sourceRoot).absoluteFilePath(relative);
-        const QString destination = QDir(destinationRoot).absoluteFilePath(relative);
-        if (!QDir().mkpath(QFileInfo(destination).absolutePath())) {
-            return fail(error,
-                        QStringLiteral("Cannot create destination directory for %1")
-                            .arg(destination));
-        }
-        if (!QFile::copy(source, destination)) {
-            return fail(error,
-                        QStringLiteral("Cannot copy %1 to %2")
-                            .arg(source, destination));
-        }
-    }
-    return true;
-}
+bool verifiedPhysicalDirectoryChain(const QString &root,
+                                    const QString &directory,
+                                    QString *error);
+
+bool verifiedPhysicalPathFromVolume(const QString &path, QString *error);
 
 QStringList cleanedTags(QStringList tags)
 {
@@ -242,6 +221,104 @@ bool strictPayloadFingerprint(const QString &root,
     return true;
 }
 
+bool strictSelectedFileFingerprint(const QString &root,
+                                   const QStringList &expectedFiles,
+                                   QString *fingerprint,
+                                   QString *error)
+{
+    if (fingerprint) {
+        fingerprint->clear();
+    }
+    if (expectedFiles.isEmpty()) {
+        return fail(error, QStringLiteral("The selected source has no payload files"));
+    }
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(QByteArrayView("xips-payload-v1\0", 16));
+    const auto addSizedData = [&hash](const QByteArray &data) {
+        hash.addData(QByteArray::number(static_cast<qlonglong>(data.size())));
+        hash.addData(QByteArrayView(":", 1));
+        hash.addData(data);
+    };
+    for (const QString &relative : expectedFiles) {
+        if (relative.isEmpty() || QDir::isAbsolutePath(relative)
+            || relative == QStringLiteral("..")
+            || relative.startsWith(QStringLiteral("../"))) {
+            return fail(error, QStringLiteral("The selected source path is invalid"));
+        }
+        hash.addData(QByteArrayView("\0path\0", 6));
+        addSizedData(relative.toUtf8());
+        const QString path = QDir(root).absoluteFilePath(relative);
+        const QFileInfo before(path);
+        if (!before.isFile() || files::isLinkLike(before)
+            || !files::isWithin(path, root)) {
+            return fail(error,
+                        QStringLiteral("Payload source changed or became linked: %1")
+                            .arg(path));
+        }
+        QFile file(before.absoluteFilePath());
+        if (!file.open(QIODevice::ReadOnly)) {
+            return fail(error,
+                        QStringLiteral("Cannot read payload source for verification: %1")
+                            .arg(path));
+        }
+        const qint64 expectedSize = file.size();
+        const QDateTime expectedModified = file.fileTime(
+            QFileDevice::FileModificationTime);
+        if (expectedSize < 0) {
+            return fail(error,
+                        QStringLiteral("Cannot determine payload source size: %1")
+                            .arg(path));
+        }
+        hash.addData(QByteArrayView("\0data\0", 6));
+        hash.addData(QByteArray::number(expectedSize));
+        hash.addData(QByteArrayView(":", 1));
+        qint64 bytesRead = 0;
+        while (!file.atEnd()) {
+            const QByteArray chunk = file.read(1024 * 1024);
+            if (chunk.isEmpty() && file.error() != QFileDevice::NoError) {
+                return fail(error,
+                            QStringLiteral("Cannot finish reading payload source: %1")
+                                .arg(path));
+            }
+            hash.addData(chunk);
+            bytesRead += static_cast<qint64>(chunk.size());
+        }
+        const QFileInfo after(path);
+        if (file.error() != QFileDevice::NoError
+            || bytesRead != expectedSize || !after.isFile()
+            || files::isLinkLike(after) || after.size() != expectedSize
+            || after.fileTime(QFileDevice::FileModificationTime)
+                   != expectedModified) {
+            return fail(error,
+                        QStringLiteral("Payload source changed while being verified: %1")
+                            .arg(path));
+        }
+    }
+    if (fingerprint) {
+        *fingerprint = QStringLiteral("sha256:")
+                       + QString::fromLatin1(hash.result().toHex());
+    }
+    return true;
+}
+
+bool strictSourcePayloadFingerprint(const SourcePayload &source,
+                                    QString *fingerprint,
+                                    QString *error)
+{
+    if (source.singleFile) {
+        return strictSelectedFileFingerprint(source.root,
+                                             source.files,
+                                             fingerprint,
+                                             error);
+    }
+    QStringList confirmedFiles;
+    return strictPayloadFingerprint(source.root,
+                                    &source.files,
+                                    &confirmedFiles,
+                                    fingerprint,
+                                    error);
+}
+
 UpdatePreview comparePayload(const QString &assetRoot,
                              const SourcePayload &source)
 {
@@ -283,9 +360,17 @@ bool validateAssetRecord(const AssetRecord &asset,
     const QFileInfo rootInfo(root);
     const QString expectedManifest = QDir(root).absoluteFilePath(
         QStringLiteral(".xips.json"));
+    QString physicalError;
     if (!rootInfo.isDir() || files::isLinkLike(rootInfo)
-        || files::normalizedAbsolute(asset.manifestPath) != expectedManifest) {
-        return fail(error, QStringLiteral("Selected asset path is invalid"));
+        || files::normalizedAbsolute(asset.manifestPath) != expectedManifest
+        || !verifiedPhysicalPathFromVolume(root, &physicalError)) {
+        return fail(
+            error,
+            physicalError.isEmpty()
+                ? QStringLiteral("Selected asset path is invalid")
+                : QStringLiteral(
+                      "Selected asset path contains a linked or invalid physical ancestor: %1")
+                      .arg(physicalError));
     }
     const ManifestLoadResult loaded = ManifestService().load(expectedManifest);
     if (!loaded.ok() || loaded.manifest->id != asset.manifest.id) {
@@ -310,6 +395,9 @@ bool strictFingerprintAtRoot(const QString &root,
         fingerprint->clear();
     }
     const QString absoluteRoot = files::normalizedAbsolute(root);
+    if (!verifiedPhysicalPathFromVolume(absoluteRoot, error)) {
+        return false;
+    }
     const ManifestService manifestService;
     const ManifestLoadResult loaded = manifestService.load(
         QDir(absoluteRoot).absoluteFilePath(QStringLiteral(".xips.json")));
@@ -352,6 +440,9 @@ bool strictNonEmptyAssetFingerprintAtRoot(const QString &root,
                                           QString *payloadFingerprint,
                                           QString *error)
 {
+    if (!verifiedPhysicalPathFromVolume(root, error)) {
+        return false;
+    }
     QStringList initialFiles;
     QString initialPayloadFingerprint;
     if (!strictPayloadFingerprint(root,
@@ -558,12 +649,18 @@ bool validateWorkingCopyRecovery(const AssetRecord &asset,
         QStringLiteral(
             "^\\.xips-create-recovery-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
         QRegularExpression::CaseInsensitiveOption);
+    QString physicalError;
     if (!recoveryInfo.isDir() || files::isLinkLike(recoveryInfo)
         || !files::isWithin(recoveryParent, assetParent)
         || !files::isWithin(assetParent, recoveryParent)
-        || !recoveryName.match(recoveryInfo.fileName()).hasMatch()) {
+        || !recoveryName.match(recoveryInfo.fileName()).hasMatch()
+        || !verifiedPhysicalPathFromVolume(recovery, &physicalError)) {
         return fail(error,
-                    QStringLiteral("The working-copy recovery path is invalid"));
+                    physicalError.isEmpty()
+                        ? QStringLiteral("The working-copy recovery path is invalid")
+                        : QStringLiteral(
+                              "The working-copy recovery path has a linked or invalid physical ancestor: %1")
+                              .arg(physicalError));
     }
     const QFileInfo recoveryVersions(
         QDir(recovery).absoluteFilePath(QStringLiteral(".xips")));
@@ -586,6 +683,53 @@ bool samePath(const QString &left, const QString &right)
 {
     return !left.isEmpty() && !right.isEmpty()
            && files::isWithin(left, right) && files::isWithin(right, left);
+}
+
+bool verifiedPhysicalDirectoryChain(const QString &root,
+                                    const QString &directory,
+                                    QString *error)
+{
+    const QString boundary = files::normalizedAbsolute(root);
+    const QString target = files::normalizedAbsolute(directory);
+    const QFileInfo boundaryInfo(boundary);
+    if (!boundaryInfo.isDir() || files::isLinkLike(boundaryInfo)
+        || !files::isWithin(target, boundary)) {
+        return fail(error,
+                    QStringLiteral("Directory chain is outside its verified root (%1 -> %2)")
+                        .arg(boundary, target));
+    }
+    QString current = boundary;
+    const QString relative = QDir::fromNativeSeparators(
+        QDir(boundary).relativeFilePath(target));
+    if (relative == QStringLiteral(".")) {
+        return true;
+    }
+    for (const QString &part : relative.split(u'/', Qt::SkipEmptyParts)) {
+        if (part == QStringLiteral(".") || part == QStringLiteral("..")) {
+            return fail(error,
+                        QStringLiteral("Directory chain contains an invalid segment"));
+        }
+        current = QDir(current).absoluteFilePath(part);
+        const QFileInfo info(current);
+        if (!info.isDir() || files::isLinkLike(info)) {
+            return fail(error,
+                        QStringLiteral("Directory chain contains a linked or invalid directory: %1")
+                            .arg(files::normalizedAbsolute(current)));
+        }
+    }
+    return samePath(current, target);
+}
+
+bool verifiedPhysicalPathFromVolume(const QString &path, QString *error)
+{
+    const QString normalized = files::normalizedAbsolute(path);
+    const QString storageRoot = QStorageInfo(normalized).rootPath();
+    if (storageRoot.isEmpty()) {
+        return fail(error,
+                    QStringLiteral("Cannot determine the physical volume root for %1")
+                        .arg(normalized));
+    }
+    return verifiedPhysicalDirectoryChain(storageRoot, normalized, error);
 }
 
 bool validFingerprint(const QString &fingerprint)
@@ -954,15 +1098,21 @@ bool verifySavedSnapshot(const QString &assetRoot,
     const QFileInfo versionsInfo(versionsRoot);
     const QString snapshot = files::normalizedAbsolute(snapshotRoot);
     const QFileInfo snapshotInfo(snapshot);
+    QString physicalError;
     if (!internalInfo.isDir() || files::isLinkLike(internalInfo)
         || !versionsInfo.isDir() || files::isLinkLike(versionsInfo)
         || !snapshotInfo.isDir() || files::isLinkLike(snapshotInfo)
         || !samePath(snapshotInfo.absolutePath(), versionsRoot)
         || (requireFinalDirectoryName
-            && snapshotInfo.fileName() != expectedVersion)) {
+            && snapshotInfo.fileName() != expectedVersion)
+        || !verifiedPhysicalPathFromVolume(root, &physicalError)
+        || !verifiedPhysicalPathFromVolume(snapshot, &physicalError)) {
         return fail(error,
-                    QStringLiteral("Saved version path is invalid or linked: %1")
-                        .arg(snapshot));
+                    QStringLiteral("Saved version path is invalid or linked: %1%2")
+                        .arg(snapshot,
+                             physicalError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1").arg(physicalError)));
     }
 
     const QString metadataPath = QDir(snapshot).absoluteFilePath(
@@ -1075,6 +1225,7 @@ bool verifySavedSnapshot(const QString &assetRoot,
     verified.info = metadata;
     verified.info.path = snapshot;
     verified.info.strictContentHash = strictHash;
+    verified.info.payloadFingerprint = confirmedPayloadFingerprint;
     verified.manifest = *confirmedManifest.manifest;
     verified.files = confirmedFiles;
     verified.payloadFingerprint = confirmedPayloadFingerprint;
@@ -1111,9 +1262,27 @@ bool sameSnapshotContentProof(const SnapshotProof &left,
 bool copyPayloadFiles(const QString &sourceRoot,
                       const QStringList &payloadFiles,
                       const QString &destinationRoot,
-                      QString *error)
+                      QString *error,
+                      const QString &physicalBoundary = {})
 {
+    const QString normalizedDestinationRoot = files::normalizedAbsolute(
+        destinationRoot);
+    const QString boundary = physicalBoundary.isEmpty()
+                                 ? QFileInfo(normalizedDestinationRoot)
+                                       .absolutePath()
+                                 : files::normalizedAbsolute(physicalBoundary);
     for (const QString &relative : payloadFiles) {
+        const QString normalizedRelative = QDir::fromNativeSeparators(
+            QDir::cleanPath(relative));
+        if (normalizedRelative.isEmpty()
+            || normalizedRelative == QStringLiteral(".")
+            || normalizedRelative == QStringLiteral("..")
+            || normalizedRelative.startsWith(QStringLiteral("../"))
+            || QDir::isAbsolutePath(normalizedRelative)) {
+            return fail(error,
+                        QStringLiteral("Payload destination path is invalid: %1")
+                            .arg(relative));
+        }
         const QString source = QDir(sourceRoot).absoluteFilePath(relative);
         const QFileInfo sourceInfo(source);
         if (!sourceInfo.isFile() || files::isLinkLike(sourceInfo)) {
@@ -1121,12 +1290,47 @@ bool copyPayloadFiles(const QString &sourceRoot,
                         QStringLiteral("Payload source changed or became linked: %1")
                             .arg(source));
         }
-        const QString destination = QDir(destinationRoot).absoluteFilePath(relative);
-        if (!QDir().mkpath(QFileInfo(destination).absolutePath())
+        const QString destination = QDir(normalizedDestinationRoot)
+                                        .absoluteFilePath(normalizedRelative);
+        const QString destinationParent = QFileInfo(destination).absolutePath();
+        QString boundaryError;
+        if (!files::isWithin(destinationParent, normalizedDestinationRoot)
+            || !verifiedPhysicalDirectoryChain(boundary,
+                                               normalizedDestinationRoot,
+                                               &boundaryError)
+            || !QDir().mkpath(destinationParent)
+            || !verifiedPhysicalDirectoryChain(boundary,
+                                               destinationParent,
+                                               &boundaryError)
+            || !verifiedPhysicalDirectoryChain(normalizedDestinationRoot,
+                                               destinationParent,
+                                               &boundaryError)) {
+            return fail(
+                error,
+                QStringLiteral("Payload destination changed or became linked before copy: %1%2")
+                    .arg(destinationParent,
+                         boundaryError.isEmpty()
+                             ? QString()
+                             : QStringLiteral(": %1").arg(boundaryError)));
+        }
+        // Recheck the complete chain immediately before the filesystem write.
+        if (!verifiedPhysicalDirectoryChain(boundary,
+                                            destinationParent,
+                                            &boundaryError)
             || !QFile::copy(source, destination)) {
             return fail(error,
-                        QStringLiteral("Cannot copy %1 to %2")
-                            .arg(source, destination));
+                        boundaryError.isEmpty()
+                            ? QStringLiteral("Cannot copy %1 to %2")
+                                  .arg(source, destination)
+                            : QStringLiteral("Payload destination changed or became linked before copy: %1: %2")
+                                  .arg(destinationParent, boundaryError));
+        }
+        if (!verifiedPhysicalDirectoryChain(boundary,
+                                            destinationParent,
+                                            &boundaryError)) {
+            return fail(error,
+                        QStringLiteral("Payload destination changed during copy: %1: %2")
+                            .arg(destinationParent, boundaryError));
         }
     }
     return true;
@@ -1176,10 +1380,15 @@ bool verifyPayloadProofAtRoot(const QString &root,
     }
     const QString normalizedRoot = files::normalizedAbsolute(root);
     const QFileInfo rootInfo(normalizedRoot);
-    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
+    QString physicalError;
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)
+        || !verifiedPhysicalPathFromVolume(normalizedRoot, &physicalError)) {
         return fail(error,
-                    QStringLiteral("Payload staging path is invalid or linked: %1")
-                        .arg(normalizedRoot));
+                    QStringLiteral("Payload staging path is invalid or linked: %1%2")
+                        .arg(normalizedRoot,
+                             physicalError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1").arg(physicalError)));
     }
     QStringList entries;
     if (!collectSnapshotEntries(normalizedRoot,
@@ -1286,6 +1495,133 @@ struct AssetTreeProof {
     QStringList entries;
 };
 
+struct OpaqueTreeProof {
+    QString root;
+    QString fingerprint;
+    QStringList entries;
+};
+
+// Records an exact, stable proof for an otherwise untrusted directory.  It
+// deliberately assigns no meaning to filenames or metadata, but rejects every
+// link and unsupported entry so the proof cannot escape its root.
+bool verifyOpaqueTreeProofAtRoot(const QString &root,
+                                 OpaqueTreeProof *proof,
+                                 QString *error)
+{
+    if (proof) {
+        *proof = {};
+    }
+    const QString normalizedRoot = files::normalizedAbsolute(root);
+    const QFileInfo rootInfo(normalizedRoot);
+    QString physicalError;
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)
+        || !verifiedPhysicalPathFromVolume(normalizedRoot, &physicalError)) {
+        return fail(error,
+                    QStringLiteral("Untrusted snapshot root is invalid or linked: %1%2")
+                        .arg(normalizedRoot,
+                             physicalError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1").arg(physicalError)));
+    }
+
+    QStringList initialEntries;
+    if (!collectSnapshotEntries(normalizedRoot,
+                                normalizedRoot,
+                                initialEntries,
+                                error)) {
+        return false;
+    }
+    std::sort(initialEntries.begin(), initialEntries.end());
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(QByteArrayLiteral("xips-opaque-tree-v1"));
+    const auto addSizedData = [&hash](const QByteArray &data) {
+        hash.addData(QByteArray::number(static_cast<qlonglong>(data.size())));
+        hash.addData(QByteArrayView(":", 1));
+        hash.addData(data);
+    };
+    for (const QString &entry : initialEntries) {
+        hash.addData(QByteArrayView("\0entry\0", 7));
+        addSizedData(entry.toUtf8());
+        if (!entry.startsWith(QStringLiteral("f:"))) {
+            continue;
+        }
+        const QString path = QDir(normalizedRoot).absoluteFilePath(entry.mid(2));
+        const QFileInfo before(path);
+        if (!before.isFile() || files::isLinkLike(before)) {
+            return fail(error,
+                        QStringLiteral("Snapshot data changed while its isolation proof was being recorded: %1")
+                            .arg(path));
+        }
+        QFile file(before.absoluteFilePath());
+        if (!file.open(QIODevice::ReadOnly)) {
+            return fail(error,
+                        QStringLiteral("Cannot read snapshot data for isolation proof: %1")
+                            .arg(before.absoluteFilePath()));
+        }
+        const qint64 expectedSize = file.size();
+        const QDateTime expectedModified = file.fileTime(
+            QFileDevice::FileModificationTime);
+        if (expectedSize < 0) {
+            return fail(error,
+                        QStringLiteral("Cannot determine snapshot file size for isolation proof: %1")
+                            .arg(before.absoluteFilePath()));
+        }
+        hash.addData(QByteArrayView("\0data\0", 6));
+        hash.addData(QByteArray::number(expectedSize));
+        hash.addData(QByteArrayView(":", 1));
+        qint64 bytesRead = 0;
+        while (!file.atEnd()) {
+            const QByteArray chunk = file.read(1024 * 1024);
+            if (chunk.isEmpty() && file.error() != QFileDevice::NoError) {
+                return fail(error,
+                            QStringLiteral("Cannot finish reading snapshot data for isolation proof: %1")
+                                .arg(before.absoluteFilePath()));
+            }
+            hash.addData(chunk);
+            bytesRead += static_cast<qint64>(chunk.size());
+        }
+        const QFileInfo after(path);
+        if (file.error() != QFileDevice::NoError
+            || bytesRead != expectedSize || !after.isFile()
+            || files::isLinkLike(after) || after.size() != expectedSize
+            || after.fileTime(QFileDevice::FileModificationTime)
+                   != expectedModified) {
+            return fail(error,
+                        QStringLiteral("Snapshot data changed while its isolation proof was being recorded: %1")
+                            .arg(before.absoluteFilePath()));
+        }
+    }
+
+    QStringList confirmedEntries;
+    if (!collectSnapshotEntries(normalizedRoot,
+                                normalizedRoot,
+                                confirmedEntries,
+                                error)) {
+        return false;
+    }
+    std::sort(confirmedEntries.begin(), confirmedEntries.end());
+    if (confirmedEntries != initialEntries) {
+        return fail(error,
+                    QStringLiteral("Snapshot layout changed while its isolation proof was being recorded"));
+    }
+    if (proof) {
+        proof->root = normalizedRoot;
+        proof->fingerprint = QStringLiteral("sha256:")
+                             + QString::fromLatin1(hash.result().toHex());
+        proof->entries = confirmedEntries;
+    }
+    return true;
+}
+
+bool sameOpaqueTreeProof(const OpaqueTreeProof &left,
+                         const OpaqueTreeProof &right)
+{
+    return !left.fingerprint.isEmpty()
+           && left.fingerprint == right.fingerprint
+           && left.entries == right.entries;
+}
+
 bool verifyAssetTreeProofAtRoot(const QString &root,
                                 const QString &expectedAssetId,
                                 AssetTreeProof *proof,
@@ -1296,10 +1632,15 @@ bool verifyAssetTreeProofAtRoot(const QString &root,
     }
     const QString normalizedRoot = files::normalizedAbsolute(root);
     const QFileInfo rootInfo(normalizedRoot);
-    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
+    QString physicalError;
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)
+        || !verifiedPhysicalPathFromVolume(normalizedRoot, &physicalError)) {
         return fail(error,
-                    QStringLiteral("Asset deletion proof root is invalid or linked: %1")
-                        .arg(normalizedRoot));
+                    QStringLiteral("Asset deletion proof root is invalid or linked: %1%2")
+                        .arg(normalizedRoot,
+                             physicalError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1").arg(physicalError)));
     }
 
     const QString manifestPath = QDir(normalizedRoot).absoluteFilePath(
@@ -3257,6 +3598,422 @@ bool applyGroupMembershipChange(Manifest &manifest,
     return manifest.tags != before;
 }
 
+constexpr auto PayloadTransactionOwner = "xips-payload-transaction";
+constexpr auto PayloadTransactionFileName = "transaction.json";
+
+struct PayloadTransactionRecord {
+    QString operation;
+    QString transactionId;
+    QString phase;
+    QString assetName;
+    QString assetId;
+    QString stagingName;
+    QString isolatedName;
+    QString version;
+    QString expectedFingerprint;
+};
+
+bool validSimpleEntryName(const QString &name)
+{
+    return !name.isEmpty() && name != QStringLiteral(".")
+           && name != QStringLiteral("..") && !QDir::isAbsolutePath(name)
+           && QFileInfo(name).fileName() == name;
+}
+
+QString payloadTransactionPrefix(const QString &operation)
+{
+    if (operation == QStringLiteral("update")) {
+        return QStringLiteral(".xips-create-transaction-");
+    }
+    if (operation == QStringLiteral("delete-asset")) {
+        return QStringLiteral(".xips-create-delete-");
+    }
+    if (operation == QStringLiteral("delete-version")) {
+        return QStringLiteral(".staging-transaction-");
+    }
+    return {};
+}
+
+bool validPayloadTransactionRecord(const PayloadTransactionRecord &record)
+{
+    const QString prefix = payloadTransactionPrefix(record.operation);
+    if (prefix.isEmpty() || !validManifestTransactionId(record.transactionId)
+        || !validSimpleEntryName(record.assetName)
+        || record.assetId.isEmpty()
+        || !validFingerprint(record.expectedFingerprint)) {
+        return false;
+    }
+    if (record.operation == QStringLiteral("update")) {
+        return (record.phase == QStringLiteral("prepared")
+                || record.phase == QStringLiteral("isolated")
+                || record.phase == QStringLiteral("published"))
+               && validSimpleEntryName(record.stagingName)
+               && validSimpleEntryName(record.isolatedName)
+               && record.stagingName
+                      == QStringLiteral(".xips-create-update-")
+                             + record.transactionId
+               && record.isolatedName
+                      == QStringLiteral(".xips-create-recovery-")
+                             + record.transactionId;
+    }
+    if (record.operation == QStringLiteral("delete-asset")) {
+        return (record.phase == QStringLiteral("prepared")
+                || record.phase == QStringLiteral("isolated")
+                || record.phase == QStringLiteral("removed"))
+               && record.stagingName.isEmpty()
+               && record.isolatedName == record.assetName;
+    }
+    return (record.phase == QStringLiteral("prepared")
+            || record.phase == QStringLiteral("isolated")
+            || record.phase == QStringLiteral("removed"))
+           && validVersion(record.version)
+           && validSimpleEntryName(record.isolatedName)
+           && record.isolatedName
+                  == QStringLiteral(".staging-delete-")
+                         + record.transactionId;
+}
+
+QJsonObject payloadTransactionJson(const PayloadTransactionRecord &record)
+{
+    return {
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("owner"), QString::fromLatin1(PayloadTransactionOwner)},
+        {QStringLiteral("operation"), record.operation},
+        {QStringLiteral("transactionId"), record.transactionId},
+        {QStringLiteral("phase"), record.phase},
+        {QStringLiteral("assetName"), record.assetName},
+        {QStringLiteral("assetId"), record.assetId},
+        {QStringLiteral("stagingName"), record.stagingName},
+        {QStringLiteral("isolatedName"), record.isolatedName},
+        {QStringLiteral("version"), record.version},
+        {QStringLiteral("expectedFingerprint"), record.expectedFingerprint},
+    };
+}
+
+bool writePayloadTransaction(const QString &transactionRoot,
+                             const PayloadTransactionRecord &record,
+                             QString *error)
+{
+    if (!validPayloadTransactionRecord(record)) {
+        return fail(error, QStringLiteral("The payload transaction record is invalid"));
+    }
+    const QFileInfo rootInfo(transactionRoot);
+    const QString expectedName = payloadTransactionPrefix(record.operation)
+                                 + record.transactionId;
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)
+        || rootInfo.fileName() != expectedName) {
+        return fail(error,
+                    QStringLiteral("The payload transaction directory is invalid"));
+    }
+    QSaveFile file(QDir(transactionRoot).absoluteFilePath(
+        QString::fromLatin1(PayloadTransactionFileName)));
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return fail(error,
+                    QStringLiteral("Cannot create payload transaction record: %1")
+                        .arg(file.errorString()));
+    }
+    const QByteArray data = QJsonDocument(payloadTransactionJson(record))
+                                .toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size() || !file.commit()) {
+        return fail(error,
+                    QStringLiteral("Cannot publish payload transaction record: %1")
+                        .arg(file.errorString()));
+    }
+    return true;
+}
+
+bool readPayloadTransaction(const QString &transactionRoot,
+                            PayloadTransactionRecord *record,
+                            QByteArray *canonical,
+                            QString *error)
+{
+    if (record) {
+        *record = {};
+    }
+    QByteArray contents;
+    const QString path = QDir(transactionRoot).absoluteFilePath(
+        QString::fromLatin1(PayloadTransactionFileName));
+    if (!readStableFile(path, &contents, error)) {
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(contents,
+                                                            &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return fail(error,
+                    QStringLiteral("Invalid payload transaction record: %1")
+                        .arg(path));
+    }
+    const QJsonObject object = document.object();
+    if (object.value(QStringLiteral("schemaVersion")).toInt(-1) != 1
+        || object.value(QStringLiteral("owner")).toString()
+               != QString::fromLatin1(PayloadTransactionOwner)) {
+        return fail(error,
+                    QStringLiteral("Unsupported payload transaction record: %1")
+                        .arg(path));
+    }
+    PayloadTransactionRecord parsed{
+        .operation = object.value(QStringLiteral("operation")).toString(),
+        .transactionId = object.value(QStringLiteral("transactionId")).toString(),
+        .phase = object.value(QStringLiteral("phase")).toString(),
+        .assetName = object.value(QStringLiteral("assetName")).toString(),
+        .assetId = object.value(QStringLiteral("assetId")).toString(),
+        .stagingName = object.value(QStringLiteral("stagingName")).toString(),
+        .isolatedName = object.value(QStringLiteral("isolatedName")).toString(),
+        .version = object.value(QStringLiteral("version")).toString(),
+        .expectedFingerprint = object.value(
+            QStringLiteral("expectedFingerprint")).toString(),
+    };
+    const QFileInfo rootInfo(transactionRoot);
+    if (!validPayloadTransactionRecord(parsed)
+        || rootInfo.fileName()
+               != payloadTransactionPrefix(parsed.operation)
+                      + parsed.transactionId) {
+        return fail(error,
+                    QStringLiteral("Payload transaction identity is invalid: %1")
+                        .arg(path));
+    }
+    if (record) {
+        *record = parsed;
+    }
+    if (canonical) {
+        *canonical = json::canonicalJson(object);
+    }
+    return true;
+}
+
+bool publishAndConfirmPayloadTransaction(
+    const QString &transactionRoot,
+    const PayloadTransactionRecord &record,
+    QString *error)
+{
+    if (!writePayloadTransaction(transactionRoot, record, error)) {
+        return false;
+    }
+    PayloadTransactionRecord confirmed;
+    QByteArray canonical;
+    if (!readPayloadTransaction(transactionRoot,
+                                &confirmed,
+                                &canonical,
+                                error)
+        || canonical != json::canonicalJson(payloadTransactionJson(record))) {
+        return fail(error,
+                    QStringLiteral("The payload transaction record changed after publish"));
+    }
+    return true;
+}
+
+bool payloadTransactionStillMatches(
+    const QString &transactionRoot,
+    const PayloadTransactionRecord &expected,
+    QString *error = nullptr)
+{
+    PayloadTransactionRecord confirmed;
+    QByteArray canonical;
+    return readPayloadTransaction(transactionRoot,
+                                  &confirmed,
+                                  &canonical,
+                                  error)
+           && canonical
+                  == json::canonicalJson(payloadTransactionJson(expected));
+}
+
+bool restorePayloadTransactionRecordExclusive(
+    const QString &transactionRoot,
+    const PayloadTransactionRecord &expected)
+{
+    if (!validPayloadTransactionRecord(expected)) {
+        return false;
+    }
+    const QString recordPath = QDir(transactionRoot).absoluteFilePath(
+        QString::fromLatin1(PayloadTransactionFileName));
+    QFile file(recordPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+        // A concurrent writer owns the current record. Never replace it.
+        return false;
+    }
+    const QByteArray data = QJsonDocument(payloadTransactionJson(expected))
+                                .toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size() || !file.flush()) {
+        file.close();
+        return false;
+    }
+    file.close();
+    return payloadTransactionStillMatches(transactionRoot, expected);
+}
+
+bool retirePayloadTransactionRecord(
+    const QString &transactionRoot,
+    const PayloadTransactionRecord &expected,
+    const QString &physicalBoundary = {})
+{
+    QString ignoredError;
+    const QString boundary = physicalBoundary.isEmpty()
+                                 ? QFileInfo(transactionRoot).absolutePath()
+                                 : physicalBoundary;
+    if (!verifiedPhysicalDirectoryChain(boundary,
+                                        transactionRoot,
+                                        &ignoredError)
+        || !payloadTransactionStillMatches(transactionRoot,
+                                        expected,
+                                        &ignoredError)) {
+        return false;
+    }
+    const QString recordName = QString::fromLatin1(
+        PayloadTransactionFileName);
+    const auto onlyExpectedRegularFile = [&](const QString &name) {
+        const QFileInfoList entries = QDir(transactionRoot).entryInfoList(
+            QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden
+                | QDir::System,
+            QDir::Name);
+        return entries.size() == 1 && entries.first().fileName() == name
+               && entries.first().isFile()
+               && !files::isLinkLike(entries.first());
+    };
+    // Never retire the sole recovery record while isolated payload or
+    // concurrent evidence remains in the transaction directory.
+    if (!onlyExpectedRegularFile(recordName)) {
+        return false;
+    }
+    const QString retiredName = QStringLiteral(".transaction-retire-%1.json")
+                                    .arg(QUuid::createUuid().toString(
+                                        QUuid::WithoutBraces));
+    QDir transactionDirectory(transactionRoot);
+    if (!transactionDirectory.rename(recordName, retiredName)) {
+        return false;
+    }
+    const QString retiredPath = transactionDirectory.absoluteFilePath(
+        retiredName);
+    QByteArray retiredBytes;
+    const bool retiredStable = readStableFile(retiredPath,
+                                              &retiredBytes,
+                                              &ignoredError);
+    QJsonParseError parseError;
+    const QJsonDocument retiredDocument = retiredStable
+                                              ? QJsonDocument::fromJson(
+                                                    retiredBytes,
+                                                    &parseError)
+                                              : QJsonDocument{};
+    const bool retiredMatches = retiredStable
+                                && parseError.error
+                                       == QJsonParseError::NoError
+                                && retiredDocument.isObject()
+                                && json::canonicalJson(retiredDocument.object())
+                                       == json::canonicalJson(
+                                           payloadTransactionJson(expected));
+    if (!retiredMatches || !onlyExpectedRegularFile(retiredName)) {
+        if (!QFileInfo::exists(transactionDirectory.absoluteFilePath(
+                recordName))) {
+            transactionDirectory.rename(retiredName, recordName);
+        }
+        return false;
+    }
+    if (!QFile::remove(retiredPath)) {
+        if (!QFileInfo::exists(transactionDirectory.absoluteFilePath(
+                recordName))) {
+            transactionDirectory.rename(retiredName, recordName);
+        }
+        return false;
+    }
+    if (QDir().rmdir(transactionRoot)) {
+        return true;
+    }
+    // A concurrent writer may have added data after the exact-layout check.
+    // Restore the expected canonical record with an exclusive create. A
+    // concurrent phase writer must never be overwritten by retirement cleanup.
+    if (verifiedPhysicalDirectoryChain(boundary,
+                                       transactionRoot,
+                                       &ignoredError)) {
+        restorePayloadTransactionRecordExclusive(transactionRoot, expected);
+    }
+    return false;
+}
+
+bool ownedPayloadTransactionDirectoryName(const QString &name,
+                                          const QString &prefix)
+{
+    return name.startsWith(prefix)
+           && validManifestTransactionId(name.mid(prefix.size()))
+           && name == prefix + name.mid(prefix.size());
+}
+
+void discoverPayloadTransactionRoots(const QString &directory,
+                                     const QString &libraryBoundary,
+                                     QStringList &roots)
+{
+    const QFileInfo directoryInfo(directory);
+    QString boundaryError;
+    if (!directoryInfo.isDir() || files::isLinkLike(directoryInfo)
+        || !verifiedPhysicalDirectoryChain(libraryBoundary,
+                                           directory,
+                                           &boundaryError)) {
+        return;
+    }
+    // A manifest makes this directory an asset boundary. Payload is opaque and
+    // must never be interpreted as xIPs-owned transaction control data.
+    const QFileInfo localManifest(QDir(directory).absoluteFilePath(
+        QStringLiteral(".xips.json")));
+    if (localManifest.exists() || files::isLinkLike(localManifest)) {
+        const QString internalRoot = QDir(directory).absoluteFilePath(
+            QStringLiteral(".xips"));
+        const QFileInfo internalInfo(internalRoot);
+        if (!internalInfo.isDir() || files::isLinkLike(internalInfo)
+            || !samePath(internalInfo.absolutePath(), directory)) {
+            return;
+        }
+        const QString versionsRoot = QDir(internalRoot).absoluteFilePath(
+            QStringLiteral("versions"));
+        const QFileInfo versionsInfo(versionsRoot);
+        if (versionsInfo.isDir() && !files::isLinkLike(versionsInfo)
+            && samePath(versionsInfo.absolutePath(), internalRoot)
+            && verifiedPhysicalDirectoryChain(libraryBoundary,
+                                              versionsRoot,
+                                              &boundaryError)) {
+            const QFileInfoList versionEntries = QDir(versionsRoot)
+                                                     .entryInfoList(
+                QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden
+                    | QDir::System,
+                QDir::Name);
+            for (const QFileInfo &versionEntry : versionEntries) {
+                if (!files::isLinkLike(versionEntry)
+                    && samePath(versionEntry.absolutePath(), versionsRoot)
+                    && ownedPayloadTransactionDirectoryName(
+                        versionEntry.fileName(),
+                        QStringLiteral(".staging-transaction-"))) {
+                    roots.append(files::normalizedAbsolute(
+                        versionEntry.absoluteFilePath()));
+                }
+            }
+        }
+        return;
+    }
+    const QFileInfoList entries = QDir(directory).entryInfoList(
+        QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+        QDir::Name);
+    for (const QFileInfo &entry : entries) {
+        if (files::isLinkLike(entry)) {
+            continue;
+        }
+        const QString name = entry.fileName();
+        if (samePath(entry.absolutePath(), directory)
+            && (ownedPayloadTransactionDirectoryName(
+                    name,
+                    QStringLiteral(".xips-create-transaction-"))
+                || ownedPayloadTransactionDirectoryName(
+                    name,
+                    QStringLiteral(".xips-create-delete-")))) {
+            roots.append(files::normalizedAbsolute(entry.absoluteFilePath()));
+            continue;
+        }
+        if (!files::isIgnoredDirectory(name)) {
+            discoverPayloadTransactionRoots(entry.absoluteFilePath(),
+                                            libraryBoundary,
+                                            roots);
+        }
+    }
+}
+
 } // namespace
 
 #ifdef XIPS_ENABLE_TEST_HOOKS
@@ -3365,12 +4122,34 @@ bool AssetLibraryService::importAsset(const ImportAssetRequest &request,
         return fail(error,
                     QStringLiteral("xIPs metadata files cannot be imported as payload"));
     }
-    if (!QDir().mkpath(libraryRoot)) {
-        return fail(error, QStringLiteral("Cannot create the asset library directory"));
+    const QString libraryBoundary = QStorageInfo(libraryRoot).rootPath();
+    QString libraryBoundaryError;
+    const QFileInfo libraryInfo(libraryRoot);
+    if (!libraryInfo.isDir() || files::isLinkLike(libraryInfo)
+        || !verifiedPhysicalDirectoryChain(libraryBoundary,
+                                           libraryRoot,
+                                           &libraryBoundaryError)) {
+        return fail(
+            error,
+            QStringLiteral("Asset library must already exist as a non-linked directory: %1%2")
+                .arg(libraryRoot,
+                     libraryBoundaryError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1")
+                               .arg(libraryBoundaryError)));
     }
     if (sourceInfo.isDir() && files::isWithin(libraryRoot, sourcePath)) {
         return fail(error,
                     QStringLiteral("The asset library cannot be inside the imported directory"));
+    }
+
+    SourcePayload source;
+    QString sourceFingerprint;
+    if (!resolveSourcePayload(sourcePath, source, error)
+        || !strictSourcePayloadFingerprint(source,
+                                           &sourceFingerprint,
+                                           error)) {
+        return false;
     }
 
     Manifest manifest = makeManifest(request.metadata);
@@ -3387,22 +4166,61 @@ bool AssetLibraryService::importAsset(const ImportAssetRequest &request,
     const QString stagingName = QStringLiteral(".xips-create-%1")
                                     .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
     const QString stagingRoot = QDir(libraryRoot).absoluteFilePath(stagingName);
-    if (!QDir().mkpath(stagingRoot)) {
+    libraryBoundaryError.clear();
+    if (!verifiedPhysicalDirectoryChain(libraryBoundary,
+                                        libraryRoot,
+                                        &libraryBoundaryError)
+        || !QDir().mkpath(stagingRoot)
+        || !validOwnedStagingDirectory(stagingRoot,
+                                       libraryRoot,
+                                       QStringLiteral(".xips-create-"))
+        || !verifiedPhysicalDirectoryChain(libraryBoundary,
+                                           stagingRoot,
+                                           &libraryBoundaryError)) {
         return fail(error, QStringLiteral("Cannot create the import staging directory"));
     }
 
     QString operationError;
-    const bool copied = sourceInfo.isDir()
-                            ? copyPayload(sourcePath, stagingRoot, &operationError)
-                            : QFile::copy(
-                                  sourcePath,
-                                  QDir(stagingRoot).absoluteFilePath(
-                                      sourceInfo.fileName()));
+    const bool copied = copyPayloadFiles(source.root,
+                                         source.files,
+                                         stagingRoot,
+                                         &operationError,
+                                         libraryBoundary);
     if (!copied && operationError.isEmpty()) {
         operationError = QStringLiteral("Cannot copy source file into the asset");
     }
-    if (!copied
-        || !ManifestService().write(
+    if (!copied) {
+        if (QDir().rmdir(stagingRoot)) {
+            return fail(error, operationError);
+        }
+        return fail(error,
+                    QStringLiteral("%1; import staging remains at %2")
+                        .arg(operationError, stagingRoot));
+    }
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::ImportSourceCopiedBeforeVerification,
+        sourcePath);
+#endif
+    QString confirmedSourceFingerprint;
+    QString proofError;
+    if (!strictSourcePayloadFingerprint(source,
+                                        &confirmedSourceFingerprint,
+                                        &proofError)
+        || confirmedSourceFingerprint != sourceFingerprint
+        || !verifiedCopiedPayload(stagingRoot,
+                                  source.files,
+                                  sourceFingerprint,
+                                  &proofError)) {
+        return fail(
+            error,
+            QStringLiteral("The import source changed while it was copied; nothing was published and staging remains at %1%2")
+                .arg(stagingRoot,
+                     proofError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(proofError)));
+    }
+    if (!ManifestService().write(
             QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
             manifest,
             &operationError)) {
@@ -3412,6 +4230,33 @@ bool AssetLibraryService::importAsset(const ImportAssetRequest &request,
         return fail(error,
                     QStringLiteral("%1; import staging remains at %2")
                         .arg(operationError, stagingRoot));
+    }
+    QString finalSourceFingerprint;
+    libraryBoundaryError.clear();
+    if (!verifiedPhysicalDirectoryChain(libraryBoundary,
+                                        libraryRoot,
+                                        &libraryBoundaryError)
+        || !verifiedPhysicalDirectoryChain(libraryBoundary,
+                                           stagingRoot,
+                                           &libraryBoundaryError)
+        || QFileInfo::exists(targetRoot)
+        || !strictSourcePayloadFingerprint(source,
+                                           &finalSourceFingerprint,
+                                           &operationError)
+        || finalSourceFingerprint != sourceFingerprint
+        || !verifiedCopiedPayload(stagingRoot,
+                                  source.files,
+                                  sourceFingerprint,
+                                  &operationError)) {
+        return fail(
+            error,
+            QStringLiteral("Import boundaries or source changed before publish; staging remains at %1%2")
+                .arg(stagingRoot,
+                     !libraryBoundaryError.isEmpty()
+                         ? QStringLiteral(": %1").arg(libraryBoundaryError)
+                         : operationError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(operationError)));
     }
     if (!QDir(libraryRoot).rename(stagingName, manifest.id)) {
         return fail(error,
@@ -3438,8 +4283,8 @@ ImportBatchResult AssetLibraryService::importAssets(
     QSet<QString> existingIds;
     if (QFileInfo(libraryRoot).isDir()) {
         const ScanResult scan = AssetScanner().scan(libraryRoot);
-        for (const AssetRecord &asset : scan.assets) {
-            existingIds.insert(asset.manifest.id.toCaseFolded());
+        for (const QString &assetId : scan.discoveredAssetIds) {
+            existingIds.insert(assetId.toCaseFolded());
         }
     }
     for (const QString &sourcePath : sourcePaths) {
@@ -3723,6 +4568,7 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         return false;
     }
     PayloadProof expectedSourceProof;
+    QString initialSourcePayloadFingerprint;
     if (hasExpectedSourceProof) {
         if (source.singleFile || source.files != expectedSourceFiles
             || !verifyPayloadProofAtRoot(source.root,
@@ -3738,6 +4584,11 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                             : QStringLiteral(
                                   "The verified restore source changed before update"));
         }
+        initialSourcePayloadFingerprint = expectedPayloadFingerprint;
+    } else if (!strictSourcePayloadFingerprint(source,
+                                               &initialSourcePayloadFingerprint,
+                                               error)) {
+        return false;
     }
 
     const QString assetRoot = files::normalizedAbsolute(asset.assetRoot);
@@ -3751,27 +4602,29 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                                    .arg(operationId);
     const QString stagingRoot = QDir(parent).absoluteFilePath(stagingName);
     const QString backupRoot = QDir(parent).absoluteFilePath(backupName);
-    if (!QDir().mkpath(stagingRoot)) {
-        return fail(error, QStringLiteral("Cannot create the update staging directory"));
+    QString operationError;
+    const QString assetBoundary = QStorageInfo(parent).rootPath();
+    if (assetBoundary.isEmpty()
+        || !verifiedPhysicalPathFromVolume(parent, &operationError)
+        || !verifiedPhysicalPathFromVolume(assetRoot, &operationError)
+        || !QDir(parent).mkdir(stagingName)
+        || !verifiedPhysicalPathFromVolume(stagingRoot, &operationError)) {
+        return fail(
+            error,
+            QStringLiteral("Cannot create the update staging directory%1")
+                .arg(operationError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(operationError)));
     }
 
-    QString operationError;
-    bool copied = false;
-    if (hasExpectedSourceProof) {
-        copied = copyPayloadFiles(source.root,
-                                  expectedSourceFiles,
-                                  stagingRoot,
-                                  &operationError);
-    } else if (source.singleFile) {
-        copied = QFile::copy(
-            QDir(source.root).absoluteFilePath(source.files.first()),
-            QDir(stagingRoot).absoluteFilePath(source.files.first()));
-        if (!copied) {
-            operationError = QStringLiteral("Cannot copy the replacement file");
-        }
-    } else {
-        copied = copyPayload(source.root, stagingRoot, &operationError);
-    }
+    const QStringList sourceFiles = hasExpectedSourceProof
+                                        ? expectedSourceFiles
+                                        : source.files;
+    const bool copied = copyPayloadFiles(source.root,
+                                         sourceFiles,
+                                         stagingRoot,
+                                         &operationError,
+                                         assetBoundary);
     if (!copied) {
         if (!QDir().rmdir(stagingRoot)) {
             operationError += QStringLiteral("; update staging remains at %1")
@@ -3779,6 +4632,11 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         }
         return fail(error, operationError);
     }
+    #ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::UpdateSourceCopiedBeforeVerification,
+        sourcePath);
+    #endif
     if (hasExpectedSourceProof) {
         PayloadProof confirmedSourceProof;
         PayloadProof copiedSourceProof;
@@ -3811,6 +4669,34 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                              ? QString()
                              : QStringLiteral("; %1").arg(copiedProofError)));
         }
+    } else {
+        QString confirmedSourcePayloadFingerprint;
+        QString sourceProofError;
+        QString copiedProofError;
+        const bool sourceUnchanged = strictSourcePayloadFingerprint(
+                                         source,
+                                         &confirmedSourcePayloadFingerprint,
+                                         &sourceProofError)
+                                     && confirmedSourcePayloadFingerprint
+                                            == initialSourcePayloadFingerprint;
+        const bool copiedAsExpected = verifiedCopiedPayload(
+            stagingRoot,
+            source.files,
+            initialSourcePayloadFingerprint,
+            &copiedProofError);
+        if (!sourceUnchanged || !copiedAsExpected) {
+            return fail(
+                error,
+                QStringLiteral(
+                    "The update source changed while it was copied; the working copy was not isolated and update staging remains at %1%2%3")
+                    .arg(stagingRoot,
+                         sourceProofError.isEmpty()
+                             ? QString()
+                             : QStringLiteral(": %1").arg(sourceProofError),
+                         copiedProofError.isEmpty()
+                             ? QString()
+                             : QStringLiteral("; %1").arg(copiedProofError)));
+        }
     }
     if (!ManifestService().write(
             QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
@@ -3821,13 +4707,106 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                         .arg(operationError, stagingRoot));
     }
 
-    QDir parentDirectory(parent);
-    if (!parentDirectory.rename(assetName, backupName)) {
+    const QString transactionName = QStringLiteral(
+                                        ".xips-create-transaction-%1")
+                                        .arg(operationId);
+    const QString transactionRoot = QDir(parent).absoluteFilePath(
+        transactionName);
+    operationError.clear();
+    if (!verifiedPhysicalPathFromVolume(parent, &operationError)
+        || !verifiedPhysicalPathFromVolume(assetRoot, &operationError)
+        || !verifiedPhysicalPathFromVolume(stagingRoot, &operationError)
+        || !QDir(parent).mkdir(transactionName)
+        || !verifiedPhysicalPathFromVolume(transactionRoot,
+                                           &operationError)) {
         return fail(error,
                     QStringLiteral(
-                        "Cannot stage the existing working copy; update staging remains at %1")
-                        .arg(stagingRoot));
+                        "Cannot create the update transaction record; update staging remains at %1%2")
+                        .arg(stagingRoot,
+                             operationError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1")
+                                       .arg(operationError)));
     }
+    PayloadTransactionRecord transaction{
+        .operation = QStringLiteral("update"),
+        .transactionId = operationId,
+        .phase = QStringLiteral("prepared"),
+        .assetName = assetName,
+        .assetId = manifest.id,
+        .stagingName = stagingName,
+        .isolatedName = backupName,
+        .version = {},
+        .expectedFingerprint = requiredCurrentFingerprint,
+    };
+    if (!publishAndConfirmPayloadTransaction(transactionRoot,
+                                             transaction,
+                                             &operationError)) {
+        return fail(error,
+                    QStringLiteral(
+                        "%1; update staging remains at %2 and transaction data remains at %3")
+                        .arg(operationError, stagingRoot, transactionRoot));
+    }
+
+    QDir parentDirectory(parent);
+    operationError.clear();
+    const bool isolationBoundarySafe =
+        validateAssetRecord(asset, nullptr, &operationError)
+        && verifiedPhysicalPathFromVolume(parent, &operationError)
+        && verifiedPhysicalPathFromVolume(stagingRoot, &operationError)
+        && verifiedPhysicalPathFromVolume(transactionRoot, &operationError);
+    if (!isolationBoundarySafe
+        || !parentDirectory.rename(assetName, backupName)) {
+        if (isolationBoundarySafe) {
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
+        }
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot stage the existing working copy; update staging remains at %1%2")
+                        .arg(stagingRoot,
+                             operationError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1")
+                                       .arg(operationError)));
+    }
+    transaction.phase = QStringLiteral("isolated");
+    operationError.clear();
+    const bool isolatedBoundarySafe =
+        verifiedPhysicalPathFromVolume(parent, &operationError)
+        && verifiedPhysicalPathFromVolume(backupRoot, &operationError)
+        && verifiedPhysicalPathFromVolume(stagingRoot, &operationError)
+        && verifiedPhysicalPathFromVolume(transactionRoot, &operationError);
+    if (!isolatedBoundarySafe
+        || !publishAndConfirmPayloadTransaction(transactionRoot,
+                                                transaction,
+                                                &operationError)) {
+        const bool rolledBack = isolatedBoundarySafe
+                                && parentDirectory.rename(backupName,
+                                                          assetName);
+        if (rolledBack) {
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
+        }
+        return fail(
+            error,
+            rolledBack
+                ? QStringLiteral(
+                      "Cannot persist the isolated update state; the working copy was restored and transaction data remains at %1")
+                      .arg(transactionRoot)
+                : QStringLiteral(
+                      "Cannot persist the isolated update state and rollback failed; recovery remains at %1 and transaction data at %2")
+                      .arg(backupRoot, transactionRoot));
+    }
+    const auto isolatedPathsPhysicallySafe = [&](QString *physicalError) {
+        return verifiedPhysicalPathFromVolume(parent, physicalError)
+               && verifiedPhysicalPathFromVolume(backupRoot, physicalError)
+               && verifiedPhysicalPathFromVolume(stagingRoot, physicalError)
+               && verifiedPhysicalPathFromVolume(transactionRoot,
+                                                  physicalError);
+    };
     Manifest stagedManifest;
     QString stagedFingerprint;
     QString stagedError;
@@ -3837,8 +4816,15 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                                  &stagedFingerprint,
                                  &stagedError)
         || stagedFingerprint != requiredCurrentFingerprint) {
-        const bool rolledBack = parentDirectory.rename(backupName,
-                                                        assetName);
+        QString rollbackBoundaryError;
+        const bool rolledBack =
+            isolatedPathsPhysicallySafe(&rollbackBoundaryError)
+            && parentDirectory.rename(backupName, assetName);
+        if (rolledBack) {
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
+        }
         return fail(
             error,
             rolledBack
@@ -3851,12 +4837,20 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
     }
     manifest = stagedManifest;
     operationError.clear();
-    if (!ManifestService().write(
+    if (!isolatedPathsPhysicallySafe(&operationError)
+        || !ManifestService().write(
             QDir(stagingRoot).absoluteFilePath(QStringLiteral(".xips.json")),
             manifest,
             &operationError)) {
-        const bool rolledBack = parentDirectory.rename(backupName,
-                                                        assetName);
+        QString rollbackBoundaryError;
+        const bool rolledBack =
+            isolatedPathsPhysicallySafe(&rollbackBoundaryError)
+            && parentDirectory.rename(backupName, assetName);
+        if (rolledBack) {
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
+        }
         return fail(error,
                     rolledBack
                         ? QStringLiteral("%1; update staging remains at %2")
@@ -3870,8 +4864,24 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
     const QString stagingInternal = QDir(stagingRoot).absoluteFilePath(
         QStringLiteral(".xips"));
     const bool hadInternal = QFileInfo(backupInternal).isDir();
-    if (hadInternal && !QDir().rename(backupInternal, stagingInternal)) {
-        const bool rolledBack = parentDirectory.rename(backupName, assetName);
+    operationError.clear();
+    const bool internalMoveBoundarySafe =
+        isolatedPathsPhysicallySafe(&operationError)
+        && (!hadInternal
+            || verifiedPhysicalPathFromVolume(backupInternal,
+                                              &operationError));
+    if (!internalMoveBoundarySafe
+        || (hadInternal
+            && !QDir().rename(backupInternal, stagingInternal))) {
+        QString rollbackBoundaryError;
+        const bool rolledBack =
+            isolatedPathsPhysicallySafe(&rollbackBoundaryError)
+            && parentDirectory.rename(backupName, assetName);
+        if (rolledBack) {
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
+        }
         return fail(error,
                     rolledBack
                         ? QStringLiteral(
@@ -3891,14 +4901,24 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         || finalBackupFingerprint != requiredCurrentFingerprint
         || QFileInfo(backupInternal).exists()
         || files::isLinkLike(QFileInfo(backupInternal))) {
-        bool internalRolledBack = true;
-        if (hadInternal) {
+        QString rollbackBoundaryError;
+        const bool rollbackBoundarySafe =
+            isolatedPathsPhysicallySafe(&rollbackBoundaryError)
+            && (!hadInternal
+                || verifiedPhysicalPathFromVolume(stagingInternal,
+                                                  &rollbackBoundaryError));
+        bool internalRolledBack = rollbackBoundarySafe;
+        if (rollbackBoundarySafe && hadInternal) {
             internalRolledBack = QDir().rename(stagingInternal,
                                                 backupInternal);
         }
-        const bool rootRolledBack = parentDirectory.rename(backupName,
-                                                            assetName);
+        const bool rootRolledBack = rollbackBoundarySafe
+                                    && parentDirectory.rename(backupName,
+                                                              assetName);
         if (internalRolledBack && rootRolledBack) {
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
             return fail(
                 error,
                 QStringLiteral(
@@ -3972,14 +4992,24 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
     if (!anchoredStagingVerified || !stagingVerified
         || !stagingManifestMatches
         || !boundPayloadMatches) {
-        bool internalRolledBack = true;
-        if (hadInternal) {
+        QString rollbackBoundaryError;
+        const bool rollbackBoundarySafe =
+            isolatedPathsPhysicallySafe(&rollbackBoundaryError)
+            && (!hadInternal
+                || verifiedPhysicalPathFromVolume(stagingInternal,
+                                                  &rollbackBoundaryError));
+        bool internalRolledBack = rollbackBoundarySafe;
+        if (rollbackBoundarySafe && hadInternal) {
             internalRolledBack = QDir().rename(stagingInternal,
                                                 backupInternal);
         }
-        const bool rootRolledBack = parentDirectory.rename(backupName,
-                                                            assetName);
+        const bool rootRolledBack = rollbackBoundarySafe
+                                    && parentDirectory.rename(backupName,
+                                                              assetName);
         if (internalRolledBack && rootRolledBack) {
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
             return fail(
                 error,
                 anchoredStagingVerified && stagingVerified
@@ -4013,13 +5043,25 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                 "Cannot verify or fully rollback the staged update; recovery data remains at %1")
                 .arg(recoveryLocations.join(QStringLiteral(", "))));
     }
-    if (!parentDirectory.rename(stagingName, assetName)) {
-        bool internalRolledBack = true;
-        if (hadInternal) {
+    QString publishBoundaryError;
+    const bool publishBoundarySafe =
+        isolatedPathsPhysicallySafe(&publishBoundaryError)
+        && (!hadInternal
+            || verifiedPhysicalPathFromVolume(stagingInternal,
+                                              &publishBoundaryError));
+    if (!publishBoundarySafe
+        || !parentDirectory.rename(stagingName, assetName)) {
+        bool internalRolledBack = publishBoundarySafe;
+        if (publishBoundarySafe && hadInternal) {
             internalRolledBack = QDir().rename(stagingInternal, backupInternal);
         }
-        const bool rootRolledBack = parentDirectory.rename(backupName, assetName);
+        const bool rootRolledBack = publishBoundarySafe
+                                    && parentDirectory.rename(backupName,
+                                                              assetName);
         if (internalRolledBack && rootRolledBack) {
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
             return fail(
                 error,
                 QStringLiteral(
@@ -4039,6 +5081,20 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
                 .arg(recoveryLocations.join(QStringLiteral(", "))));
     }
 
+    QString transactionWarning;
+    transaction.phase = QStringLiteral("published");
+    operationError.clear();
+    if (!verifiedPhysicalPathFromVolume(assetRoot, &operationError)
+        || !verifiedPhysicalPathFromVolume(backupRoot, &operationError)
+        || !verifiedPhysicalPathFromVolume(transactionRoot, &operationError)
+        || !publishAndConfirmPayloadTransaction(transactionRoot,
+                                                transaction,
+                                                &operationError)) {
+        transactionWarning = QStringLiteral(
+            "The update was published, but its transaction record could not be finalized and remains at %1: %2")
+                                 .arg(transactionRoot, operationError);
+    }
+
     Manifest actualPublishedManifest;
     QString actualPublishedFingerprint;
     QString actualPublishedError;
@@ -4056,6 +5112,9 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
     UpdateAssetResult completed;
     completed.preview = preview;
     completed.publishedAsIntended = publishedVerified;
+    if (!transactionWarning.isEmpty()) {
+        appendWarning(completed.warning, transactionWarning);
+    }
     const ScanResult scan = AssetScanner().scan(assetRoot);
     if (!scan.assets.isEmpty()) {
         completed.updated = scan.assets.first();
@@ -4183,7 +5242,20 @@ bool AssetLibraryService::updateAsset(const AssetRecord &asset,
         }
     }
     if (result) {
+        if (!retirePayloadTransactionRecord(transactionRoot,
+                                            transaction,
+                                            assetBoundary)) {
+            completed.retainedPaths.append(transactionRoot);
+            appendWarning(
+                completed.warning,
+                QStringLiteral("The completed update transaction record remains at %1")
+                    .arg(transactionRoot));
+        }
         *result = completed;
+    } else {
+        retirePayloadTransactionRecord(transactionRoot,
+                                       transaction,
+                                       assetBoundary);
     }
     return true;
 }
@@ -4222,9 +5294,19 @@ bool AssetLibraryService::restoreVersion(const AssetRecord &asset,
                                 + QUuid::createUuid().toString(
                                     QUuid::WithoutBraces);
     const QString restoreRoot = QDir(parent).absoluteFilePath(restoreName);
-    if (!QDir().mkpath(restoreRoot)) {
-        return fail(error,
-                    QStringLiteral("Cannot create the restore staging directory"));
+    QString operationError;
+    const QString restoreBoundary = QStorageInfo(parent).rootPath();
+    if (restoreBoundary.isEmpty()
+        || !verifiedPhysicalPathFromVolume(parent, &operationError)
+        || !validateAssetRecord(asset, nullptr, &operationError)
+        || !QDir(parent).mkdir(restoreName)
+        || !verifiedPhysicalPathFromVolume(restoreRoot, &operationError)) {
+        return fail(
+            error,
+            QStringLiteral("Cannot create the restore staging directory%1")
+                .arg(operationError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(operationError)));
     }
     UpdateAssetResult completed;
     const auto retainUnverifiedRestore = [&](const QString &message) {
@@ -4261,11 +5343,11 @@ bool AssetLibraryService::restoreVersion(const AssetRecord &asset,
         }
         return removed;
     };
-    QString operationError;
     if (!copyPayloadFiles(plan.sourceRoot,
                           plan.files,
                           restoreRoot,
-                          &operationError)) {
+                          &operationError,
+                          restoreBoundary)) {
         retainUnverifiedRestore(
             QStringLiteral("The saved version could not be copied: %1.")
                 .arg(operationError));
@@ -4871,9 +5953,15 @@ bool AssetLibraryService::deleteAsset(
     }
     const QString library = files::normalizedAbsolute(libraryRoot);
     const QString assetRoot = files::normalizedAbsolute(asset.assetRoot);
+    const QFileInfo libraryInfo(library);
     const QFileInfo rootInfo(assetRoot);
-    if (!QFileInfo(library).isDir() || assetRoot == library
-        || !files::isWithin(assetRoot, library) || files::isLinkLike(rootInfo)) {
+    QString boundaryError;
+    if (!libraryInfo.isDir() || files::isLinkLike(libraryInfo)
+        || assetRoot == library || !files::isWithin(assetRoot, library)
+        || files::isLinkLike(rootInfo)
+        || !verifiedPhysicalDirectoryChain(library,
+                                           assetRoot,
+                                           &boundaryError)) {
         return fail(error, QStringLiteral("Selected asset is outside the library"));
     }
     if (!validateAssetRecord(asset, nullptr, error)) {
@@ -4903,26 +5991,122 @@ bool AssetLibraryService::deleteAsset(
 
     const QString parent = QFileInfo(assetRoot).absolutePath();
     const QString assetName = QFileInfo(assetRoot).fileName();
+    const QString operationId = QUuid::createUuid().toString(
+        QUuid::WithoutBraces);
     const QString operationName = QStringLiteral(".xips-create-delete-%1")
-                                      .arg(QUuid::createUuid().toString(
-                                          QUuid::WithoutBraces));
+                                      .arg(operationId);
     const QString operationRoot = QDir(parent).absoluteFilePath(operationName);
     const QString isolatedRoot = QDir(operationRoot).absoluteFilePath(assetName);
-    if (!QDir().mkpath(operationRoot)) {
+    boundaryError.clear();
+    if (!verifiedPhysicalDirectoryChain(library, parent, &boundaryError)
+        || !QDir(parent).mkdir(operationName)
+        || !verifiedPhysicalDirectoryChain(library,
+                                           operationRoot,
+                                           &boundaryError)) {
         return fail(error,
                     QStringLiteral(
-                        "Cannot create the asset deletion isolation directory"));
+                        "Cannot create a safe asset deletion isolation directory%1")
+                        .arg(boundaryError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1")
+                                       .arg(boundaryError)));
     }
-    if (!QDir().rename(assetRoot, isolatedRoot)) {
-        QDir().rmdir(operationRoot);
+    PayloadTransactionRecord transaction{
+        .operation = QStringLiteral("delete-asset"),
+        .transactionId = operationId,
+        .phase = QStringLiteral("prepared"),
+        .assetName = assetName,
+        .assetId = asset.manifest.id,
+        .stagingName = {},
+        .isolatedName = assetName,
+        .version = {},
+        .expectedFingerprint = initialProof.fingerprint,
+    };
+    if (!publishAndConfirmPayloadTransaction(operationRoot,
+                                             transaction,
+                                             &proofError)) {
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot persist the asset deletion transaction; data was not isolated and transaction remains at %1: %2")
+                        .arg(operationRoot, proofError));
+    }
+    const auto deletionBoundaryStillSafe = [&](const bool requireIsolated,
+                                                QString *boundaryProofError) {
+        return verifiedPhysicalDirectoryChain(library,
+                                              parent,
+                                              boundaryProofError)
+               && verifiedPhysicalDirectoryChain(library,
+                                                  operationRoot,
+                                                  boundaryProofError)
+               && (!requireIsolated
+                   || verifiedPhysicalDirectoryChain(library,
+                                                      isolatedRoot,
+                                                      boundaryProofError))
+               && payloadTransactionStillMatches(operationRoot,
+                                                  transaction,
+                                                  boundaryProofError);
+    };
+    boundaryError.clear();
+    if (!verifiedPhysicalDirectoryChain(library,
+                                        assetRoot,
+                                        &boundaryError)
+        || !verifiedPhysicalDirectoryChain(library,
+                                           operationRoot,
+                                           &boundaryError)
+        || !payloadTransactionStillMatches(operationRoot,
+                                           transaction,
+                                           &boundaryError)
+        || !QDir().rename(assetRoot, isolatedRoot)) {
+        retirePayloadTransactionRecord(operationRoot, transaction);
         return fail(error,
                     QStringLiteral(
                         "Cannot isolate the verified asset before deletion"));
     }
+    const PayloadTransactionRecord preparedTransaction = transaction;
+    transaction.phase = QStringLiteral("isolated");
+    if (!publishAndConfirmPayloadTransaction(operationRoot,
+                                             transaction,
+                                             &proofError)) {
+        AssetTreeProof rollbackProof;
+        QString rollbackError;
+        const bool restored =
+            verifiedPhysicalDirectoryChain(library,
+                                           operationRoot,
+                                           &rollbackError)
+            && verifiedPhysicalDirectoryChain(library,
+                                              isolatedRoot,
+                                              &rollbackError)
+            && payloadTransactionStillMatches(operationRoot,
+                                              preparedTransaction,
+                                              &rollbackError)
+            && verifyAssetTreeProofAtRoot(isolatedRoot,
+                                          asset.manifest.id,
+                                          &rollbackProof,
+                                          &rollbackError)
+            && sameAssetTreeContentProof(initialProof, rollbackProof)
+            && !QFileInfo::exists(assetRoot)
+            && QDir().rename(isolatedRoot, assetRoot);
+        return fail(
+            error,
+            restored
+                ? QStringLiteral(
+                      "Cannot persist the isolated asset deletion state; the asset was restored and transaction data remains at %1")
+                      .arg(operationRoot)
+                : QStringLiteral(
+                      "Cannot persist the isolated asset deletion state and rollback failed; data remains at %1")
+                      .arg(isolatedRoot));
+    }
     const auto restoreIsolatedAsset = [&]() {
-        if (!QFileInfo::exists(assetRoot)
+        AssetTreeProof restorableProof;
+        QString restoreError;
+        if (deletionBoundaryStillSafe(true, &restoreError)
+            && verifyAssetTreeProofAtRoot(isolatedRoot,
+                                          asset.manifest.id,
+                                          &restorableProof,
+                                          &restoreError)
+            && !QFileInfo::exists(assetRoot)
             && QDir().rename(isolatedRoot, assetRoot)) {
-            QDir().rmdir(operationRoot);
+            retirePayloadTransactionRecord(operationRoot, transaction);
             return assetRoot;
         }
         return isolatedRoot;
@@ -4954,7 +6138,8 @@ bool AssetLibraryService::deleteAsset(
 
     AssetTreeProof confirmedProof;
     proofError.clear();
-    if (!verifyAssetTreeProofAtRoot(isolatedRoot,
+    if (!deletionBoundaryStillSafe(true, &proofError)
+        || !verifyAssetTreeProofAtRoot(isolatedRoot,
                                     asset.manifest.id,
                                     &confirmedProof,
                                     &proofError)
@@ -4971,11 +6156,25 @@ bool AssetLibraryService::deleteAsset(
     }
 
     QString actualRemovedPath;
-    const bool removed = mode == RemovalMode::MoveToTrash
-                             ? QFile::moveToTrash(isolatedRoot,
-                                                  &actualRemovedPath)
-                             : removeExactTree(isolatedRoot,
-                                               confirmedProof.entries);
+    proofError.clear();
+    AssetTreeProof removalProof;
+    const bool removalBoundarySafe = deletionBoundaryStillSafe(
+                                         true,
+                                         &proofError)
+                                     && verifyAssetTreeProofAtRoot(
+                                         isolatedRoot,
+                                         asset.manifest.id,
+                                         &removalProof,
+                                         &proofError)
+                                     && sameAssetTreeContentProof(
+                                         confirmedProof,
+                                         removalProof);
+    const bool removed = removalBoundarySafe
+                         && (mode == RemovalMode::MoveToTrash
+                                 ? QFile::moveToTrash(isolatedRoot,
+                                                      &actualRemovedPath)
+                                 : removeExactTree(isolatedRoot,
+                                                   removalProof.entries));
     if (!removed) {
         AssetTreeProof remainingProof;
         QString remainingError;
@@ -4989,6 +6188,9 @@ bool AssetLibraryService::deleteAsset(
                                        remainingProof);
         const QString retainedPath = stillComplete ? restoreIsolatedAsset()
                                                    : isolatedRoot;
+        if (retainedPath == assetRoot) {
+            retirePayloadTransactionRecord(operationRoot, transaction);
+        }
         return fail(
             error,
             (mode == RemovalMode::MoveToTrash
@@ -5001,7 +6203,23 @@ bool AssetLibraryService::deleteAsset(
     if (removedPath) {
         *removedPath = actualRemovedPath;
     }
-    QDir().rmdir(operationRoot);
+    transaction.phase = QStringLiteral("removed");
+    proofError.clear();
+    if (!publishAndConfirmPayloadTransaction(operationRoot,
+                                             transaction,
+                                             &proofError)) {
+        return fail(
+            error,
+            QStringLiteral(
+                "The verified asset was removed, but its completion record remains at %1: %2")
+                .arg(operationRoot, proofError));
+    }
+    if (!retirePayloadTransactionRecord(operationRoot, transaction)) {
+        return fail(error,
+                    QStringLiteral(
+                        "The verified asset was removed, but its completed transaction record remains at %1")
+                        .arg(operationRoot));
+    }
     return true;
 }
 
@@ -5158,6 +6376,639 @@ AssetLibraryService::recoverManifestTransactions(
         );
 }
 
+PayloadTransactionRecoveryResult
+AssetLibraryService::recoverPayloadTransactions(
+    const QString &libraryRoot) const
+{
+    PayloadTransactionRecoveryResult result;
+    const QString library = files::normalizedAbsolute(libraryRoot);
+    const QFileInfo libraryInfo(library);
+    if (!libraryInfo.isDir() || files::isLinkLike(libraryInfo)) {
+        result.fatalError = QStringLiteral(
+            "Library root is invalid or linked: %1")
+                                .arg(library);
+        return result;
+    }
+
+    QStringList transactionRoots;
+    discoverPayloadTransactionRoots(library, library, transactionRoots);
+    std::sort(transactionRoots.begin(), transactionRoots.end());
+    transactionRoots.removeDuplicates();
+    struct PayloadTransactionSnapshot {
+        PayloadTransactionRecord record;
+        QByteArray canonical;
+        QString targetKey;
+        QString error;
+        bool valid = false;
+    };
+    const auto targetKeyFor = [](const QString &transactionRoot,
+                                 const PayloadTransactionRecord &record) {
+        const QString parent = files::normalizedAbsolute(
+            QFileInfo(transactionRoot).absolutePath());
+        if (record.operation == QStringLiteral("delete-version")) {
+            return QStringLiteral("version:")
+                   + files::normalizedAbsolute(
+                       QDir(parent).absoluteFilePath(record.version))
+                         .toCaseFolded();
+        }
+        return QStringLiteral("asset:")
+               + files::normalizedAbsolute(
+                   QDir(parent).absoluteFilePath(record.assetName))
+                     .toCaseFolded();
+    };
+    QHash<QString, PayloadTransactionSnapshot> transactionSnapshots;
+    QHash<QString, int> transactionCountByTarget;
+    bool indeterminateRecordChange = false;
+    for (const QString &candidateRoot : std::as_const(transactionRoots)) {
+        PayloadTransactionSnapshot snapshot;
+        if (!readPayloadTransaction(candidateRoot,
+                                    &snapshot.record,
+                                    &snapshot.canonical,
+                                    &snapshot.error)) {
+            // The transaction directory name proves this is xIPs-owned, but a
+            // partial record has no trustworthy target. Mutate nothing in the
+            // batch until synchronization yields a stable valid record.
+            indeterminateRecordChange = true;
+            transactionSnapshots.insert(candidateRoot, snapshot);
+            continue;
+        }
+        snapshot.valid = true;
+        snapshot.targetKey = targetKeyFor(candidateRoot, snapshot.record);
+        ++transactionCountByTarget[snapshot.targetKey];
+        transactionSnapshots.insert(candidateRoot, snapshot);
+    }
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    // The test point models a synchronizer or second process changing records
+    // after discovery but before any recovery action.
+    for (const QString &transactionRoot : std::as_const(transactionRoots)) {
+        if (transactionSnapshots.value(transactionRoot).valid) {
+            invokeWorkingCopyTestHook(
+                WorkingCopyTestPoint::PayloadTransactionReadBeforeRecovery,
+                transactionRoot);
+        }
+    }
+#endif
+
+    // Revalidate the complete discovered set before mutating anything. If a
+    // record switched targets, fail closed for both its original and current
+    // targets so the first snapshot cannot win by directory sort order.
+    QSet<QString> unstableTargetKeys;
+    for (const QString &transactionRoot : std::as_const(transactionRoots)) {
+        const PayloadTransactionSnapshot snapshot =
+            transactionSnapshots.value(transactionRoot);
+        if (!snapshot.valid) {
+            continue;
+        }
+        PayloadTransactionRecord current;
+        QByteArray currentCanonical;
+        QString ignoredError;
+        if (!readPayloadTransaction(transactionRoot,
+                                    &current,
+                                    &currentCanonical,
+                                    &ignoredError)
+            || currentCanonical != snapshot.canonical) {
+            unstableTargetKeys.insert(snapshot.targetKey);
+            if (!current.operation.isEmpty()) {
+                unstableTargetKeys.insert(targetKeyFor(transactionRoot,
+                                                       current));
+            } else {
+                // An unreadable in-flight rewrite has no trustworthy new
+                // target. The only safe batch decision is to mutate nothing.
+                indeterminateRecordChange = true;
+            }
+        }
+    }
+
+    for (const QString &transactionRoot : transactionRoots) {
+        PayloadTransactionRecoveryItem item;
+        item.transactionPath = transactionRoot;
+        const PayloadTransactionSnapshot snapshot =
+            transactionSnapshots.value(transactionRoot);
+        QString operationError;
+        if (!snapshot.valid) {
+            item.message = snapshot.error;
+            ++result.retained;
+            result.items.append(item);
+            continue;
+        }
+        const PayloadTransactionRecord record = snapshot.record;
+        item.operation = record.operation;
+        const QString transactionParent = files::normalizedAbsolute(
+            QFileInfo(transactionRoot).absolutePath());
+        const QString transactionTargetKey = snapshot.targetKey;
+        if (indeterminateRecordChange) {
+            item.message = QStringLiteral(
+                "A discovered payload transaction became unreadable; this recovery batch retained every record");
+            ++result.retained;
+            result.items.append(item);
+            continue;
+        }
+        if (unstableTargetKeys.contains(transactionTargetKey)) {
+            item.message = QStringLiteral(
+                "A payload transaction changed after discovery; all records for its old or new target were retained");
+            ++result.retained;
+            result.items.append(item);
+            continue;
+        }
+        if (transactionCountByTarget.value(transactionTargetKey) != 1) {
+            item.message = QStringLiteral(
+                "Multiple payload transactions target the same asset or saved version; all were retained for review");
+            ++result.retained;
+            result.items.append(item);
+            continue;
+        }
+        const auto transactionStillCurrent = [&]() {
+            operationError.clear();
+            return verifiedPhysicalDirectoryChain(library,
+                                                  transactionParent,
+                                                  &operationError)
+                   && verifiedPhysicalDirectoryChain(library,
+                                                     transactionRoot,
+                                                     &operationError)
+                   && payloadTransactionStillMatches(transactionRoot,
+                                                     record,
+                                                     &operationError);
+        };
+        if (!transactionStillCurrent()) {
+            item.message = QStringLiteral(
+                "Payload transaction ancestry or record changed before recovery: %1")
+                               .arg(operationError);
+            ++result.retained;
+            result.items.append(item);
+            continue;
+        }
+        if (!files::isWithin(transactionRoot, library)
+            || (!samePath(transactionParent, library)
+                && !files::isWithin(transactionParent, library))) {
+            item.message = QStringLiteral(
+                "Payload transaction is outside the selected library");
+            ++result.retained;
+            result.items.append(item);
+            continue;
+        }
+
+        if (record.operation == QStringLiteral("update")) {
+            const QString liveRoot = QDir(transactionParent).absoluteFilePath(
+                record.assetName);
+            const QString stagingRoot = QDir(transactionParent).absoluteFilePath(
+                record.stagingName);
+            const QString backupRoot = QDir(transactionParent).absoluteFilePath(
+                record.isolatedName);
+            item.assetRoot = liveRoot;
+            const QFileInfo liveInfo(liveRoot);
+            const QFileInfo backupInfo(backupRoot);
+            const QFileInfo stagingInfo(stagingRoot);
+            if ((liveInfo.exists()
+                 && (!liveInfo.isDir() || files::isLinkLike(liveInfo)))
+                || (backupInfo.exists()
+                    && (!backupInfo.isDir()
+                        || files::isLinkLike(backupInfo)))
+                || (stagingInfo.exists()
+                    && (!stagingInfo.isDir()
+                        || files::isLinkLike(stagingInfo)))) {
+                item.message = QStringLiteral(
+                    "Update recovery paths are invalid or linked");
+                ++result.retained;
+                result.items.append(item);
+                continue;
+            }
+            if (liveInfo.isDir()) {
+                Manifest liveManifest;
+                QString liveFingerprint;
+                if (!strictFingerprintAtRoot(liveRoot,
+                                             record.assetId,
+                                             &liveManifest,
+                                             &liveFingerprint,
+                                             &operationError)) {
+                    item.message = QStringLiteral(
+                        "The visible working copy is not safe to accept: %1")
+                                       .arg(operationError);
+                    ++result.retained;
+                } else {
+                    // A prepared record may race an active writer that has
+                    // moved its sibling recovery but not published the next
+                    // phase yet. Keep the record even when live still matches.
+                    item.message = QStringLiteral(
+                        "A visible working copy exists; the transaction record was retained to avoid racing an active update");
+                    ++result.retained;
+                }
+                result.items.append(item);
+                continue;
+            }
+            if (!backupInfo.isDir()) {
+                item.message = QStringLiteral(
+                    "The working copy and its verified recovery are both unavailable");
+                ++result.retained;
+                result.items.append(item);
+                continue;
+            }
+            if (record.phase != QStringLiteral("isolated")) {
+                item.message = QStringLiteral(
+                    "Only an isolated update may restore a missing working copy; this transaction was retained");
+                ++result.retained;
+                result.items.append(item);
+                continue;
+            }
+
+            const QString backupInternal = QDir(backupRoot).absoluteFilePath(
+                QStringLiteral(".xips"));
+            const QString stagingInternal = QDir(stagingRoot).absoluteFilePath(
+                QStringLiteral(".xips"));
+            const QFileInfo backupInternalInfo(backupInternal);
+            const QFileInfo stagingInternalInfo(stagingInternal);
+            if (backupInternalInfo.exists()
+                && (!backupInternalInfo.isDir()
+                    || files::isLinkLike(backupInternalInfo))) {
+                item.message = QStringLiteral(
+                    "The recovery saved-version directory is invalid or linked");
+                ++result.retained;
+                result.items.append(item);
+                continue;
+            }
+            if (!backupInternalInfo.exists()
+                && stagingInternalInfo.exists()) {
+#ifdef XIPS_ENABLE_TEST_HOOKS
+                invokeWorkingCopyTestHook(
+                    WorkingCopyTestPoint::PayloadRecoveryBeforeInternalReattach,
+                    stagingRoot);
+#endif
+                operationError.clear();
+                const QFileInfo confirmedStagingRoot(stagingRoot);
+                const QFileInfo confirmedBackupRoot(backupRoot);
+                const QFileInfo confirmedStagingInternal(stagingInternal);
+                const QFileInfo confirmedBackupInternal(backupInternal);
+                if (!confirmedStagingRoot.isDir()
+                    || files::isLinkLike(confirmedStagingRoot)
+                    || !samePath(confirmedStagingRoot.absolutePath(),
+                                 transactionParent)
+                    || !confirmedBackupRoot.isDir()
+                    || files::isLinkLike(confirmedBackupRoot)
+                    || !samePath(confirmedBackupRoot.absolutePath(),
+                                 transactionParent)
+                    || !confirmedStagingInternal.isDir()
+                    || files::isLinkLike(confirmedStagingInternal)
+                    || !samePath(confirmedStagingInternal.absolutePath(),
+                                 stagingRoot)
+                    || confirmedBackupInternal.exists()
+                    || files::isLinkLike(confirmedBackupInternal)
+                    || !verifiedPhysicalDirectoryChain(library,
+                                                       stagingInternal,
+                                                       &operationError)
+                    || !verifiedPhysicalDirectoryChain(library,
+                                                       backupRoot,
+                                                       &operationError)
+                    || !transactionStillCurrent()
+                    || !QDir().rename(stagingInternal, backupInternal)) {
+                    item.message = QStringLiteral(
+                        "Saved versions could not be reattached to the interrupted working-copy recovery");
+                    ++result.retained;
+                    result.items.append(item);
+                    continue;
+                }
+                operationError.clear();
+                const QFileInfo attachedInternal(backupInternal);
+                if (!attachedInternal.isDir()
+                    || files::isLinkLike(attachedInternal)
+                    || !samePath(attachedInternal.absolutePath(), backupRoot)
+                    || !verifiedPhysicalDirectoryChain(library,
+                                                       backupInternal,
+                                                       &operationError)
+                    || !verifiedPhysicalDirectoryChain(library,
+                                                       stagingRoot,
+                                                       &operationError)
+                    || !transactionStillCurrent()) {
+                    item.message = QStringLiteral(
+                        "Saved versions were reattached, but the recovery boundary changed; no further data was moved");
+                    ++result.retained;
+                    result.items.append(item);
+                    continue;
+                }
+            } else if (backupInternalInfo.exists()
+                       && stagingInternalInfo.exists()) {
+                item.message = QStringLiteral(
+                    "Both recovery and staging contain saved-version data; neither was overwritten");
+                ++result.retained;
+                result.items.append(item);
+                continue;
+            }
+
+            Manifest backupManifest;
+            QString backupFingerprint;
+            operationError.clear();
+            if (!strictFingerprintAtRoot(backupRoot,
+                                         record.assetId,
+                                         &backupManifest,
+                                         &backupFingerprint,
+                                         &operationError)
+                || backupFingerprint != record.expectedFingerprint) {
+                item.message = QStringLiteral(
+                    "The interrupted working-copy recovery changed and was not restored: %1")
+                                   .arg(operationError);
+                ++result.retained;
+                result.items.append(item);
+                continue;
+            }
+            QDir parentDirectory(transactionParent);
+            if (!transactionStillCurrent()
+                || !parentDirectory.rename(record.isolatedName,
+                                        record.assetName)) {
+                item.message = QStringLiteral(
+                    "The verified working-copy recovery could not be restored");
+                ++result.retained;
+                result.items.append(item);
+                continue;
+            }
+            Manifest restoredManifest;
+            QString restoredFingerprint;
+            operationError.clear();
+            if (!strictFingerprintAtRoot(liveRoot,
+                                         record.assetId,
+                                         &restoredManifest,
+                                         &restoredFingerprint,
+                                         &operationError)
+                || restoredFingerprint != record.expectedFingerprint) {
+                item.message = QStringLiteral(
+                    "The restored working copy could not be reverified; data remains at %1%2")
+                                   .arg(liveRoot,
+                                        operationError.isEmpty()
+                                            ? QString()
+                                            : QStringLiteral(": %1")
+                                                  .arg(operationError));
+                ++result.retained;
+                result.items.append(item);
+                continue;
+            }
+            if (!retirePayloadTransactionRecord(transactionRoot,
+                                                record,
+                                                library)) {
+                item.message = QStringLiteral(
+                    "The verified working copy was restored, but its transaction record remains");
+                ++result.retained;
+            } else {
+                item.outcome =
+                    PayloadTransactionRecoveryOutcome::RestoredVisible;
+                item.message = QStringLiteral(
+                    "The interrupted update was rolled back to its verified working copy");
+                ++result.restoredVisible;
+            }
+            result.items.append(item);
+            continue;
+        }
+
+        if (record.operation == QStringLiteral("delete-asset")) {
+            const QString liveRoot = QDir(transactionParent).absoluteFilePath(
+                record.assetName);
+            const QString isolatedRoot = QDir(transactionRoot).absoluteFilePath(
+                record.isolatedName);
+            item.assetRoot = liveRoot;
+            const QFileInfo liveInfo(liveRoot);
+            const QFileInfo isolatedInfo(isolatedRoot);
+            if (record.phase == QStringLiteral("removed")) {
+                if (QFileInfo::exists(liveRoot)
+                    || QFileInfo::exists(isolatedRoot)) {
+                    item.message = QStringLiteral(
+                        "A completed asset deletion record conflicts with remaining data; no data or evidence was changed");
+                    ++result.retained;
+                } else if (retirePayloadTransactionRecord(transactionRoot,
+                                                           record,
+                                                           library)) {
+                    item.outcome = PayloadTransactionRecoveryOutcome::Completed;
+                    item.message = QStringLiteral(
+                        "The completed asset deletion transaction was retired");
+                    ++result.completed;
+                } else {
+                    item.message = QStringLiteral(
+                        "The deletion completed, but its transaction record changed or could not be retired");
+                    ++result.retained;
+                }
+                result.items.append(item);
+                continue;
+            }
+            if ((liveInfo.exists()
+                 && (!liveInfo.isDir() || files::isLinkLike(liveInfo)))
+                || (isolatedInfo.exists()
+                    && (!isolatedInfo.isDir()
+                        || files::isLinkLike(isolatedInfo)))) {
+                item.message = QStringLiteral(
+                    "Asset deletion recovery paths are invalid or linked");
+                ++result.retained;
+            } else if (liveInfo.isDir() && isolatedInfo.exists()) {
+                item.message = QStringLiteral(
+                    "Both visible and isolated asset data exist; neither was overwritten");
+                ++result.retained;
+            } else if (liveInfo.isDir()) {
+                AssetTreeProof liveProof;
+                operationError.clear();
+                verifyAssetTreeProofAtRoot(liveRoot,
+                                           record.assetId,
+                                           &liveProof,
+                                           &operationError);
+                item.message = QStringLiteral(
+                    "The asset is visible; the deletion record was retained to avoid racing an active delete");
+                ++result.retained;
+            } else if (isolatedInfo.isDir()) {
+                if (record.phase != QStringLiteral("isolated")) {
+                    item.message = QStringLiteral(
+                        "Only an isolated asset deletion may restore missing visible data; this transaction was retained");
+                    ++result.retained;
+                    result.items.append(item);
+                    continue;
+                }
+                AssetTreeProof isolatedProof;
+                if (!verifyAssetTreeProofAtRoot(isolatedRoot,
+                                                record.assetId,
+                                                &isolatedProof,
+                                                &operationError)
+                    || isolatedProof.fingerprint
+                           != record.expectedFingerprint) {
+                    item.message = QStringLiteral(
+                        "The isolated asset changed and was not restored: %1")
+                                       .arg(operationError);
+                    ++result.retained;
+                } else if (!transactionStillCurrent()
+                           || !QDir().rename(isolatedRoot, liveRoot)) {
+                    item.message = QStringLiteral(
+                        "The verified isolated asset could not be restored");
+                    ++result.retained;
+                } else {
+                    AssetTreeProof restoredProof;
+                    if (!verifyAssetTreeProofAtRoot(liveRoot,
+                                                    record.assetId,
+                                                    &restoredProof,
+                                                    &operationError)
+                        || restoredProof.fingerprint
+                               != record.expectedFingerprint) {
+                        item.message = QStringLiteral(
+                            "The restored asset could not be reverified; no data was deleted");
+                        ++result.retained;
+                    } else if (retirePayloadTransactionRecord(transactionRoot,
+                                                               record,
+                                                               library)) {
+                        item.outcome = PayloadTransactionRecoveryOutcome::RestoredVisible;
+                        item.message = QStringLiteral(
+                            "The interrupted asset deletion was rolled back to a visible verified asset");
+                        ++result.restoredVisible;
+                    } else {
+                        item.message = QStringLiteral(
+                            "The verified asset was restored, but its transaction record remains");
+                        ++result.retained;
+                    }
+                }
+            } else {
+                item.message = QStringLiteral(
+                    "No verified asset data remains to restore; the transaction record was retained");
+                ++result.retained;
+            }
+            result.items.append(item);
+            continue;
+        }
+
+        // delete-version transactions live directly under .xips/versions.
+        const QString versionsRoot = transactionParent;
+        const QString internalRoot = files::normalizedAbsolute(
+            QFileInfo(versionsRoot).absolutePath());
+        const QString assetRoot = files::normalizedAbsolute(
+            QFileInfo(internalRoot).absolutePath());
+        item.assetRoot = assetRoot;
+        const QFileInfo assetInfo(assetRoot);
+        const QFileInfo internalInfo(internalRoot);
+        const QFileInfo versionsInfo(versionsRoot);
+        const QFileInfo transactionInfo(transactionRoot);
+        if (!assetInfo.isDir() || files::isLinkLike(assetInfo)
+            || !internalInfo.isDir() || files::isLinkLike(internalInfo)
+            || !versionsInfo.isDir() || files::isLinkLike(versionsInfo)
+            || !transactionInfo.isDir()
+            || files::isLinkLike(transactionInfo)
+            || versionsInfo.fileName() != QStringLiteral("versions")
+            || internalInfo.fileName() != QStringLiteral(".xips")
+            || !samePath(internalInfo.absolutePath(), assetRoot)
+            || !samePath(versionsInfo.absolutePath(), internalRoot)
+            || !samePath(transactionInfo.absolutePath(), versionsRoot)
+            || !files::isWithin(assetRoot, library)) {
+            item.message = QStringLiteral(
+                "Version deletion transaction path is outside an asset versions directory");
+            ++result.retained;
+            result.items.append(item);
+            continue;
+        }
+        const QString liveRoot = QDir(versionsRoot).absoluteFilePath(
+            record.version);
+        const QString isolatedRoot = QDir(versionsRoot).absoluteFilePath(
+            record.isolatedName);
+        const QFileInfo liveInfo(liveRoot);
+        const QFileInfo isolatedInfo(isolatedRoot);
+        if (record.phase == QStringLiteral("removed")) {
+            if (QFileInfo::exists(liveRoot)
+                || QFileInfo::exists(isolatedRoot)) {
+                item.message = QStringLiteral(
+                    "A completed version deletion record conflicts with remaining data; no data or evidence was changed");
+                ++result.retained;
+            } else if (retirePayloadTransactionRecord(transactionRoot,
+                                                       record,
+                                                       library)) {
+                item.outcome = PayloadTransactionRecoveryOutcome::Completed;
+                item.message = QStringLiteral(
+                    "The completed version deletion transaction was retired");
+                ++result.completed;
+            } else {
+                item.message = QStringLiteral(
+                    "The version deletion completed, but its transaction record changed or could not be retired");
+                ++result.retained;
+            }
+            result.items.append(item);
+            continue;
+        }
+        if ((liveInfo.exists()
+             && (!liveInfo.isDir() || files::isLinkLike(liveInfo)))
+            || (isolatedInfo.exists()
+                && (!isolatedInfo.isDir()
+                    || files::isLinkLike(isolatedInfo)))) {
+            item.message = QStringLiteral(
+                "Version deletion recovery paths are invalid or linked");
+            ++result.retained;
+        } else if (liveInfo.isDir() && isolatedInfo.exists()) {
+            item.message = QStringLiteral(
+                "Both visible and isolated saved-version data exist; neither was overwritten");
+            ++result.retained;
+        } else if (liveInfo.isDir()) {
+            SnapshotProof liveProof;
+            operationError.clear();
+            verifySavedSnapshot(assetRoot,
+                                record.assetId,
+                                record.version,
+                                liveRoot,
+                                true,
+                                &liveProof,
+                                &operationError);
+            item.message = QStringLiteral(
+                "The saved version is visible; the deletion record was retained to avoid racing an active delete");
+            ++result.retained;
+        } else if (isolatedInfo.isDir()) {
+            if (record.phase != QStringLiteral("isolated")) {
+                item.message = QStringLiteral(
+                    "Only an isolated version deletion may restore a missing saved version; this transaction was retained");
+                ++result.retained;
+                result.items.append(item);
+                continue;
+            }
+            SnapshotProof isolatedProof;
+            if (!verifySavedSnapshot(assetRoot,
+                                     record.assetId,
+                                     record.version,
+                                     isolatedRoot,
+                                     false,
+                                     &isolatedProof,
+                                     &operationError)
+                || isolatedProof.proofFingerprint
+                       != record.expectedFingerprint) {
+                item.message = QStringLiteral(
+                    "The isolated saved version changed and was not restored: %1")
+                                   .arg(operationError);
+                ++result.retained;
+            } else if (!transactionStillCurrent()
+                       || !QDir(versionsRoot).rename(record.isolatedName,
+                                                  record.version)) {
+                item.message = QStringLiteral(
+                    "The verified isolated saved version could not be restored");
+                ++result.retained;
+            } else {
+                SnapshotProof restoredProof;
+                if (!verifySavedSnapshot(assetRoot,
+                                         record.assetId,
+                                         record.version,
+                                         liveRoot,
+                                         true,
+                                         &restoredProof,
+                                         &operationError)
+                    || restoredProof.proofFingerprint
+                           != record.expectedFingerprint) {
+                    item.message = QStringLiteral(
+                        "The restored saved version could not be reverified; no data was deleted");
+                    ++result.retained;
+                } else if (retirePayloadTransactionRecord(transactionRoot,
+                                                           record,
+                                                           library)) {
+                    item.outcome = PayloadTransactionRecoveryOutcome::RestoredVisible;
+                    item.message = QStringLiteral(
+                        "The interrupted version deletion was rolled back to a visible verified snapshot");
+                    ++result.restoredVisible;
+                } else {
+                    item.message = QStringLiteral(
+                        "The saved version was restored, but its transaction record remains");
+                    ++result.retained;
+                }
+            }
+        } else {
+            item.message = QStringLiteral(
+                "No verified saved-version data remains to restore; the transaction record was retained");
+            ++result.retained;
+        }
+        result.items.append(item);
+    }
+    return result;
+}
+
 VersionInventoryResult AssetLibraryService::versionInventory(
     const QString &assetRoot) const
 {
@@ -5167,9 +7018,16 @@ VersionInventoryResult AssetLibraryService::versionInventory(
     const QString liveManifestPath = QDir(normalizedAssetRoot).absoluteFilePath(
         QStringLiteral(".xips.json"));
     const QFileInfo liveManifestInfo(liveManifestPath);
+    QString physicalError;
     if (!assetRootInfo.isDir() || files::isLinkLike(assetRootInfo)
-        || !liveManifestInfo.isFile() || files::isLinkLike(liveManifestInfo)) {
-        result.fatalError = QStringLiteral("Asset path or manifest is invalid");
+        || !liveManifestInfo.isFile() || files::isLinkLike(liveManifestInfo)
+        || !verifiedPhysicalPathFromVolume(normalizedAssetRoot,
+                                           &physicalError)) {
+        result.fatalError = physicalError.isEmpty()
+                                ? QStringLiteral("Asset path or manifest is invalid")
+                                : QStringLiteral(
+                                      "Asset path has a linked or invalid physical ancestor: %1")
+                                      .arg(physicalError);
         return result;
     }
     const ManifestLoadResult liveManifest = ManifestService().load(
@@ -5179,16 +7037,46 @@ VersionInventoryResult AssetLibraryService::versionInventory(
             "Cannot reload the selected asset manifest");
         return result;
     }
-    const QString root = QDir(normalizedAssetRoot).absoluteFilePath(
-        QStringLiteral(".xips/versions"));
-    const QFileInfo rootInfo(root);
-    if (!rootInfo.exists()) {
+    const QString internalRoot = QDir(normalizedAssetRoot).absoluteFilePath(
+        QStringLiteral(".xips"));
+    const QFileInfo internalInfo(internalRoot);
+    if (!internalInfo.exists() && !files::isLinkLike(internalInfo)) {
         return result;
     }
-    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
+    QString boundaryError;
+    if (!internalInfo.isDir() || files::isLinkLike(internalInfo)
+        || !samePath(internalInfo.absolutePath(), normalizedAssetRoot)
+        || !verifiedPhysicalDirectoryChain(normalizedAssetRoot,
+                                           internalRoot,
+                                           &boundaryError)) {
         result.fatalError = QStringLiteral(
-            "Saved versions directory is invalid or linked: %1")
-                                .arg(root);
+            "Saved-version internal directory is invalid or linked: %1%2")
+                                .arg(internalRoot,
+                                     boundaryError.isEmpty()
+                                         ? QString()
+                                         : QStringLiteral(": %1")
+                                               .arg(boundaryError));
+        return result;
+    }
+    const QString root = QDir(internalRoot).absoluteFilePath(
+        QStringLiteral("versions"));
+    const QFileInfo rootInfo(root);
+    if (!rootInfo.exists() && !files::isLinkLike(rootInfo)) {
+        return result;
+    }
+    boundaryError.clear();
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)
+        || !samePath(rootInfo.absolutePath(), internalRoot)
+        || !verifiedPhysicalDirectoryChain(normalizedAssetRoot,
+                                           root,
+                                           &boundaryError)) {
+        result.fatalError = QStringLiteral(
+            "Saved versions directory is invalid or linked: %1%2")
+                                .arg(root,
+                                     boundaryError.isEmpty()
+                                         ? QString()
+                                         : QStringLiteral(": %1")
+                                               .arg(boundaryError));
         return result;
     }
     const QFileInfoList entries = QDir(root).entryInfoList(
@@ -5213,11 +7101,23 @@ VersionInventoryResult AssetLibraryService::versionInventory(
                                  true,
                                  &proof,
                                  &versionError)) {
-            result.problems.append(
-                versionError.isEmpty()
-                    ? QStringLiteral("Cannot verify saved version: %1")
-                          .arg(entry.absoluteFilePath())
-                    : versionError);
+            const QString problem = versionError.isEmpty()
+                                        ? QStringLiteral("Cannot verify saved version: %1")
+                                              .arg(entry.absoluteFilePath())
+                                        : versionError;
+            result.problems.append(problem);
+            OpaqueTreeProof opaqueProof;
+            QString opaqueError;
+            if (verifyOpaqueTreeProofAtRoot(entry.absoluteFilePath(),
+                                            &opaqueProof,
+                                            &opaqueError)) {
+                result.invalidVersions.append({
+                    .version = entry.fileName(),
+                    .path = files::normalizedAbsolute(entry.absoluteFilePath()),
+                    .fingerprint = opaqueProof.fingerprint,
+                    .problem = problem,
+                });
+            }
             continue;
         }
         result.validVersions.append(proof.info);
@@ -5244,24 +7144,25 @@ QList<VersionInfo> AssetLibraryService::versions(const QString &assetRoot,
         fail(error, inventory.fatalError);
         return {};
     }
-    if (!inventory.problems.isEmpty()) {
-        fail(error, inventory.problems.first());
-        return {};
-    }
     return inventory.validVersions;
 }
 
 WorkingCopyState AssetLibraryService::workingCopyState(
     const AssetRecord &asset) const
 {
+    return workingCopyState(asset, versionInventory(asset.assetRoot));
+}
+
+WorkingCopyState AssetLibraryService::workingCopyState(
+    const AssetRecord &asset,
+    const VersionInventoryResult &inventory) const
+{
     WorkingCopyState state;
-    QString versionsError;
-    const QList<VersionInfo> savedVersions = versions(asset.assetRoot,
-                                                       &versionsError);
-    if (!versionsError.isEmpty()) {
-        state.error = versionsError;
+    if (!inventory.fatalError.isEmpty()) {
+        state.error = inventory.fatalError;
         return state;
     }
+    const QList<VersionInfo> &savedVersions = inventory.validVersions;
     if (savedVersions.isEmpty()) {
         return state;
     }
@@ -5272,13 +7173,13 @@ WorkingCopyState AssetLibraryService::workingCopyState(
     }
     state.hasSavedVersion = true;
     state.latestVersion = savedVersions.first().version;
-    Manifest comparable = *loaded.manifest;
-    comparable.version = state.latestVersion;
-    QString liveStrictHash;
-    if (!AssetScanner::strictContentHash(comparable,
-                                         asset.assetRoot,
-                                         &liveStrictHash,
-                                         &state.error)) {
+    QStringList liveFiles;
+    QString livePayloadFingerprint;
+    if (!strictPayloadFingerprint(asset.assetRoot,
+                                  nullptr,
+                                  &liveFiles,
+                                  &livePayloadFingerprint,
+                                  &state.error)) {
         return state;
     }
     const ManifestLoadResult confirmed = ManifestService().load(
@@ -5291,8 +7192,8 @@ WorkingCopyState AssetLibraryService::workingCopyState(
             "The working-copy manifest changed while its version state was being verified");
         return state;
     }
-    state.changed = liveStrictHash
-                    != savedVersions.first().strictContentHash;
+    state.changed = livePayloadFingerprint
+                    != savedVersions.first().payloadFingerprint;
     return state;
 }
 
@@ -5333,54 +7234,121 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
             error)) {
         return false;
     }
-    QString versionsError;
-    const QList<VersionInfo> savedVersions = versions(asset.assetRoot,
-                                                       &versionsError);
-    if (!versionsError.isEmpty()) {
-        return fail(error, versionsError);
+    const VersionInventoryResult inventory = versionInventory(asset.assetRoot);
+    if (!inventory.fatalError.isEmpty()) {
+        return fail(error, inventory.fatalError);
     }
+    const QList<VersionInfo> &savedVersions = inventory.validVersions;
     if (!savedVersions.isEmpty()) {
-        Manifest comparable = baselineManifest;
-        comparable.version = savedVersions.first().version;
-        QString comparableStrictHash;
-        if (!AssetScanner::strictContentHash(comparable,
-                                             asset.assetRoot,
-                                             &comparableStrictHash,
-                                             error)) {
-            return false;
-        }
-        if (comparableStrictHash
-            == savedVersions.first().strictContentHash) {
+        if (baselinePayloadFingerprint
+            == savedVersions.first().payloadFingerprint) {
             return fail(error,
                         QStringLiteral("The working copy has not changed since version %1")
                             .arg(savedVersions.first().version));
         }
     }
 
-    const QString versionsRoot = QDir(asset.assetRoot).absoluteFilePath(
-        QStringLiteral(".xips/versions"));
-    const QFileInfo internalInfo(QDir(asset.assetRoot).absoluteFilePath(
-        QStringLiteral(".xips")));
+    const QString normalizedAssetRoot = files::normalizedAbsolute(
+        asset.assetRoot);
+    const QString assetBoundary = QStorageInfo(normalizedAssetRoot).rootPath();
+    const QString internalRoot = QDir(normalizedAssetRoot).absoluteFilePath(
+        QStringLiteral(".xips"));
+    const QString versionsRoot = QDir(internalRoot).absoluteFilePath(
+        QStringLiteral("versions"));
+    const QFileInfo internalInfo(internalRoot);
     const QFileInfo existingVersionsInfo(versionsRoot);
     if ((internalInfo.exists()
          && (!internalInfo.isDir() || files::isLinkLike(internalInfo)))
+        || files::isLinkLike(internalInfo)
         || (existingVersionsInfo.exists()
             && (!existingVersionsInfo.isDir()
-                || files::isLinkLike(existingVersionsInfo)))) {
+                || files::isLinkLike(existingVersionsInfo)))
+        || files::isLinkLike(existingVersionsInfo)) {
         return fail(error,
                     QStringLiteral("The versions path is invalid or linked"));
     }
-    if (!QDir().mkpath(versionsRoot)) {
-        return fail(error, QStringLiteral("Cannot create the versions directory"));
-    }
-    const QFileInfo confirmedVersionsInfo(versionsRoot);
-    if (!confirmedVersionsInfo.isDir()
-        || files::isLinkLike(confirmedVersionsInfo)) {
+
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::VersionHierarchyCheckedBeforeCreate,
+        internalRoot);
+#endif
+
+    const auto validAssetRoot = [&](QString *boundaryError) {
+        const QFileInfo info(normalizedAssetRoot);
+        return info.isDir() && !files::isLinkLike(info)
+               && verifiedPhysicalDirectoryChain(assetBoundary,
+                                                  normalizedAssetRoot,
+                                                  boundaryError);
+    };
+    const auto validInternalRoot = [&](QString *boundaryError) {
+        const QFileInfo info(internalRoot);
+        return validAssetRoot(boundaryError) && info.isDir()
+               && !files::isLinkLike(info)
+               && samePath(info.absolutePath(), normalizedAssetRoot)
+               && verifiedPhysicalDirectoryChain(normalizedAssetRoot,
+                                                  internalRoot,
+                                                  boundaryError);
+    };
+    const auto validVersionsRoot = [&](QString *boundaryError) {
+        const QFileInfo info(versionsRoot);
+        return validInternalRoot(boundaryError) && info.isDir()
+               && !files::isLinkLike(info)
+               && samePath(info.absolutePath(), internalRoot)
+               && verifiedPhysicalDirectoryChain(normalizedAssetRoot,
+                                                  versionsRoot,
+                                                  boundaryError);
+    };
+    QString hierarchyError;
+    if (!validAssetRoot(&hierarchyError)
+        || !validateAssetRecord(asset, nullptr, &hierarchyError)) {
         return fail(error,
-                    QStringLiteral("The versions path became invalid or linked"));
+                    QStringLiteral("The asset root changed before the version hierarchy was created: %1")
+                        .arg(hierarchyError));
+    }
+    QFileInfo currentInternalInfo(internalRoot);
+    if (!currentInternalInfo.exists()
+        && !files::isLinkLike(currentInternalInfo)) {
+        hierarchyError.clear();
+        if (!validAssetRoot(&hierarchyError)
+            || !validateAssetRecord(asset, nullptr, &hierarchyError)
+            || !QDir(normalizedAssetRoot).mkdir(QStringLiteral(".xips"))) {
+            return fail(error,
+                        QStringLiteral("Cannot create the version internal directory%1")
+                            .arg(hierarchyError.isEmpty()
+                                     ? QString()
+                                     : QStringLiteral(": %1")
+                                           .arg(hierarchyError)));
+        }
+    }
+    if (!validInternalRoot(&hierarchyError)) {
+        return fail(error,
+                    QStringLiteral("The version internal path became invalid or linked: %1")
+                        .arg(hierarchyError));
+    }
+    QFileInfo currentVersionsInfo(versionsRoot);
+    if (!currentVersionsInfo.exists()
+        && !files::isLinkLike(currentVersionsInfo)) {
+        hierarchyError.clear();
+        if (!validInternalRoot(&hierarchyError)
+            || !QDir(internalRoot).mkdir(QStringLiteral("versions"))) {
+            return fail(error,
+                        QStringLiteral("Cannot create the versions directory%1")
+                            .arg(hierarchyError.isEmpty()
+                                     ? QString()
+                                     : QStringLiteral(": %1")
+                                           .arg(hierarchyError)));
+        }
+    }
+    hierarchyError.clear();
+    if (!validVersionsRoot(&hierarchyError)) {
+        return fail(error,
+                    QStringLiteral("The versions path became invalid or linked: %1")
+                        .arg(hierarchyError));
     }
     const QString targetRoot = QDir(versionsRoot).absoluteFilePath(cleanVersion);
-    if (QFileInfo::exists(targetRoot)) {
+    if (QFileInfo::exists(targetRoot)
+        || files::isLinkLike(QFileInfo(targetRoot))) {
         return fail(error,
                     QStringLiteral("Version already exists: %1").arg(cleanVersion));
     }
@@ -5388,15 +7356,35 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
                                 + QUuid::createUuid().toString(
                                     QUuid::WithoutBraces);
     const QString stagingRoot = QDir(versionsRoot).absoluteFilePath(stagingName);
-    if (!QDir().mkpath(stagingRoot)) {
+    hierarchyError.clear();
+    if (!validVersionsRoot(&hierarchyError)
+        || !QDir(versionsRoot).mkdir(stagingName)) {
         return fail(error, QStringLiteral("Cannot create the version staging directory"));
+    }
+
+    const auto validStagingRoot = [&](QString *boundaryError) {
+        const QFileInfo info(stagingRoot);
+        return validVersionsRoot(boundaryError) && info.isDir()
+               && !files::isLinkLike(info)
+               && samePath(info.absolutePath(), versionsRoot)
+               && verifiedPhysicalDirectoryChain(normalizedAssetRoot,
+                                                  stagingRoot,
+                                                  boundaryError);
+    };
+    hierarchyError.clear();
+    if (!validStagingRoot(&hierarchyError)) {
+        return fail(error,
+                    QStringLiteral("The version staging path became invalid or linked: %1")
+                        .arg(hierarchyError));
     }
 
     QString operationError;
     if (!copyPayloadFiles(asset.assetRoot,
                           baselineFiles,
                           stagingRoot,
-                          &operationError)
+                          &operationError,
+                          normalizedAssetRoot)
+        || !validStagingRoot(&operationError)
         || !verifiedCopiedPayload(stagingRoot,
                                   baselineFiles,
                                   baselinePayloadFingerprint,
@@ -5409,7 +7397,9 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
     snapshotManifest.version = cleanVersion;
     const QString snapshotManifestPath = QDir(stagingRoot).absoluteFilePath(
         QStringLiteral(".xips.json"));
-    if (!ManifestService().write(snapshotManifestPath,
+    operationError.clear();
+    if (!validStagingRoot(&operationError)
+        || !ManifestService().write(snapshotManifestPath,
                                  snapshotManifest,
                                  &operationError)) {
         return fail(error,
@@ -5421,7 +7411,8 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
     versionInfo.schemaVersion = 2;
     versionInfo.version = cleanVersion;
     versionInfo.createdAt = QDateTime::currentDateTimeUtc();
-    if (!AssetScanner::verifiedContentHash(snapshotManifest,
+    if (!validStagingRoot(&operationError)
+        || !AssetScanner::verifiedContentHash(snapshotManifest,
                                            stagingRoot,
                                            &versionInfo.contentHash,
                                            &operationError)
@@ -5434,7 +7425,9 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
                         .arg(operationError, stagingRoot));
     }
     versionInfo.path = targetRoot;
-    if (!writeSnapshotMetadata(
+    operationError.clear();
+    if (!validStagingRoot(&operationError)
+        || !writeSnapshotMetadata(
             QDir(stagingRoot).absoluteFilePath(QStringLiteral(".snapshot.json")),
             versionInfo,
             &operationError)) {
@@ -5450,7 +7443,9 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
 #endif
 
     SnapshotProof stagedProof;
-    if (!verifySavedSnapshot(asset.assetRoot,
+    operationError.clear();
+    if (!validStagingRoot(&operationError)
+        || !verifySavedSnapshot(asset.assetRoot,
                              baselineManifest.id,
                              cleanVersion,
                              stagingRoot,
@@ -5470,6 +7465,14 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
 
     const auto failBeforePublish = [&](const QString &message) {
         QString completedMessage = message;
+        QString retireBoundaryError;
+        if (!validStagingRoot(&retireBoundaryError)) {
+            return fail(error,
+                        completedMessage
+                            + QStringLiteral(
+                                "; the version boundary changed and staging was not modified: %1")
+                                  .arg(retireBoundaryError));
+        }
         StagingRetireResult retired;
         if (!retireVerifiedSnapshotStaging(asset.assetRoot,
                                            baselineManifest.id,
@@ -5483,7 +7486,9 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
     };
 
     SnapshotProof confirmedStagingProof;
-    if (!verifySavedSnapshot(asset.assetRoot,
+    operationError.clear();
+    if (!validStagingRoot(&operationError)
+        || !verifySavedSnapshot(asset.assetRoot,
                              baselineManifest.id,
                              cleanVersion,
                              stagingRoot,
@@ -5519,9 +7524,16 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
             QStringLiteral("The working copy changed while the version was being prepared: %1")
                 .arg(operationError));
     }
-    if (QFileInfo::exists(targetRoot)) {
+    hierarchyError.clear();
+    if (!validStagingRoot(&hierarchyError)
+        || QFileInfo::exists(targetRoot)
+        || files::isLinkLike(QFileInfo(targetRoot))) {
         return failBeforePublish(
-            QStringLiteral("Version already exists: %1").arg(cleanVersion));
+            !hierarchyError.isEmpty()
+                ? QStringLiteral("The version hierarchy changed before publish: %1")
+                      .arg(hierarchyError)
+                : QStringLiteral("Version already exists: %1")
+                      .arg(cleanVersion));
     }
     if (!QDir(versionsRoot).rename(stagingName, cleanVersion)) {
         return failBeforePublish(
@@ -5530,7 +7542,10 @@ bool AssetLibraryService::createVersion(const AssetRecord &asset,
 
     SnapshotProof publishedProof;
     operationError.clear();
-    if (!verifySavedSnapshot(asset.assetRoot,
+    if (!verifiedPhysicalDirectoryChain(normalizedAssetRoot,
+                                        targetRoot,
+                                        &operationError)
+        || !verifySavedSnapshot(asset.assetRoot,
                              baselineManifest.id,
                              cleanVersion,
                              targetRoot,
@@ -5631,18 +7646,121 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
                         .arg(initialProof.info.path, operationError));
     }
 
-    const QString versionsRoot = QDir(asset.assetRoot).absoluteFilePath(
+    const QString normalizedAssetRoot = files::normalizedAbsolute(
+        asset.assetRoot);
+    const QString assetBoundary = QStorageInfo(normalizedAssetRoot).rootPath();
+    const QString versionsRoot = QDir(normalizedAssetRoot).absoluteFilePath(
         QStringLiteral(".xips/versions"));
+    const QString operationId = QUuid::createUuid().toString(
+        QUuid::WithoutBraces);
     const QString isolatedName = QStringLiteral(".staging-delete-")
-                                 + QUuid::createUuid().toString(
-                                     QUuid::WithoutBraces);
+                                 + operationId;
     const QString isolatedRoot = QDir(versionsRoot).absoluteFilePath(
         isolatedName);
-    if (!QDir(versionsRoot).rename(cleanVersion, isolatedName)) {
+    const QString transactionName = QStringLiteral(".staging-transaction-")
+                                    + operationId;
+    const QString transactionRoot = QDir(versionsRoot).absoluteFilePath(
+        transactionName);
+    operationError.clear();
+    if (assetBoundary.isEmpty()
+        || !verifiedPhysicalDirectoryChain(assetBoundary,
+                                        versionsRoot,
+                                        &operationError)
+        || !QDir(versionsRoot).mkdir(transactionName)
+        || !verifiedPhysicalDirectoryChain(assetBoundary,
+                                           transactionRoot,
+                                           &operationError)) {
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot create the version deletion transaction record"));
+    }
+    PayloadTransactionRecord transaction{
+        .operation = QStringLiteral("delete-version"),
+        .transactionId = operationId,
+        .phase = QStringLiteral("prepared"),
+        .assetName = QFileInfo(asset.assetRoot).fileName(),
+        .assetId = selectedManifest.id,
+        .stagingName = {},
+        .isolatedName = isolatedName,
+        .version = cleanVersion,
+        .expectedFingerprint = initialProof.proofFingerprint,
+    };
+    if (!publishAndConfirmPayloadTransaction(transactionRoot,
+                                             transaction,
+                                             &operationError)) {
+        return fail(error,
+                    QStringLiteral(
+                        "Cannot persist the version deletion transaction; the snapshot was not isolated and transaction data remains at %1: %2")
+                        .arg(transactionRoot, operationError));
+    }
+    const auto versionDeletionBoundaryStillSafe =
+        [&](const bool requireIsolated, QString *boundaryError) {
+            return verifiedPhysicalDirectoryChain(assetBoundary,
+                                                  versionsRoot,
+                                                  boundaryError)
+                   && verifiedPhysicalDirectoryChain(assetBoundary,
+                                                      transactionRoot,
+                                                      boundaryError)
+                   && (!requireIsolated
+                       || verifiedPhysicalDirectoryChain(
+                           assetBoundary,
+                           isolatedRoot,
+                           boundaryError))
+                   && payloadTransactionStillMatches(transactionRoot,
+                                                      transaction,
+                                                      boundaryError);
+        };
+    operationError.clear();
+    if (!versionDeletionBoundaryStillSafe(false, &operationError)
+        || !verifiedPhysicalDirectoryChain(assetBoundary,
+                                           initialProof.info.path,
+                                           &operationError)
+        || !QDir(versionsRoot).rename(cleanVersion, isolatedName)) {
+        retirePayloadTransactionRecord(transactionRoot,
+                                       transaction,
+                                       assetBoundary);
         return fail(error,
                     QStringLiteral(
                         "Cannot isolate saved version %1 before deletion")
                         .arg(cleanVersion));
+    }
+    const PayloadTransactionRecord preparedTransaction = transaction;
+    transaction.phase = QStringLiteral("isolated");
+    operationError.clear();
+    if (!publishAndConfirmPayloadTransaction(transactionRoot,
+                                             transaction,
+                                             &operationError)) {
+        SnapshotProof rollbackProof;
+        QString rollbackError;
+        const bool restored =
+            verifiedPhysicalDirectoryChain(assetBoundary,
+                                           transactionRoot,
+                                           &rollbackError)
+            && verifiedPhysicalDirectoryChain(assetBoundary,
+                                              isolatedRoot,
+                                              &rollbackError)
+            && payloadTransactionStillMatches(transactionRoot,
+                                              preparedTransaction,
+                                              &rollbackError)
+            && verifySavedSnapshot(normalizedAssetRoot,
+                                   selectedManifest.id,
+                                   cleanVersion,
+                                   isolatedRoot,
+                                   false,
+                                   &rollbackProof,
+                                   &rollbackError)
+            && sameSnapshotContentProof(initialProof, rollbackProof)
+            && !QFileInfo::exists(initialProof.info.path)
+            && QDir(versionsRoot).rename(isolatedName, cleanVersion);
+        return fail(
+            error,
+            restored
+                ? QStringLiteral(
+                      "Cannot persist the isolated version deletion state; the snapshot was restored and transaction data remains at %1")
+                      .arg(transactionRoot)
+                : QStringLiteral(
+                      "Cannot persist the isolated version deletion state and rollback failed; snapshot data remains at %1")
+                      .arg(isolatedRoot));
     }
 
     const auto appendRetained = [&](const QString &path,
@@ -5658,8 +7776,13 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
     const auto restoreIsolatedSnapshot = [&]() {
         const QString targetRoot = QDir(versionsRoot).absoluteFilePath(
             cleanVersion);
-        if (!QFileInfo::exists(targetRoot)
+        QString restoreError;
+        if (versionDeletionBoundaryStillSafe(true, &restoreError)
+            && !QFileInfo::exists(targetRoot)
             && QDir(versionsRoot).rename(isolatedName, cleanVersion)) {
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
             return true;
         }
         appendRetained(
@@ -5672,7 +7795,8 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
     const auto verifiedIsolatedSnapshot = [&](SnapshotProof *proof,
                                                QString *verificationError) {
         SnapshotProof confirmed;
-        if (!verifySavedSnapshot(asset.assetRoot,
+        if (!versionDeletionBoundaryStillSafe(true, verificationError)
+            || !verifySavedSnapshot(asset.assetRoot,
                                  selectedManifest.id,
                                  cleanVersion,
                                  isolatedRoot,
@@ -5960,11 +8084,20 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
     }
 
     bool removed = false;
-    if (mode == RemovalMode::MoveToTrash) {
-        removed = QFile::moveToTrash(isolatedRoot, &result->removedPath);
-    } else {
-        removed = removeExactTree(isolatedRoot,
-                                  expectedSnapshotEntries(initialProof.files));
+    operationError.clear();
+    SnapshotProof removalProof;
+    const bool removalBoundarySafe =
+        versionDeletionBoundaryStillSafe(true, &operationError)
+        && verifiedIsolatedSnapshot(&removalProof, &operationError)
+        && sameSnapshotContentProof(isolatedProof, removalProof);
+    if (removalBoundarySafe) {
+        if (mode == RemovalMode::MoveToTrash) {
+            removed = QFile::moveToTrash(isolatedRoot, &result->removedPath);
+        } else {
+            removed = removeExactTree(
+                isolatedRoot,
+                expectedSnapshotEntries(removalProof.files));
+        }
     }
     if (!removed) {
         SnapshotProof stillComplete;
@@ -5980,6 +8113,9 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
                     .arg(isolatedRoot));
         } else {
             rollbackMarkerIfSafe();
+            retirePayloadTransactionRecord(transactionRoot,
+                                           transaction,
+                                           assetBoundary);
         }
         return fail(error,
                     mode == RemovalMode::MoveToTrash
@@ -5997,6 +8133,189 @@ bool AssetLibraryService::deleteVersion(const AssetRecord &asset,
                                              .arg(result->warning)));
     }
     result->snapshotRemoved = true;
+    transaction.phase = QStringLiteral("removed");
+    operationError.clear();
+    if (!publishAndConfirmPayloadTransaction(transactionRoot,
+                                             transaction,
+                                             &operationError)) {
+        appendRetained(
+            transactionRoot,
+            QStringLiteral(
+                "The saved version was removed, but its completion record remains at %1: %2")
+                .arg(transactionRoot, operationError));
+        return fail(error, result->warning);
+    }
+    if (!retirePayloadTransactionRecord(transactionRoot,
+                                        transaction,
+                                        assetBoundary)) {
+        appendRetained(
+            transactionRoot,
+            QStringLiteral(
+                "The saved version was removed, but its completed transaction record remains at %1")
+                .arg(transactionRoot));
+        return fail(error, result->warning);
+    }
+    return true;
+}
+
+bool AssetLibraryService::isolateCorruptVersion(
+    const AssetRecord &asset,
+    const QString &version,
+    const QString &expectedFingerprint,
+    CorruptVersionIsolationResult *result,
+    QString *error) const
+{
+    if (!result) {
+        return fail(error,
+                    QStringLiteral("Corrupt-version isolation requires a result"));
+    }
+    *result = {};
+    const QString cleanVersion = version.trimmed();
+    if (!validVersion(cleanVersion)
+        || !validFingerprint(expectedFingerprint)) {
+        return fail(error,
+                    QStringLiteral("The corrupt-version identity is invalid"));
+    }
+    Manifest liveManifest;
+    if (!validateAssetRecord(asset, &liveManifest, error)) {
+        return false;
+    }
+
+    const QString normalizedAssetRoot = files::normalizedAbsolute(
+        asset.assetRoot);
+    const QString assetBoundary = QStorageInfo(normalizedAssetRoot).rootPath();
+    const QString internalRoot = QDir(normalizedAssetRoot).absoluteFilePath(
+        QStringLiteral(".xips"));
+    const QFileInfo internalInfo(internalRoot);
+    const QString versionsRoot = QDir(internalRoot).absoluteFilePath(
+        QStringLiteral("versions"));
+    const QFileInfo versionsInfo(versionsRoot);
+    const QString originalRoot = QDir(versionsRoot).absoluteFilePath(
+        cleanVersion);
+    const QFileInfo originalInfo(originalRoot);
+    QString boundaryError;
+    if (assetBoundary.isEmpty()
+        || !internalInfo.isDir() || files::isLinkLike(internalInfo)
+        || !samePath(internalInfo.absolutePath(), normalizedAssetRoot)
+        || !versionsInfo.isDir() || files::isLinkLike(versionsInfo)
+        || !samePath(versionsInfo.absolutePath(), internalRoot)
+        || !verifiedPhysicalDirectoryChain(assetBoundary,
+                                           versionsRoot,
+                                           &boundaryError)
+        || !originalInfo.isDir() || files::isLinkLike(originalInfo)
+        || !samePath(originalInfo.absolutePath(), versionsRoot)
+        || originalInfo.fileName() != cleanVersion) {
+        return fail(error,
+                    QStringLiteral("The corrupt saved-version path is invalid or linked"));
+    }
+
+    OpaqueTreeProof initialProof;
+    QString operationError;
+    if (!verifyOpaqueTreeProofAtRoot(originalRoot,
+                                     &initialProof,
+                                     &operationError)
+        || initialProof.fingerprint != expectedFingerprint) {
+        return fail(
+            error,
+            QStringLiteral("The corrupt saved version changed after it was reviewed and was not isolated%1")
+                .arg(operationError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(operationError)));
+    }
+    SnapshotProof unexpectedlyValid;
+    operationError.clear();
+    if (verifySavedSnapshot(asset.assetRoot,
+                            liveManifest.id,
+                            cleanVersion,
+                            originalRoot,
+                            true,
+                            &unexpectedlyValid,
+                            &operationError)) {
+        return fail(error,
+                    QStringLiteral("The selected saved version is valid and was not isolated"));
+    }
+
+    OpaqueTreeProof beforeIsolation;
+    operationError.clear();
+    if (!verifyOpaqueTreeProofAtRoot(originalRoot,
+                                     &beforeIsolation,
+                                     &operationError)
+        || !sameOpaqueTreeProof(initialProof, beforeIsolation)) {
+        return fail(
+            error,
+            QStringLiteral("The corrupt saved version changed at the isolation boundary and was not isolated%1")
+                .arg(operationError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(operationError)));
+    }
+
+    const QString quarantineName = QStringLiteral(".staging-quarantine-corrupt-%1")
+                                       .arg(QUuid::createUuid().toString(
+                                           QUuid::WithoutBraces));
+    const QString quarantineRoot = QDir(versionsRoot).absoluteFilePath(
+        quarantineName);
+    boundaryError.clear();
+    const QFileInfo confirmedInternalInfo(internalRoot);
+    const QFileInfo confirmedVersionsInfo(versionsRoot);
+    const QFileInfo confirmedOriginalInfo(originalRoot);
+    if (!confirmedInternalInfo.isDir()
+        || files::isLinkLike(confirmedInternalInfo)
+        || !confirmedVersionsInfo.isDir()
+        || files::isLinkLike(confirmedVersionsInfo)
+        || !confirmedOriginalInfo.isDir()
+        || files::isLinkLike(confirmedOriginalInfo)
+        || !samePath(confirmedInternalInfo.absolutePath(),
+                     normalizedAssetRoot)
+        || !samePath(confirmedVersionsInfo.absolutePath(), internalRoot)
+        || !samePath(confirmedOriginalInfo.absolutePath(), versionsRoot)
+        || !verifiedPhysicalDirectoryChain(assetBoundary,
+                                           originalRoot,
+                                           &boundaryError)) {
+        return fail(error,
+                    QStringLiteral(
+                        "The corrupt saved-version boundary changed before isolation%1")
+                        .arg(boundaryError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1")
+                                       .arg(boundaryError)));
+    }
+    QDir versionsDirectory(versionsRoot);
+    if (!versionsDirectory.rename(cleanVersion, quarantineName)) {
+        return fail(error,
+                    QStringLiteral("Cannot isolate the corrupt saved version"));
+    }
+
+    OpaqueTreeProof isolatedProof;
+    operationError.clear();
+    if (!verifiedPhysicalDirectoryChain(assetBoundary,
+                                        quarantineRoot,
+                                        &operationError)
+        || !verifyOpaqueTreeProofAtRoot(quarantineRoot,
+                                     &isolatedProof,
+                                     &operationError)
+        || !sameOpaqueTreeProof(initialProof, isolatedProof)) {
+        result->originalPath = originalRoot;
+        result->retainedPath = quarantineRoot;
+        result->fingerprint = initialProof.fingerprint;
+        result->warning = QStringLiteral(
+            "The snapshot changed after isolation; no data was deleted or renamed again and it remains at %1")
+                              .arg(result->retainedPath);
+        return fail(
+            error,
+            QStringLiteral("The corrupt saved version could not be reverified after isolation%1; data remains at %2")
+                .arg(operationError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1").arg(operationError),
+                     result->retainedPath));
+    }
+
+    result->isolated = true;
+    result->originalPath = originalRoot;
+    result->retainedPath = quarantineRoot;
+    result->fingerprint = isolatedProof.fingerprint;
+    result->warning = QStringLiteral(
+        "The corrupt saved version was isolated without deletion; retained data is at %1")
+                          .arg(quarantineRoot);
     return true;
 }
 
@@ -6108,9 +8427,17 @@ bool AssetLibraryService::copyVersionPayload(
     }
     const QString parent = QFileInfo(targetPath).absolutePath();
     const QString targetName = QFileInfo(targetPath).fileName();
-    if (!QFileInfo(parent).isDir() || targetName.isEmpty()) {
+    const QString destinationBoundary = QStorageInfo(parent).rootPath();
+    QString destinationBoundaryError;
+    if (!QFileInfo(parent).isDir() || targetName.isEmpty()
+        || !verifiedPhysicalDirectoryChain(destinationBoundary,
+                                           parent,
+                                           &destinationBoundaryError)) {
         return fail(error,
-                    QStringLiteral("Copy destination parent is not a directory"));
+                    destinationBoundaryError.isEmpty()
+                        ? QStringLiteral("Copy destination parent is not a directory")
+                        : QStringLiteral("Copy destination parent contains a linked or invalid ancestor: %1")
+                              .arg(destinationBoundaryError));
     }
 
     const QString stagingPrefix = QStringLiteral(".xips-copy-");
@@ -6122,10 +8449,29 @@ bool AssetLibraryService::copyVersionPayload(
         return fail(error, QStringLiteral("Cannot create the copy staging directory"));
     }
     QString copyError;
+    if (!validOwnedStagingDirectory(stagingRoot,
+                                    parent,
+                                    stagingPrefix)
+        || !verifiedPhysicalDirectoryChain(destinationBoundary,
+                                           stagingRoot,
+                                           &copyError)) {
+        return fail(error,
+                    QStringLiteral("Copy staging path is invalid or linked: %1%2")
+                        .arg(stagingRoot,
+                             copyError.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(": %1").arg(copyError)));
+    }
+#ifdef XIPS_ENABLE_TEST_HOOKS
+    invokeWorkingCopyTestHook(
+        WorkingCopyTestPoint::CopyStagingCreatedBeforePayloadCopy,
+        stagingRoot);
+#endif
     if (!copyPayloadFiles(plan.sourceRoot,
                           plan.files,
                           stagingRoot,
-                          &copyError)) {
+                          &copyError,
+                          destinationBoundary)) {
         return fail(error,
                     QStringLiteral("%1; unverified copy staging remains at %2")
                         .arg(copyError, stagingRoot));
@@ -6143,7 +8489,12 @@ bool AssetLibraryService::copyVersionPayload(
     QString sourceError;
     QString stagingError;
     PayloadProof stagingProof;
-    const bool sourceVerified = verifyCopyPlanSource(asset,
+    const bool destinationStillSafe = verifiedPhysicalDirectoryChain(
+        destinationBoundary,
+        parent,
+        &destinationBoundaryError);
+    const bool sourceVerified = destinationStillSafe
+                                && verifyCopyPlanSource(asset,
                                                      plan,
                                                      &sourceError);
     const bool stagingVerified = verifyPayloadProofAtRoot(
@@ -6152,15 +8503,17 @@ bool AssetLibraryService::copyVersionPayload(
         plan.payloadFingerprint,
         &stagingProof,
         &stagingError);
-    if (!sourceVerified || !stagingVerified) {
+    if (!destinationStillSafe || !sourceVerified || !stagingVerified) {
         QString completedError = QStringLiteral(
             "Copy source or staging changed or could not be verified: %1%2")
-                                     .arg(sourceError,
+                                     .arg(destinationBoundaryError.isEmpty()
+                                              ? sourceError
+                                              : destinationBoundaryError,
                                           stagingError.isEmpty()
                                               ? QString()
                                               : QStringLiteral("; %1")
                                                     .arg(stagingError));
-        if (stagingVerified) {
+        if (destinationStillSafe && stagingVerified) {
             StagingRetireResult retired;
             if (!retireVerifiedPayloadStaging(stagingProof,
                                               parent,
@@ -6177,6 +8530,21 @@ bool AssetLibraryService::copyVersionPayload(
         return fail(error, completedError);
     }
 
+    destinationBoundaryError.clear();
+    if (!verifiedPhysicalDirectoryChain(destinationBoundary,
+                                        parent,
+                                        &destinationBoundaryError)
+        || QFileInfo::exists(targetPath)) {
+        return fail(
+            error,
+            QStringLiteral(
+                "Copy destination changed before publish; verified staging remains at %1%2")
+                .arg(stagingRoot,
+                     destinationBoundaryError.isEmpty()
+                         ? QString()
+                         : QStringLiteral(": %1")
+                               .arg(destinationBoundaryError)));
+    }
     bool published = false;
     if (plan.isSingleFile()) {
         const QString stagedFile = QDir(stagingRoot).absoluteFilePath(

@@ -1,0 +1,501 @@
+diff --git a/ElaScrollBar.cpp b/ElaScrollBar.cpp
+index f2b2141..f7d65df 100644
+--- a/ElaScrollBar.cpp
++++ b/ElaScrollBar.cpp
+@@ -1,6 +1,7 @@
+ #include "ElaScrollBar.h"
+ 
+-#include <QDebug>
++#include <QDebug>
++#include <QApplication>
+ #include <QPainter>
+ #include <QPointer>
+ #include <QPropertyAnimation>
+@@ -28,12 +29,30 @@ ElaScrollBar::ElaScrollBar(QWidget* parent)
+     scrollBarStyle->setParent(this);
+     scrollBarStyle->setScrollBar(this);
+     setStyle(scrollBarStyle);
+-    d->_slideSmoothAnimation = new QPropertyAnimation(this, "value");
++    d->_pWheelValue = 0;
++    d->_slideSmoothAnimation = new QPropertyAnimation(this, "value", this);
+     d->_slideSmoothAnimation->setEasingCurve(QEasingCurve::OutSine);
+     d->_slideSmoothAnimation->setDuration(300);
+-    connect(d->_slideSmoothAnimation, &QPropertyAnimation::finished, this, [=]() {
+-        d->_scrollValue = value();
+-    });
++    connect(d->_slideSmoothAnimation, &QPropertyAnimation::finished, this, [=]() {
++        d->_scrollValue = value();
++    });
++    connect(d, &ElaScrollBarPrivate::pWheelValueChanged, this, [=]() {
++        d->_writingWheelValue = true;
++        setValue(qRound(d->getWheelValue()));
++        d->_writingWheelValue = false;
++    });
++    connect(this, &QScrollBar::valueChanged, this, [=]() {
++        if (d->_smoothWheelEnabled && !d->_writingWheelValue)
++            stopSmoothWheel();
++    });
++    connect(this, &QScrollBar::rangeChanged, this, [=]() {
++        if (d->_smoothWheelEnabled)
++            stopSmoothWheel();
++    });
++    connect(this, &QScrollBar::actionTriggered, this, [=]() {
++        if (d->_smoothWheelEnabled)
++            stopSmoothWheel();
++    });
+ 
+     d->_expandTimer = new QTimer(this);
+     connect(d->_expandTimer, &QTimer::timeout, this, [=]() {
+@@ -80,15 +99,93 @@ ElaScrollBar::ElaScrollBar(QScrollBar* originScrollBar, QAbstractScrollArea* par
+ 
+ ElaScrollBar::~ElaScrollBar()
+ {
++    stopSmoothWheel();
+     setStyle(nullptr);
+-}
++}
++
++void ElaScrollBar::setSmoothWheelEnabled(bool enabled)
++{
++    Q_D(ElaScrollBar);
++    stopSmoothWheel();
++    d->_smoothWheelEnabled = enabled;
++    d->_slideSmoothAnimation->setTargetObject(nullptr);
++    d->_slideSmoothAnimation->setPropertyName(enabled ? "pWheelValue" : "value");
++    d->_slideSmoothAnimation->setTargetObject(enabled ? static_cast<QObject*>(d) : this);
++}
++
++bool ElaScrollBar::smoothWheelEnabled() const
++{
++    return d_ptr->_smoothWheelEnabled;
++}
++
++void ElaScrollBar::setWheelAnimationDuration(int duration)
++{
++    d_ptr->_slideSmoothAnimation->setDuration(qMax(0, duration));
++}
++
++void ElaScrollBar::stopSmoothWheel()
++{
++    Q_D(ElaScrollBar);
++    d->_slideSmoothAnimation->stop();
++    d->_scrollValue = value();
++}
++
++void ElaScrollBar::smoothWheelEvent(QWheelEvent* event)
++{
++    Q_D(ElaScrollBar);
++    const bool horizontal = orientation() == Qt::Horizontal;
++    const QPoint pixels = event->pixelDelta();
++    const int pixelDelta = horizontal
++        ? (pixels.x() ? pixels.x() : event->modifiers().testFlag(Qt::ShiftModifier) ? pixels.y() : 0)
++        : pixels.y();
++    if (!pixels.isNull()) {
++        // Precision gestures already provide a motion curve; apply them directly.
++        stopSmoothWheel();
++        const int next = qBound(minimum(), value() - pixelDelta, maximum());
++        event->setAccepted(next != value());
++        setValue(next);
++        return;
++    }
++    const QPoint angles = event->angleDelta();
++    const int delta = horizontal ? (angles.x() ? angles.x() : angles.y()) : angles.y();
++    if (!delta) {
++        event->ignore();
++        return;
++    }
++    if (event->modifiers().testFlag(Qt::ControlModifier)) {
++        stopSmoothWheel();
++        QScrollBar::wheelEvent(event);
++        return;
++    }
++    const qreal distance = -delta / 120.0 * qMin(pageStep(), singleStep() * QApplication::wheelScrollLines());
++    const bool running = d->_slideSmoothAnimation->state() == QAbstractAnimation::Running;
++    if (!running || (d->_scrollValue - value()) * distance < 0)
++        d->_scrollValue = value();
++    const qreal target = qBound(qreal(minimum()), d->_scrollValue + distance, qreal(maximum()));
++    if (qFuzzyCompare(target + 1, value() + 1)) {
++        stopSmoothWheel();
++        event->ignore();
++        return;
++    }
++    d->_slideSmoothAnimation->stop();
++    d->_scrollValue = target;
++    d->_slideSmoothAnimation->setStartValue(qreal(value()));
++    d->_slideSmoothAnimation->setEndValue(target);
++    d->_slideSmoothAnimation->start();
++    event->accept();
++}
+ 
+ bool ElaScrollBar::event(QEvent* event)
+ {
+     Q_D(ElaScrollBar);
+-    switch (event->type())
+-    {
+-    case QEvent::Enter:
++    switch (event->type())
++    {
++    case QEvent::Hide:
++    case QEvent::EnabledChange:
++        if (d->_smoothWheelEnabled)
++            stopSmoothWheel();
++        break;
++    case QEvent::Enter:
+     {
+         d->_expandTimer->stop();
+         if (!d->_isExpand)
+@@ -161,6 +258,10 @@ void ElaScrollBar::mouseMoveEvent(QMouseEvent* event)
+ void ElaScrollBar::wheelEvent(QWheelEvent* event)
+ {
+     Q_D(ElaScrollBar);
++    if (d->_smoothWheelEnabled) {
++        smoothWheelEvent(event);
++        return;
++    }
+     if (!d->_pIsAnimation) {
+         QScrollBar::wheelEvent(event);
+         return;
+diff --git a/ElaScrollBar.h b/ElaScrollBar.h
+index 0bc4558..faaa3fb 100644
+--- a/ElaScrollBar.h
++++ b/ElaScrollBar.h
+@@ -13,12 +13,19 @@ class ELA_EXPORT ElaScrollBar : public QScrollBar
+     Q_OBJECT
+     Q_Q_CREATE(ElaScrollBar)
+     Q_PROPERTY_CREATE_Q_H(bool, IsAnimation)
+-    Q_PROPERTY_CREATE_Q_H(qreal, SpeedLimit)
+-public:
++    Q_PROPERTY_CREATE_Q_H(qreal, SpeedLimit)
++    Q_PROPERTY(bool smoothWheelEnabled READ smoothWheelEnabled WRITE setSmoothWheelEnabled)
++public:
+     explicit ElaScrollBar(QWidget* parent = nullptr);
+     explicit ElaScrollBar(Qt::Orientation orientation, QWidget* parent = nullptr);
+     explicit ElaScrollBar(QScrollBar* originScrollBar, QAbstractScrollArea* parent = nullptr);
+-    ~ElaScrollBar() override;
++    ~ElaScrollBar() override;
++
++    // Animate wheel input without animating the view's scroll range.
++    void setSmoothWheelEnabled(bool enabled);
++    bool smoothWheelEnabled() const;
++    void setWheelAnimationDuration(int duration);
++    void stopSmoothWheel();
+ 
+ Q_SIGNALS:
+     Q_SIGNAL void rangeAnimationFinished();
+@@ -30,7 +37,10 @@ protected:
+     virtual void mouseReleaseEvent(QMouseEvent* event) override;
+     virtual void mouseMoveEvent(QMouseEvent* event) override;
+     virtual void wheelEvent(QWheelEvent* event) override;
+-    virtual void contextMenuEvent(QContextMenuEvent* event) override;
+-};
++    virtual void contextMenuEvent(QContextMenuEvent* event) override;
++
++private:
++    void smoothWheelEvent(QWheelEvent* event);
++};
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELASCROLLBAR_H_
+diff --git a/ElaTabBar.cpp b/ElaTabBar.cpp
+index 7ed70f4..43d7516 100644
+--- a/ElaTabBar.cpp
++++ b/ElaTabBar.cpp
+@@ -3,7 +3,9 @@
+ #include <QApplication>
+ #include <QDrag>
+ #include <QMimeData>
+-#include <QMouseEvent>
++#include <QMouseEvent>
++#include <QPropertyAnimation>
++#include <QToolButton>
+ 
+ #include "ElaTabBarPrivate.h"
+ #include "ElaTabBarStyle.h"
+@@ -28,25 +30,96 @@ ElaTabBar::ElaTabBar(QWidget* parent)
+     d->_tabBarPrivate = dynamic_cast<QTabBarPrivate*>(this->QTabBar::d_ptr.data());
+     // 关闭自带滚动按钮，避免 layoutTabs 在 tab 溢出时重置 scrollOffset
+     setUsesScrollButtons(false);
+-    connect(d, &ElaTabBarPrivate::pScrollOffsetChanged, this, [=]() {
+-        // 动画每帧将偏移应用到 QTabBar 官方滚动机制
++    connect(d, &ElaTabBarPrivate::pScrollOffsetChanged, this, [=]() {
++        if (_nativeTabBehavior && _smoothScrollEnabled) {
++            // A Qt selection, arrow button or layout change takes precedence.
++            if (d->_tabBarPrivate->scrollOffset != _lastScrollOffset) {
++                stopSmoothScroll();
++                return;
++            }
++            const int maximum = smoothScrollMaximum();
++            _lastScrollOffset = qBound(0, qRound(d->getScrollOffset()), maximum);
++            d->_tabBarPrivate->scrollOffset = _lastScrollOffset;
++            d->_tabBarPrivate->layoutWidgets();
++            d->_tabBarPrivate->leftB->setEnabled(_lastScrollOffset > 0);
++            d->_tabBarPrivate->rightB->setEnabled(_lastScrollOffset < maximum);
++            update();
++            return;
++        }
++        // 动画每帧将偏移应用到 QTabBar 官方滚动机制
+         d->_tabBarPrivate->scrollOffset = qRound(d->getScrollOffset());
+         update();
+     });
+     // Qt 内部(refresh/makeVisible 等)修改 scrollOffset 时同步动画状态
+     connect(this, &QTabBar::currentChanged, this, [=]() {
+-        if (_nativeTabBehavior)
++        if (_nativeTabBehavior) {
++            if (_smoothScrollEnabled && currentIndex() >= 0)
++                d->_tabBarPrivate->makeVisible(currentIndex());
++            stopSmoothScroll();
+             return;
++        }
+         d->setTargetScrollOffset(d->_tabBarPrivate->scrollOffset);
+         d->setScrollOffset(d->_tabBarPrivate->scrollOffset);
+-    });
+-}
++    });
++    connect(this, &QTabBar::tabMoved, this, [=]() { stopSmoothScroll(); });
++    for (auto* button : {d->_tabBarPrivate->leftB, d->_tabBarPrivate->rightB})
++        button->installEventFilter(this);
++}
+ 
+ ElaTabBar::~ElaTabBar()
+ {
++    d_ptr->_scrollAnimation->stop();
+     setStyle(nullptr);
+ }
+ 
++void ElaTabBar::setSmoothScrollEnabled(bool enabled)
++{
++    stopSmoothScroll();
++    _smoothScrollEnabled = enabled;
++    d_ptr->_scrollAnimation->setDuration(enabled ? 160 : 200);
++}
++
++bool ElaTabBar::smoothScrollEnabled() const
++{
++    return _smoothScrollEnabled;
++}
++
++int ElaTabBar::smoothScrollMaximum() const
++{
++    Q_D(const ElaTabBar);
++    auto* tabs = d->_tabBarPrivate;
++    if (tabs->layoutDirty)
++        tabs->layoutTabs();
++    const auto* last = tabs->lastVisibleTab();
++    return last ? qMax(0, last->rect.right() - tabs->normalizedScrollRect().right()) : 0;
++}
++
++void ElaTabBar::stopSmoothScroll()
++{
++    Q_D(ElaTabBar);
++    d->_scrollAnimation->stop();
++    _lastScrollOffset = d->_tabBarPrivate->scrollOffset;
++    d->setTargetScrollOffset(_lastScrollOffset);
++    d->setScrollOffset(_lastScrollOffset);
++}
++
++bool ElaTabBar::event(QEvent* event)
++{
++    if (_smoothScrollEnabled && (event->type() == QEvent::MouseButtonPress
++        || event->type() == QEvent::KeyPress || event->type() == QEvent::Hide
++        || event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange
++        || event->type() == QEvent::LayoutDirectionChange))
++        stopSmoothScroll();
++    return QTabBar::event(event);
++}
++
++bool ElaTabBar::eventFilter(QObject* watched, QEvent* event)
++{
++    if (_smoothScrollEnabled && event->type() == QEvent::MouseButtonPress)
++        stopSmoothScroll();
++    return QTabBar::eventFilter(watched, event);
++}
++
+ void ElaTabBar::setNativeTabBehavior(bool enabled)
+ {
+     Q_D(ElaTabBar);
+@@ -101,6 +174,7 @@ QSize ElaTabBar::minimumSizeHint() const
+ void ElaTabBar::tabInserted(int index)
+ {
+     if (_nativeTabBehavior) {
++        stopSmoothScroll();
+         QTabBar::tabInserted(index);
+         return;
+     }
+@@ -115,6 +189,7 @@ void ElaTabBar::tabInserted(int index)
+ void ElaTabBar::tabRemoved(int index)
+ {
+     if (_nativeTabBehavior) {
++        stopSmoothScroll();
+         QTabBar::tabRemoved(index);
+         return;
+     }
+@@ -278,6 +353,32 @@ void ElaTabBar::dropEvent(QDropEvent* event)
+ 
+ void ElaTabBar::wheelEvent(QWheelEvent* event)
+ {
++    if (_nativeTabBehavior && _smoothScrollEnabled && !verticalTabs(shape())) {
++        Q_D(ElaTabBar);
++        const int maximum = smoothScrollMaximum();
++        const QPoint pixels = event->pixelDelta();
++        const QPoint angles = event->angleDelta();
++        const qreal distance = !pixels.isNull() ? -(pixels.x() ? pixels.x() : pixels.y())
++            : -(angles.x() ? angles.x() : angles.y()) / 120.0 * 72;
++        if (!maximum || !distance) {
++            event->ignore();
++            return;
++        }
++        const bool running = d->_scrollAnimation->state() == QAbstractAnimation::Running;
++        if (!running || d->_tabBarPrivate->scrollOffset != _lastScrollOffset
++            || (d->getTargetScrollOffset() - d->getScrollOffset()) * distance < 0)
++            stopSmoothScroll();
++        const qreal target = qBound(0.0, d->getTargetScrollOffset() + distance, qreal(maximum));
++        d->setTargetScrollOffset(target);
++        if (!pixels.isNull()) {
++            d->_scrollAnimation->stop();
++            d->setScrollOffset(target);
++        } else {
++            d->startScrollAnimation();
++        }
++        event->accept();
++        return;
++    }
+     if (_nativeTabBehavior) {
+         QTabBar::wheelEvent(event);
+         return;
+@@ -293,6 +394,8 @@ void ElaTabBar::wheelEvent(QWheelEvent* event)
+ 
+ void ElaTabBar::resizeEvent(QResizeEvent* event)
+ {
++    if (_smoothScrollEnabled)
++        stopSmoothScroll();
+     QTabBar::resizeEvent(event);
+     if (_nativeTabBehavior)
+         return;
+diff --git a/ElaTabBar.h b/ElaTabBar.h
+index bd6590c..6717ba9 100644
+--- a/ElaTabBar.h
++++ b/ElaTabBar.h
+@@ -11,7 +11,8 @@ class ELA_EXPORT ElaTabBar : public QTabBar
+ {
+     Q_OBJECT
+     Q_Q_CREATE(ElaTabBar)
+-    Q_PROPERTY_CREATE_Q_H(QSize, TabSize)
++    Q_PROPERTY_CREATE_Q_H(QSize, TabSize)
++    Q_PROPERTY(bool smoothScrollEnabled READ smoothScrollEnabled WRITE setSmoothScrollEnabled)
+ public:
+     explicit ElaTabBar(QWidget* parent = nullptr);
+     ~ElaTabBar() override;
+@@ -19,6 +20,8 @@ public:
+     // Hosts with their own document controller retain Qt layout and input semantics.
+     void setNativeTabBehavior(bool enabled);
+     bool nativeTabBehavior() const;
++    void setSmoothScrollEnabled(bool enabled);
++    bool smoothScrollEnabled() const;
+     void setTabText(int index, const QString& text);
+ 
+ Q_SIGNALS:
+@@ -28,7 +31,9 @@ Q_SIGNALS:
+     Q_SIGNAL void tabDragLeave(QMimeData* mimeData);
+     Q_SIGNAL void tabDragDrop(QMimeData* mimeData);
+ 
+-protected:
++protected:
++    bool event(QEvent* event) override;
++    bool eventFilter(QObject* watched, QEvent* event) override;
+     QSize sizeHint() const override;
+     QSize minimumSizeHint() const override;
+     void tabInserted(int index) override;
+@@ -44,6 +49,10 @@ protected:
+ 
+ private:
+     bool _nativeTabBehavior{false};
++    bool _smoothScrollEnabled{false};
++    int _lastScrollOffset{0};
++    int smoothScrollMaximum() const;
++    void stopSmoothScroll();
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELATABBAR_H_
+diff --git a/private/ElaScrollBarPrivate.h b/private/ElaScrollBarPrivate.h
+index fd75a2d..09a9b56 100644
+--- a/private/ElaScrollBarPrivate.h
++++ b/private/ElaScrollBarPrivate.h
+@@ -16,7 +16,8 @@ class ElaScrollBarPrivate : public QObject
+     Q_D_CREATE(ElaScrollBar)
+     Q_PROPERTY_CREATE_D(bool, IsAnimation)
+     Q_PROPERTY_CREATE_D(qreal, SpeedLimit)
+-    Q_PROPERTY_CREATE(int, TargetMaximum)
++    Q_PROPERTY_CREATE(int, TargetMaximum)
++    Q_PROPERTY_CREATE(qreal, WheelValue)
+ public:
+     explicit ElaScrollBarPrivate(QObject* parent = nullptr);
+     ~ElaScrollBarPrivate();
+@@ -28,7 +29,9 @@ private:
+     QTimer* _expandTimer{nullptr};
+     bool _isExpand{false};
+     QPropertyAnimation* _slideSmoothAnimation{nullptr};
+-    int _scrollValue{-1};
++    qreal _scrollValue{-1};
++    bool _smoothWheelEnabled{false};
++    bool _writingWheelValue{false};
+     void _scroll(Qt::KeyboardModifiers modifiers, int value);
+     int _pixelPosToRangeValue(int pos) const;
+ 
+diff --git a/private/ElaTabBarPrivate.cpp b/private/ElaTabBarPrivate.cpp
+index 729607a..279a23d 100644
+--- a/private/ElaTabBarPrivate.cpp
++++ b/private/ElaTabBarPrivate.cpp
+@@ -9,7 +9,9 @@
+ ElaTabBarPrivate::ElaTabBarPrivate(QObject* parent)
+     : QObject{parent}
+ {
+-    _scrollAnimation = new QPropertyAnimation(this, "pScrollOffset");
++    _pScrollOffset = 0;
++    _pTargetScrollOffset = 0;
++    _scrollAnimation = new QPropertyAnimation(this, "pScrollOffset", this);
+     _scrollAnimation->setDuration(200);
+     _scrollAnimation->setEasingCurve(QEasingCurve::OutCubic);
+ }
+@@ -18,13 +20,13 @@ ElaTabBarPrivate::~ElaTabBarPrivate()
+ {
+ }
+ 
+-void ElaTabBarPrivate::startScrollAnimation()
+-{
+-    if (qFuzzyCompare(_pScrollOffset, _pTargetScrollOffset))
++void ElaTabBarPrivate::startScrollAnimation()
++{
++    _scrollAnimation->stop();
++    if (qFuzzyCompare(_pScrollOffset, _pTargetScrollOffset))
+     {
+         return;
+     }
+-    _scrollAnimation->stop();
+     _scrollAnimation->setStartValue(_pScrollOffset);
+     _scrollAnimation->setEndValue(_pTargetScrollOffset);
+     _scrollAnimation->start();
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index deae863..38636a5 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -62,11 +62,21 @@ List padding is shared by painting and check-box hit testing. Menu/table and
+ adapter-created list styles are application-owned and released with deleteLater
+ after their widgets are destroyed, including visible popup teardown.
+ 
++Apply `patches/12-zeroslack-interruptible-scrolling.patch` after patch 11. ElaScrollBar
++adds an opt-in wheel mode independent of scroll-range animation, with bounded targets,
++immediate direction reversal, direct pixel gestures, and interruption by navigation,
++range changes and hiding. ElaTabBar can animate variable-width Qt tabs without taking
++over page ownership; close buttons and overflow arrows follow the current offset.
++Selection, layout and drag operations supersede motion. Both animation objects are
++owned, stopped on teardown, and use 160ms in the product adapter.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids
+ upstream's non-interruptible popup animation. No recursive application event
+ filter or protected-surface traversal is installed for Ela.
++Selected browsing viewports route precision pixel gestures to the matching Ela
++scrollbar and cancel motion on key or pointer input. This filter is local to those views.
+ The numeric-control adapter sizes the inline step buttons and input area together,
+ including prefixes, suffixes and input padding; it does not assume Qt's narrower
+ native step-button geometry.

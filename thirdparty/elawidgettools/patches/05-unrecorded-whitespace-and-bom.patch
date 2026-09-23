@@ -1,0 +1,1180 @@
+diff --git a/Development/Command/ElaNavigationRouteCommand.h b/Development/Command/ElaNavigationRouteCommand.h
+index e4c0b67..606ab39 100644
+--- a/Development/Command/ElaNavigationRouteCommand.h
++++ b/Development/Command/ElaNavigationRouteCommand.h
+@@ -19,4 +19,3 @@ public:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_COMMAND_ELANAVIGATIONROUTECOMMAND_H_
+-
+diff --git a/Development/Command/ElaScrollPageRouteCommand.h b/Development/Command/ElaScrollPageRouteCommand.h
+index e34cf26..8effe03 100644
+--- a/Development/Command/ElaScrollPageRouteCommand.h
++++ b/Development/Command/ElaScrollPageRouteCommand.h
+@@ -24,4 +24,3 @@ public:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_COMMAND_ELASCROLLPAGEROUTECOMMAND_H_
+-
+diff --git a/Development/Command/ElaWindowStackChangeCommand.h b/Development/Command/ElaWindowStackChangeCommand.h
+index 105faf4..2d37bbe 100644
+--- a/Development/Command/ElaWindowStackChangeCommand.h
++++ b/Development/Command/ElaWindowStackChangeCommand.h
+@@ -18,4 +18,3 @@ public:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_COMMAND_ELAWINDOWSTACKCHANGECOMMAND_H_
+-
+diff --git a/Development/ElaBaseListView.h b/Development/ElaBaseListView.h
+index 6b4f9cf..72780d9 100644
+--- a/Development/ElaBaseListView.h
++++ b/Development/ElaBaseListView.h
+@@ -24,4 +24,3 @@ protected:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELABASELISTVIEW_H_
+-
+diff --git a/Development/ElaBreadcrumbBarDelegate.h b/Development/ElaBreadcrumbBarDelegate.h
+index bc932a6..69e2be5 100644
+--- a/Development/ElaBreadcrumbBarDelegate.h
++++ b/Development/ElaBreadcrumbBarDelegate.h
+@@ -21,4 +21,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELABREADCRUMBBARDELEGATE_H_
+-
+diff --git a/Development/ElaBreadcrumbBarModel.h b/Development/ElaBreadcrumbBarModel.h
+index 04353a8..d06313d 100644
+--- a/Development/ElaBreadcrumbBarModel.h
++++ b/Development/ElaBreadcrumbBarModel.h
+@@ -28,4 +28,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELABREADCRUMBBARMODEL_H_
+-
+diff --git a/Development/ElaCalendarDelegate.h b/Development/ElaCalendarDelegate.h
+index 78a6eeb..d48254d 100644
+--- a/Development/ElaCalendarDelegate.h
++++ b/Development/ElaCalendarDelegate.h
+@@ -30,4 +30,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACALENDARDELEGATE_H_
+-
+diff --git a/Development/ElaCalendarModel.h b/Development/ElaCalendarModel.h
+index 7b55603..b6c543d 100644
+--- a/Development/ElaCalendarModel.h
++++ b/Development/ElaCalendarModel.h
+@@ -68,4 +68,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACALENDARMODEL_H_
+-
+diff --git a/Development/ElaCalendarPickerContainer.h b/Development/ElaCalendarPickerContainer.h
+index 75f9bdf..0357301 100644
+--- a/Development/ElaCalendarPickerContainer.h
++++ b/Development/ElaCalendarPickerContainer.h
+@@ -19,4 +19,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACALENDARPICKERCONTAINER_H_
+-
+diff --git a/Development/ElaCalendarTitleDelegate.h b/Development/ElaCalendarTitleDelegate.h
+index 3b38299..6527783 100644
+--- a/Development/ElaCalendarTitleDelegate.h
++++ b/Development/ElaCalendarTitleDelegate.h
+@@ -19,4 +19,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACALENDARTITLEDELEGATE_H_
+-
+diff --git a/Development/ElaCalendarTitleModel.h b/Development/ElaCalendarTitleModel.h
+index 79ad687..018d192 100644
+--- a/Development/ElaCalendarTitleModel.h
++++ b/Development/ElaCalendarTitleModel.h
+@@ -16,4 +16,3 @@ protected:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACALENDARTITLEMODEL_H_
+-
+diff --git a/Development/ElaCheckBoxStyle.h b/Development/ElaCheckBoxStyle.h
+index ee7c522..c1ba10e 100644
+--- a/Development/ElaCheckBoxStyle.h
++++ b/Development/ElaCheckBoxStyle.h
+@@ -19,4 +19,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACHECKBOXSTYLE_H_
+-
+diff --git a/Development/ElaColorDisplayDelegate.h b/Development/ElaColorDisplayDelegate.h
+index eb59487..ec591a2 100644
+--- a/Development/ElaColorDisplayDelegate.h
++++ b/Development/ElaColorDisplayDelegate.h
+@@ -17,4 +17,3 @@ public:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACOLORDISPLAYDELEGATE_H_
+-
+diff --git a/Development/ElaColorDisplayModel.h b/Development/ElaColorDisplayModel.h
+index abd3de4..16555c6 100644
+--- a/Development/ElaColorDisplayModel.h
++++ b/Development/ElaColorDisplayModel.h
+@@ -26,4 +26,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACOLORDISPLAYMODEL_H_
+-
+diff --git a/Development/ElaColorPicker.h b/Development/ElaColorPicker.h
+index 257fd7e..c388ab0 100644
+--- a/Development/ElaColorPicker.h
++++ b/Development/ElaColorPicker.h
+@@ -34,4 +34,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACOLORPICKER_H_
+-
+diff --git a/Development/ElaColorPreview.h b/Development/ElaColorPreview.h
+index 4097a51..615d79b 100644
+--- a/Development/ElaColorPreview.h
++++ b/Development/ElaColorPreview.h
+@@ -18,4 +18,3 @@ protected:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACOLORPREVIEW_H_
+-
+diff --git a/Development/ElaColorValueSliderStyle.h b/Development/ElaColorValueSliderStyle.h
+index 5144cdf..576c820 100644
+--- a/Development/ElaColorValueSliderStyle.h
++++ b/Development/ElaColorValueSliderStyle.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACOLORVALUESLIDERSTYLE_H_
+-
+diff --git a/Development/ElaComboBoxStyle.h b/Development/ElaComboBoxStyle.h
+index 1274b37..1696fef 100644
+--- a/Development/ElaComboBoxStyle.h
++++ b/Development/ElaComboBoxStyle.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACOMBOBOXSTYLE_H_
+-
+diff --git a/Development/ElaComboBoxView.h b/Development/ElaComboBoxView.h
+index 1d70e57..2953b3c 100644
+--- a/Development/ElaComboBoxView.h
++++ b/Development/ElaComboBoxView.h
+@@ -17,4 +17,3 @@ protected:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACOMBOBOXVIEW_H_
+-
+diff --git a/Development/ElaCustomTabWidget.cpp b/Development/ElaCustomTabWidget.cpp
+index ebb39e3..4be37a5 100644
+--- a/Development/ElaCustomTabWidget.cpp
++++ b/Development/ElaCustomTabWidget.cpp
+@@ -47,7 +47,7 @@ ElaCustomTabWidget::ElaCustomTabWidget(QWidget* parent)
+     connect(_customTabBar, &ElaTabBar::tabBarTextChanged, originTabBar, [=](int tabIndex, const QString& tabText) {
+         originTabBar->setTabText(tabIndex, tabText);
+     });
+-    
++
+     _customTabWidget->d_ptr->_customTabBar = _customTabBar;
+     connect(_customTabBar, &ElaTabBar::tabDragCreate, _customTabWidget->d_func(), &ElaTabWidgetPrivate::onTabDragCreate);
+     connect(_customTabBar, &ElaTabBar::tabDragDrop, _customTabWidget->d_func(), &ElaTabWidgetPrivate::onTabDragDrop);
+diff --git a/Development/ElaCustomTabWidget.h b/Development/ElaCustomTabWidget.h
+index 4f0d232..ce22d60 100644
+--- a/Development/ElaCustomTabWidget.h
++++ b/Development/ElaCustomTabWidget.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACUSTOMTABWIDGET_H_
+-
+diff --git a/Development/ElaCustomWidget.h b/Development/ElaCustomWidget.h
+index 4c45bfc..367f4b2 100644
+--- a/Development/ElaCustomWidget.h
++++ b/Development/ElaCustomWidget.h
+@@ -29,4 +29,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACUSTOMWIDGET_H_
+-
+diff --git a/Development/ElaDockWidgetTitleBar.h b/Development/ElaDockWidgetTitleBar.h
+index 4ea131c..1cc63bd 100644
+--- a/Development/ElaDockWidgetTitleBar.h
++++ b/Development/ElaDockWidgetTitleBar.h
+@@ -34,4 +34,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELADOCKWIDGETTITLEBAR_H_
+-
+diff --git a/Development/ElaDrawerContainer.cpp b/Development/ElaDrawerContainer.cpp
+index f695e3a..ffa7b5b 100644
+--- a/Development/ElaDrawerContainer.cpp
++++ b/Development/ElaDrawerContainer.cpp
+@@ -21,7 +21,7 @@ ElaDrawerContainer::ElaDrawerContainer(QWidget* parent)
+     _containerWidget->setObjectName("ElaDrawerContainerWidget");
+     _containerWidget->setStyleSheet("#ElaDrawerContainerWidget{background-color:transparent;}");
+     _containerWidget->setVisible(false);
+-    
++
+     _containerLayout = new QVBoxLayout(_containerWidget);
+     _containerLayout->setContentsMargins(0, 0, 0, 0);
+     _containerLayout->setSpacing(0);
+diff --git a/Development/ElaDrawerContainer.h b/Development/ElaDrawerContainer.h
+index bcf532f..260d719 100644
+--- a/Development/ElaDrawerContainer.h
++++ b/Development/ElaDrawerContainer.h
+@@ -35,4 +35,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELADRAWERCONTAINER_H_
+-
+diff --git a/Development/ElaDrawerHeader.h b/Development/ElaDrawerHeader.h
+index f529e22..83ba19f 100644
+--- a/Development/ElaDrawerHeader.h
++++ b/Development/ElaDrawerHeader.h
+@@ -34,4 +34,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELADRAWERHEADER_H_
+-
+diff --git a/Development/ElaDxgi.h b/Development/ElaDxgi.h
+index d82209e..6be5586 100644
+--- a/Development/ElaDxgi.h
++++ b/Development/ElaDxgi.h
+@@ -58,4 +58,3 @@ private:
+ };
+ #endif
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELADXGI_H_
+-
+diff --git a/Development/ElaFooterDelegate.h b/Development/ElaFooterDelegate.h
+index cc0455c..0395da3 100644
+--- a/Development/ElaFooterDelegate.h
++++ b/Development/ElaFooterDelegate.h
+@@ -43,4 +43,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAFOOTERDELEGATE_H_
+-
+diff --git a/Development/ElaFooterModel.h b/Development/ElaFooterModel.h
+index 9f4572a..c09d6dd 100644
+--- a/Development/ElaFooterModel.h
++++ b/Development/ElaFooterModel.h
+@@ -26,4 +26,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAFOOTERMODEL_H_
+-
+diff --git a/Development/ElaIntValidator.h b/Development/ElaIntValidator.h
+index 1151bfb..ef3ada6 100644
+--- a/Development/ElaIntValidator.h
++++ b/Development/ElaIntValidator.h
+@@ -22,4 +22,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAINTVALIDATOR_H_
+-
+diff --git a/Development/ElaKeyBinderContainer.h b/Development/ElaKeyBinderContainer.h
+index bf654e0..2031ec6 100644
+--- a/Development/ElaKeyBinderContainer.h
++++ b/Development/ElaKeyBinderContainer.h
+@@ -29,4 +29,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAKEYBINDERCONTAINER_H_
+-
+diff --git a/Development/ElaLCDNumberStyle.h b/Development/ElaLCDNumberStyle.h
+index c777b72..27addd2 100644
+--- a/Development/ElaLCDNumberStyle.h
++++ b/Development/ElaLCDNumberStyle.h
+@@ -17,4 +17,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELALCDNUMBERSTYLE_H_
+-
+diff --git a/Development/ElaLineEditStyle.h b/Development/ElaLineEditStyle.h
+index c3b6993..25cd992 100644
+--- a/Development/ElaLineEditStyle.h
++++ b/Development/ElaLineEditStyle.h
+@@ -17,4 +17,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELALINEEDITSTYLE_H_
+-
+diff --git a/Development/ElaListViewStyle.h b/Development/ElaListViewStyle.h
+index 999a901..a02cb7d 100644
+--- a/Development/ElaListViewStyle.h
++++ b/Development/ElaListViewStyle.h
+@@ -22,4 +22,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELALISTVIEWSTYLE_H_
+-
+diff --git a/Development/ElaMaskWidget.h b/Development/ElaMaskWidget.h
+index 911d163..a70b947 100644
+--- a/Development/ElaMaskWidget.h
++++ b/Development/ElaMaskWidget.h
+@@ -19,4 +19,3 @@ protected:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAMASKWIDGET_H_
+-
+diff --git a/Development/ElaMenuBarStyle.h b/Development/ElaMenuBarStyle.h
+index 39a2eac..98f102c 100644
+--- a/Development/ElaMenuBarStyle.h
++++ b/Development/ElaMenuBarStyle.h
+@@ -21,4 +21,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAMENUBARSTYLE_H_
+-
+diff --git a/Development/ElaMenuStyle.h b/Development/ElaMenuStyle.h
+index 2dbb1ed..eaef25c 100644
+--- a/Development/ElaMenuStyle.h
++++ b/Development/ElaMenuStyle.h
+@@ -26,4 +26,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAMENUSTYLE_H_
+-
+diff --git a/Development/ElaMicaBaseInitObject.h b/Development/ElaMicaBaseInitObject.h
+index c88c3e0..4070a5b 100644
+--- a/Development/ElaMicaBaseInitObject.h
++++ b/Development/ElaMicaBaseInitObject.h
+@@ -19,4 +19,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAMICABASEINITOBJECT_H_
+-
+diff --git a/Development/ElaNavigationModel.h b/Development/ElaNavigationModel.h
+index 032ef25..45caede 100644
+--- a/Development/ElaNavigationModel.h
++++ b/Development/ElaNavigationModel.h
+@@ -48,4 +48,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELANAVIGATIONMODEL_H_
+-
+diff --git a/Development/ElaNavigationNode.h b/Development/ElaNavigationNode.h
+index 24b3a7f..e7c2160 100644
+--- a/Development/ElaNavigationNode.h
++++ b/Development/ElaNavigationNode.h
+@@ -54,4 +54,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELANAVIGATIONNODE_H_
+-
+diff --git a/Development/ElaNavigationStyle.h b/Development/ElaNavigationStyle.h
+index ff0484a..83f9881 100644
+--- a/Development/ElaNavigationStyle.h
++++ b/Development/ElaNavigationStyle.h
+@@ -46,4 +46,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELANAVIGATIONSTYLE_H_
+-
+diff --git a/Development/ElaNavigationView.h b/Development/ElaNavigationView.h
+index f77eae3..17039f8 100644
+--- a/Development/ElaNavigationView.h
++++ b/Development/ElaNavigationView.h
+@@ -35,4 +35,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELANAVIGATIONVIEW_H_
+-
+diff --git a/Development/ElaPivotModel.h b/Development/ElaPivotModel.h
+index e9d8dcd..7b56417 100644
+--- a/Development/ElaPivotModel.h
++++ b/Development/ElaPivotModel.h
+@@ -24,4 +24,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAPIVOTMODEL_H_
+-
+diff --git a/Development/ElaPivotStyle.h b/Development/ElaPivotStyle.h
+index 5fb8c94..cebcbdf 100644
+--- a/Development/ElaPivotStyle.h
++++ b/Development/ElaPivotStyle.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAPIVOTSTYLE_H_
+-
+diff --git a/Development/ElaPivotView.h b/Development/ElaPivotView.h
+index b17a169..6820204 100644
+--- a/Development/ElaPivotView.h
++++ b/Development/ElaPivotView.h
+@@ -29,4 +29,3 @@ protected:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAPIVOTVIEW_H_
+-
+diff --git a/Development/ElaPlainTextEditStyle.h b/Development/ElaPlainTextEditStyle.h
+index 260edec..07597b0 100644
+--- a/Development/ElaPlainTextEditStyle.h
++++ b/Development/ElaPlainTextEditStyle.h
+@@ -18,4 +18,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAPLAINTEXTEDITSTYLE_H_
+-
+diff --git a/Development/ElaPopularCardFloater.h b/Development/ElaPopularCardFloater.h
+index 46e046b..3545efa 100644
+--- a/Development/ElaPopularCardFloater.h
++++ b/Development/ElaPopularCardFloater.h
+@@ -37,4 +37,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAPOPULARCARDFLOATER_H_
+-
+diff --git a/Development/ElaProgressBarStyle.h b/Development/ElaProgressBarStyle.h
+index 97f7b39..ab755c5 100644
+--- a/Development/ElaProgressBarStyle.h
++++ b/Development/ElaProgressBarStyle.h
+@@ -18,4 +18,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAPROGRESSBARSTYLE_H_
+-
+diff --git a/Development/ElaRadioButtonStyle.h b/Development/ElaRadioButtonStyle.h
+index 2165a17..34c5931 100644
+--- a/Development/ElaRadioButtonStyle.h
++++ b/Development/ElaRadioButtonStyle.h
+@@ -18,4 +18,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELARADIOBUTTONSTYLE_H_
+-
+diff --git a/Development/ElaRibbonBarDelegate.h b/Development/ElaRibbonBarDelegate.h
+index aa1e743..4231b9b 100644
+--- a/Development/ElaRibbonBarDelegate.h
++++ b/Development/ElaRibbonBarDelegate.h
+@@ -24,4 +24,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELARIBBONBARDELEGATE_H_
+-
+diff --git a/Development/ElaRibbonBarModel.h b/Development/ElaRibbonBarModel.h
+index 9e978ab..f890ded 100644
+--- a/Development/ElaRibbonBarModel.h
++++ b/Development/ElaRibbonBarModel.h
+@@ -44,4 +44,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELARIBBONBARMODEL_H_
+-
+diff --git a/Development/ElaRibbonBarView.h b/Development/ElaRibbonBarView.h
+index 68c424e..345db50 100644
+--- a/Development/ElaRibbonBarView.h
++++ b/Development/ElaRibbonBarView.h
+@@ -29,4 +29,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELARIBBONBARVIEW_H_
+-
+diff --git a/Development/ElaRollerPickerContainer.h b/Development/ElaRollerPickerContainer.h
+index 3c8820e..4cb0a28 100644
+--- a/Development/ElaRollerPickerContainer.h
++++ b/Development/ElaRollerPickerContainer.h
+@@ -45,4 +45,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAROLLERPICKERCONTAINER_H_
+-
+diff --git a/Development/ElaScrollBarStyle.h b/Development/ElaScrollBarStyle.h
+index 841394a..92ec6aa 100644
+--- a/Development/ElaScrollBarStyle.h
++++ b/Development/ElaScrollBarStyle.h
+@@ -26,4 +26,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELASCROLLBARSTYLE_H_
+-
+diff --git a/Development/ElaSliderStyle.h b/Development/ElaSliderStyle.h
+index d8ceb5f..60f5972 100644
+--- a/Development/ElaSliderStyle.h
++++ b/Development/ElaSliderStyle.h
+@@ -22,4 +22,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELASLIDERSTYLE_H_
+-
+diff --git a/Development/ElaSpinBoxStyle.h b/Development/ElaSpinBoxStyle.h
+index f2cabd1..92b1c3e 100644
+--- a/Development/ElaSpinBoxStyle.h
++++ b/Development/ElaSpinBoxStyle.h
+@@ -19,4 +19,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELASPINBOXSTYLE_H_
+-
+diff --git a/Development/ElaStatusBarStyle.h b/Development/ElaStatusBarStyle.h
+index 88c2f4a..a1615ec 100644
+--- a/Development/ElaStatusBarStyle.h
++++ b/Development/ElaStatusBarStyle.h
+@@ -20,4 +20,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELASTATUSBARSTYLE_H_
+-
+diff --git a/Development/ElaSuggestBoxSearchViewContainer.h b/Development/ElaSuggestBoxSearchViewContainer.h
+index 570f1e6..e04ec06 100644
+--- a/Development/ElaSuggestBoxSearchViewContainer.h
++++ b/Development/ElaSuggestBoxSearchViewContainer.h
+@@ -19,4 +19,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELASUGGESTBOXSEARCHVIEWCONTAINER_H_
+-
+diff --git a/Development/ElaSuggestDelegate.h b/Development/ElaSuggestDelegate.h
+index b530eb0..cad642d 100644
+--- a/Development/ElaSuggestDelegate.h
++++ b/Development/ElaSuggestDelegate.h
+@@ -20,4 +20,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELASUGGESTDELEGATE_H_
+-
+diff --git a/Development/ElaSuggestModel.h b/Development/ElaSuggestModel.h
+index d785843..efd7a2b 100644
+--- a/Development/ElaSuggestModel.h
++++ b/Development/ElaSuggestModel.h
+@@ -22,4 +22,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELASUGGESTMODEL_H_
+-
+diff --git a/Development/ElaTabBarStyle.h b/Development/ElaTabBarStyle.h
+index e14ceb2..a99e1d7 100644
+--- a/Development/ElaTabBarStyle.h
++++ b/Development/ElaTabBarStyle.h
+@@ -21,4 +21,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELATABBARSTYLE_H_
+-
+diff --git a/Development/ElaTableViewStyle.h b/Development/ElaTableViewStyle.h
+index 1cc940c..89175bd 100644
+--- a/Development/ElaTableViewStyle.h
++++ b/Development/ElaTableViewStyle.h
+@@ -23,4 +23,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELATABLEVIEWSTYLE_H_
+-
+diff --git a/Development/ElaThemeAnimationWidget.h b/Development/ElaThemeAnimationWidget.h
+index 2ac0afb..a9b41d7 100644
+--- a/Development/ElaThemeAnimationWidget.h
++++ b/Development/ElaThemeAnimationWidget.h
+@@ -24,4 +24,3 @@ protected:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELATHEMEANIMATIONWIDGET_H_
+-
+diff --git a/Development/ElaToolBarStyle.h b/Development/ElaToolBarStyle.h
+index 675c884..7df1445 100644
+--- a/Development/ElaToolBarStyle.h
++++ b/Development/ElaToolBarStyle.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELATOOLBARSTYLE_H_
+-
+diff --git a/Development/ElaToolButtonStyle.h b/Development/ElaToolButtonStyle.h
+index 1fe6225..af92928 100644
+--- a/Development/ElaToolButtonStyle.h
++++ b/Development/ElaToolButtonStyle.h
+@@ -30,4 +30,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELATOOLBUTTONSTYLE_H_
+-
+diff --git a/Development/ElaTreeViewStyle.h b/Development/ElaTreeViewStyle.h
+index 5a4d5d6..6b5ca5e 100644
+--- a/Development/ElaTreeViewStyle.h
++++ b/Development/ElaTreeViewStyle.h
+@@ -24,4 +24,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELATREEVIEWSTYLE_H_
+-
+diff --git a/Development/ElaWinShadowHelper.h b/Development/ElaWinShadowHelper.h
+index 51aa9ff..6778a11 100644
+--- a/Development/ElaWinShadowHelper.h
++++ b/Development/ElaWinShadowHelper.h
+@@ -153,4 +153,3 @@ private:
+ 
+ #endif
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAWINSHADOWHELPER_H_
+-
+diff --git a/Development/ElaWindowStyle.h b/Development/ElaWindowStyle.h
+index de77e52..c7fe02f 100644
+--- a/Development/ElaWindowStyle.h
++++ b/Development/ElaWindowStyle.h
+@@ -18,4 +18,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELAWINDOWSTYLE_H_
+-
+diff --git a/ElaContentDialog.h b/ElaContentDialog.h
+index 7a35d72..49f95a8 100644
+--- a/ElaContentDialog.h
++++ b/ElaContentDialog.h
+@@ -37,4 +37,3 @@ protected:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELACONTENTDIALOG_H_
+-
+diff --git a/ElaDxgiManager.h b/ElaDxgiManager.h
+index 9b7fd1e..75e2439 100644
+--- a/ElaDxgiManager.h
++++ b/ElaDxgiManager.h
+@@ -42,4 +42,3 @@ Q_SIGNALS:
+ 
+ #endif
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELADXGIMANAGER_H_
+-
+diff --git a/ElaMenu.cpp b/ElaMenu.cpp
+index 2e063bc..db86750 100644
+--- a/ElaMenu.cpp
++++ b/ElaMenu.cpp
+@@ -1,4 +1,4 @@
+-﻿#include "ElaMenu.h"
++#include "ElaMenu.h"
+ 
+ #include <QApplication>
+ #include <QCloseEvent>
+diff --git a/ElaWindow.h b/ElaWindow.h
+index 67a337f..597eb9d 100644
+--- a/ElaWindow.h
++++ b/ElaWindow.h
+@@ -114,4 +114,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELAWINDOW_H_
+-
+diff --git a/private/ElaAcrylicUrlCardPrivate.h b/private/ElaAcrylicUrlCardPrivate.h
+index 2a5ef75..df6da6a 100644
+--- a/private/ElaAcrylicUrlCardPrivate.h
++++ b/private/ElaAcrylicUrlCardPrivate.h
+@@ -38,4 +38,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAACRYLICURLCARDPRIVATE_H_
+-
+diff --git a/private/ElaAppBarPrivate.h b/private/ElaAppBarPrivate.h
+index 9fa3427..99866b2 100644
+--- a/private/ElaAppBarPrivate.h
++++ b/private/ElaAppBarPrivate.h
+@@ -68,4 +68,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAAPPBARPRIVATE_H_
+-
+diff --git a/private/ElaBreadcrumbBarPrivate.h b/private/ElaBreadcrumbBarPrivate.h
+index 7a186f1..1e05c23 100644
+--- a/private/ElaBreadcrumbBarPrivate.h
++++ b/private/ElaBreadcrumbBarPrivate.h
+@@ -27,4 +27,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELABREADCRUMBBARPRIVATE_H_
+-
+diff --git a/private/ElaCalendarPickerPrivate.h b/private/ElaCalendarPickerPrivate.h
+index 4a53f97..9e8ab83 100644
+--- a/private/ElaCalendarPickerPrivate.h
++++ b/private/ElaCalendarPickerPrivate.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACALENDARPICKERPRIVATE_H_
+-
+diff --git a/private/ElaCalendarPrivate.h b/private/ElaCalendarPrivate.h
+index 0333de6..305b872 100644
+--- a/private/ElaCalendarPrivate.h
++++ b/private/ElaCalendarPrivate.h
+@@ -49,4 +49,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACALENDARPRIVATE_H_
+-
+diff --git a/private/ElaColorDialogPrivate.h b/private/ElaColorDialogPrivate.h
+index c3738a8..6aa4eec 100644
+--- a/private/ElaColorDialogPrivate.h
++++ b/private/ElaColorDialogPrivate.h
+@@ -84,4 +84,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACOLORDIALOGPRIVATE_H_
+-
+diff --git a/private/ElaComboBoxPrivate.h b/private/ElaComboBoxPrivate.h
+index 49675e8..34f1166 100644
+--- a/private/ElaComboBoxPrivate.h
++++ b/private/ElaComboBoxPrivate.h
+@@ -27,4 +27,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACOMBOBOXPRIVATE_H_
+-
+diff --git a/private/ElaContentDialogPrivate.h b/private/ElaContentDialogPrivate.h
+index 2002133..86ba811 100644
+--- a/private/ElaContentDialogPrivate.h
++++ b/private/ElaContentDialogPrivate.h
+@@ -36,4 +36,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACONTENTDIALOGPRIVATE_H_
+-
+diff --git a/private/ElaDialogPrivate.h b/private/ElaDialogPrivate.h
+index 9c25645..2a95c7b 100644
+--- a/private/ElaDialogPrivate.h
++++ b/private/ElaDialogPrivate.h
+@@ -21,4 +21,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELADIALOGPRIVATE_H_
+-
+diff --git a/private/ElaDockWidgetPrivate.h b/private/ElaDockWidgetPrivate.h
+index 5ea49de..3a91022 100644
+--- a/private/ElaDockWidgetPrivate.h
++++ b/private/ElaDockWidgetPrivate.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELADOCKWIDGETPRIVATE_H_
+-
+diff --git a/private/ElaDoubleSpinBoxPrivate.h b/private/ElaDoubleSpinBoxPrivate.h
+index 4fcc6ab..685452e 100644
+--- a/private/ElaDoubleSpinBoxPrivate.h
++++ b/private/ElaDoubleSpinBoxPrivate.h
+@@ -26,4 +26,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELADOUBLESPINBOXPRIVATE_H_
+-
+diff --git a/private/ElaDrawerAreaPrivate.h b/private/ElaDrawerAreaPrivate.h
+index 259ab98..a1ce743 100644
+--- a/private/ElaDrawerAreaPrivate.h
++++ b/private/ElaDrawerAreaPrivate.h
+@@ -23,4 +23,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELADRAWERAREAPRIVATE_H_
+-
+diff --git a/private/ElaDxgiManagerPrivate.h b/private/ElaDxgiManagerPrivate.h
+index d1430f9..6897c62 100644
+--- a/private/ElaDxgiManagerPrivate.h
++++ b/private/ElaDxgiManagerPrivate.h
+@@ -24,4 +24,3 @@ private:
+ 
+ #endif
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELADXGIMANAGERPRIVATE_H_
+-
+diff --git a/private/ElaEventBusPrivate.h b/private/ElaEventBusPrivate.h
+index b154c24..b2d6512 100644
+--- a/private/ElaEventBusPrivate.h
++++ b/private/ElaEventBusPrivate.h
+@@ -37,4 +37,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAEVENTBUSPRIVATE_H_
+-
+diff --git a/private/ElaExponentialBlurPrivate.h b/private/ElaExponentialBlurPrivate.h
+index 243de60..746a907 100644
+--- a/private/ElaExponentialBlurPrivate.h
++++ b/private/ElaExponentialBlurPrivate.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAEXPONENTIALBLURPRIVATE_H_
+-
+diff --git a/private/ElaFlowLayoutPrivate.h b/private/ElaFlowLayoutPrivate.h
+index 71575d3..5ae101f 100644
+--- a/private/ElaFlowLayoutPrivate.h
++++ b/private/ElaFlowLayoutPrivate.h
+@@ -28,4 +28,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAFLOWLAYOUTPRIVATE_H_
+-
+diff --git a/private/ElaIconButtonPrivate.h b/private/ElaIconButtonPrivate.h
+index 4c2b48b..15100e5 100644
+--- a/private/ElaIconButtonPrivate.h
++++ b/private/ElaIconButtonPrivate.h
+@@ -33,4 +33,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAICONBUTTONPRIVATE_H_
+-
+diff --git a/private/ElaImageCardPrivate.h b/private/ElaImageCardPrivate.h
+index 212784e..95be8e3 100644
+--- a/private/ElaImageCardPrivate.h
++++ b/private/ElaImageCardPrivate.h
+@@ -23,4 +23,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAIMAGECARDPRIVATE_H_
+-
+diff --git a/private/ElaInteractiveCardPrivate.h b/private/ElaInteractiveCardPrivate.h
+index 6ae4355..265fd01 100644
+--- a/private/ElaInteractiveCardPrivate.h
++++ b/private/ElaInteractiveCardPrivate.h
+@@ -32,4 +32,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAINTERACTIVECARDPRIVATE_H_
+-
+diff --git a/private/ElaKeyBinderPrivate.h b/private/ElaKeyBinderPrivate.h
+index 332daf3..0def6c5 100644
+--- a/private/ElaKeyBinderPrivate.h
++++ b/private/ElaKeyBinderPrivate.h
+@@ -23,4 +23,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAKEYBINDERPRIVATE_H_
+-
+diff --git a/private/ElaLCDNumberPrivate.h b/private/ElaLCDNumberPrivate.h
+index a1d2931..8fab0a6 100644
+--- a/private/ElaLCDNumberPrivate.h
++++ b/private/ElaLCDNumberPrivate.h
+@@ -26,4 +26,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELALCDNUMBERPRIVATE_H_
+-
+diff --git a/private/ElaLineEditPrivate.h b/private/ElaLineEditPrivate.h
+index c51c3f4..8755f4a 100644
+--- a/private/ElaLineEditPrivate.h
++++ b/private/ElaLineEditPrivate.h
+@@ -26,4 +26,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELALINEEDITPRIVATE_H_
+-
+diff --git a/private/ElaListViewPrivate.h b/private/ElaListViewPrivate.h
+index 8b7edb3..4cc831c 100644
+--- a/private/ElaListViewPrivate.h
++++ b/private/ElaListViewPrivate.h
+@@ -21,4 +21,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELALISTVIEWPRIVATE_H_
+-
+diff --git a/private/ElaLogPrivate.h b/private/ElaLogPrivate.h
+index f616057..2193c96 100644
+--- a/private/ElaLogPrivate.h
++++ b/private/ElaLogPrivate.h
+@@ -23,4 +23,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELALOGPRIVATE_H_
+-
+diff --git a/private/ElaMenuPrivate.h b/private/ElaMenuPrivate.h
+index 8d0e465..c8c493c 100644
+--- a/private/ElaMenuPrivate.h
++++ b/private/ElaMenuPrivate.h
+@@ -26,4 +26,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAMENUPRIVATE_H_
+-
+diff --git a/private/ElaMessageBarPrivate.h b/private/ElaMessageBarPrivate.h
+index f10d0d1..832c666 100644
+--- a/private/ElaMessageBarPrivate.h
++++ b/private/ElaMessageBarPrivate.h
+@@ -72,4 +72,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAMESSAGEBARPRIVATE_H_
+-
+diff --git a/private/ElaMessageButtonPrivate.h b/private/ElaMessageButtonPrivate.h
+index 1323eb1..86e73fb 100644
+--- a/private/ElaMessageButtonPrivate.h
++++ b/private/ElaMessageButtonPrivate.h
+@@ -29,4 +29,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAMESSAGEBUTTONPRIVATE_H_
+-
+diff --git a/private/ElaMultiSelectComboBoxPrivate.h b/private/ElaMultiSelectComboBoxPrivate.h
+index 6e1e765..cec991e 100644
+--- a/private/ElaMultiSelectComboBoxPrivate.h
++++ b/private/ElaMultiSelectComboBoxPrivate.h
+@@ -33,4 +33,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAMULTISELECTCOMBOBOXPRIVATE_H_
+-
+diff --git a/private/ElaNavigationBarPrivate.h b/private/ElaNavigationBarPrivate.h
+index bce10e1..315ec9b 100644
+--- a/private/ElaNavigationBarPrivate.h
++++ b/private/ElaNavigationBarPrivate.h
+@@ -88,5 +88,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELANAVIGATIONBARPRIVATE_H_
+-
+-
+diff --git a/private/ElaPivotPrivate.h b/private/ElaPivotPrivate.h
+index 9c61229..3cb7e39 100644
+--- a/private/ElaPivotPrivate.h
++++ b/private/ElaPivotPrivate.h
+@@ -27,4 +27,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAPIVOTPRIVATE_H_
+-
+diff --git a/private/ElaPlainTextEditPrivate.h b/private/ElaPlainTextEditPrivate.h
+index 9c552c1..77ea0ea 100644
+--- a/private/ElaPlainTextEditPrivate.h
++++ b/private/ElaPlainTextEditPrivate.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAPLAINTEXTEDITPRIVATE_H_
+-
+diff --git a/private/ElaPopularCardPrivate.h b/private/ElaPopularCardPrivate.h
+index 2109690..f89efab 100644
+--- a/private/ElaPopularCardPrivate.h
++++ b/private/ElaPopularCardPrivate.h
+@@ -43,4 +43,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAPOPULARCARDPRIVATE_H_
+-
+diff --git a/private/ElaProgressBarPrivate.h b/private/ElaProgressBarPrivate.h
+index a924e39..4160941 100644
+--- a/private/ElaProgressBarPrivate.h
++++ b/private/ElaProgressBarPrivate.h
+@@ -24,4 +24,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAPROGRESSBARPRIVATE_H_
+-
+diff --git a/private/ElaProgressRingPrivate.h b/private/ElaProgressRingPrivate.h
+index d7aa494..cd3237a 100644
+--- a/private/ElaProgressRingPrivate.h
++++ b/private/ElaProgressRingPrivate.h
+@@ -34,4 +34,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAPROGRESSRINGPRIVATE_H_
+-
+diff --git a/private/ElaPromotionCardPrivate.h b/private/ElaPromotionCardPrivate.h
+index bebc42b..cd36a0d 100644
+--- a/private/ElaPromotionCardPrivate.h
++++ b/private/ElaPromotionCardPrivate.h
+@@ -48,4 +48,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAPROMOTIONCARDPRIVATE_H_
+-
+diff --git a/private/ElaPromotionViewPrivate.h b/private/ElaPromotionViewPrivate.h
+index 457cf02..40cd5e5 100644
+--- a/private/ElaPromotionViewPrivate.h
++++ b/private/ElaPromotionViewPrivate.h
+@@ -38,4 +38,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAPROMOTIONVIEWPRIVATE_H_
+-
+diff --git a/private/ElaPushButtonPrivate.h b/private/ElaPushButtonPrivate.h
+index 227aa7d..f71f482 100644
+--- a/private/ElaPushButtonPrivate.h
++++ b/private/ElaPushButtonPrivate.h
+@@ -30,4 +30,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAPUSHBUTTONPRIVATE_H_
+-
+diff --git a/private/ElaRadioButtonPrivate.h b/private/ElaRadioButtonPrivate.h
+index e56b9c1..e5a8476 100644
+--- a/private/ElaRadioButtonPrivate.h
++++ b/private/ElaRadioButtonPrivate.h
+@@ -18,4 +18,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELARADIOBUTTONPRIVATE_H_
+-
+diff --git a/private/ElaReminderCardPrivate.h b/private/ElaReminderCardPrivate.h
+index 0d57bca..611f072 100644
+--- a/private/ElaReminderCardPrivate.h
++++ b/private/ElaReminderCardPrivate.h
+@@ -33,4 +33,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAREMINDERCARDPRIVATE_H_
+-
+diff --git a/private/ElaRibbonBarPrivate.h b/private/ElaRibbonBarPrivate.h
+index 6c74a8d..b5d9940 100644
+--- a/private/ElaRibbonBarPrivate.h
++++ b/private/ElaRibbonBarPrivate.h
+@@ -38,4 +38,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELARIBBONBARPRIVATE_H_
+-
+diff --git a/private/ElaRollerPickerPrivate.h b/private/ElaRollerPickerPrivate.h
+index d8e4ac9..0798799 100644
+--- a/private/ElaRollerPickerPrivate.h
++++ b/private/ElaRollerPickerPrivate.h
+@@ -27,4 +27,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAROLLERPICKERPRIVATE_H_
+-
+diff --git a/private/ElaRollerPrivate.h b/private/ElaRollerPrivate.h
+index db5c050..0180525 100644
+--- a/private/ElaRollerPrivate.h
++++ b/private/ElaRollerPrivate.h
+@@ -41,4 +41,3 @@ private:
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAROLLERPRIVATE_H_
+-
+diff --git a/private/ElaScrollAreaPrivate.h b/private/ElaScrollAreaPrivate.h
+index 4a3abce..cf5b7b3 100644
+--- a/private/ElaScrollAreaPrivate.h
++++ b/private/ElaScrollAreaPrivate.h
+@@ -18,4 +18,3 @@ public:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELASCROLLAREAPRIVATE_H_
+-
+diff --git a/private/ElaScrollBarPrivate.h b/private/ElaScrollBarPrivate.h
+index c8f7763..e0f45c3 100644
+--- a/private/ElaScrollBarPrivate.h
++++ b/private/ElaScrollBarPrivate.h
+@@ -40,4 +40,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELASCROLLBARPRIVATE_H_
+-
+diff --git a/private/ElaScrollPageAreaPrivate.h b/private/ElaScrollPageAreaPrivate.h
+index 5dc2eff..0073647 100644
+--- a/private/ElaScrollPageAreaPrivate.h
++++ b/private/ElaScrollPageAreaPrivate.h
+@@ -19,4 +19,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELASCROLLPAGEAREAPRIVATE_H_
+-
+diff --git a/private/ElaSpinBoxPrivate.h b/private/ElaSpinBoxPrivate.h
+index bf9c8d0..3917fbe 100644
+--- a/private/ElaSpinBoxPrivate.h
++++ b/private/ElaSpinBoxPrivate.h
+@@ -25,4 +25,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELASPINBOXPRIVATE_H_
+-
+diff --git a/private/ElaSuggestBoxPrivate.h b/private/ElaSuggestBoxPrivate.h
+index 75dda7a..ceb50ba 100644
+--- a/private/ElaSuggestBoxPrivate.h
++++ b/private/ElaSuggestBoxPrivate.h
+@@ -61,4 +61,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELASUGGESTBOXPRIVATE_H_
+-
+diff --git a/private/ElaTableViewPrivate.h b/private/ElaTableViewPrivate.h
+index 7da10d7..f22dc17 100644
+--- a/private/ElaTableViewPrivate.h
++++ b/private/ElaTableViewPrivate.h
+@@ -21,4 +21,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELATABLEVIEWPRIVATE_H_
+-
+diff --git a/private/ElaTextPrivate.h b/private/ElaTextPrivate.h
+index 358ee0f..ca7976d 100644
+--- a/private/ElaTextPrivate.h
++++ b/private/ElaTextPrivate.h
+@@ -23,4 +23,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELATEXTPRIVATE_H_
+-
+diff --git a/private/ElaThemePrivate.h b/private/ElaThemePrivate.h
+index ccbc2cd..36b5033 100644
+--- a/private/ElaThemePrivate.h
++++ b/private/ElaThemePrivate.h
+@@ -23,4 +23,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELATHEMEPRIVATE_H_
+-
+diff --git a/private/ElaToggleButtonPrivate.h b/private/ElaToggleButtonPrivate.h
+index 20d4fed..caa94eb 100644
+--- a/private/ElaToggleButtonPrivate.h
++++ b/private/ElaToggleButtonPrivate.h
+@@ -24,4 +24,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELATOGGLEBUTTONPRIVATE_H_
+-
+diff --git a/private/ElaToggleSwitchPrivate.h b/private/ElaToggleSwitchPrivate.h
+index a7cf362..cb4276d 100644
+--- a/private/ElaToggleSwitchPrivate.h
++++ b/private/ElaToggleSwitchPrivate.h
+@@ -29,4 +29,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELATOGGLESWITCHPRIVATE_H_
+-
+diff --git a/private/ElaToolBarPrivate.h b/private/ElaToolBarPrivate.h
+index 0c4d97f..003859c 100644
+--- a/private/ElaToolBarPrivate.h
++++ b/private/ElaToolBarPrivate.h
+@@ -20,4 +20,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELATOOLBARPRIVATE_H_
+-
+diff --git a/private/ElaToolButtonPrivate.h b/private/ElaToolButtonPrivate.h
+index 9b71871..6141221 100644
+--- a/private/ElaToolButtonPrivate.h
++++ b/private/ElaToolButtonPrivate.h
+@@ -20,4 +20,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELATOOLBUTTONPRIVATE_H_
+-
+diff --git a/private/ElaToolTipPrivate.h b/private/ElaToolTipPrivate.h
+index 3c1b95c..48dd052 100644
+--- a/private/ElaToolTipPrivate.h
++++ b/private/ElaToolTipPrivate.h
+@@ -36,4 +36,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELATOOLTIPPRIVATE_H_
+-
+diff --git a/private/ElaTreeViewPrivate.h b/private/ElaTreeViewPrivate.h
+index 854cf5f..212bc31 100644
+--- a/private/ElaTreeViewPrivate.h
++++ b/private/ElaTreeViewPrivate.h
+@@ -21,4 +21,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELATREEVIEWPRIVATE_H_
+-
+diff --git a/private/ElaWidgetPrivate.h b/private/ElaWidgetPrivate.h
+index 946261e..ccb4852 100644
+--- a/private/ElaWidgetPrivate.h
++++ b/private/ElaWidgetPrivate.h
+@@ -21,4 +21,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAWIDGETPRIVATE_H_
+-
+diff --git a/private/ElaWindowPrivate.h b/private/ElaWindowPrivate.h
+index f9519aa..9251c59 100644
+--- a/private/ElaWindowPrivate.h
++++ b/private/ElaWindowPrivate.h
+@@ -70,4 +70,3 @@ private:
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAWINDOWPRIVATE_H_
+-

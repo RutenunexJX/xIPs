@@ -1,0 +1,667 @@
+diff --git a/Development/ElaTabBarStyle.cpp b/Development/ElaTabBarStyle.cpp
+index 8d0e7ee..8b0723d 100644
+--- a/Development/ElaTabBarStyle.cpp
++++ b/Development/ElaTabBarStyle.cpp
+@@ -20,8 +20,12 @@ ElaTabBarStyle::~ElaTabBarStyle()
+ {
+ }
+ 
+-void ElaTabBarStyle::drawPrimitive(PrimitiveElement pe, const QStyleOption* opt, QPainter* p, const QWidget* w) const
+-{
++void ElaTabBarStyle::drawPrimitive(PrimitiveElement pe, const QStyleOption* opt, QPainter* p, const QWidget* w) const
++{
++    if (_nativeTabBehavior && (pe == PE_IndicatorArrowLeft || pe == PE_IndicatorArrowRight || pe == PE_PanelButtonTool)) {
++        QProxyStyle::drawPrimitive(pe, opt, p, w);
++        return;
++    }
+     // qDebug() << pe << opt->rect;
+     switch (pe)
+     {
+@@ -57,11 +61,11 @@ void ElaTabBarStyle::drawPrimitive(PrimitiveElement pe, const QStyleOption* opt,
+             p->setBrush(ElaThemeColor(_themeMode, BasicHoverAlpha));
+             p->drawRoundedRect(opt->rect, 2, 2);
+         }
+-        QFont iconFont = QFont("Font Awesome 6 Free");
+-        iconFont.setPixelSize(eApp->getFontPixelSize() + 3);
+-        p->setFont(iconFont);
+-        p->setPen(ElaThemeColor(_themeMode, BasicText));
+-        p->drawText(opt->rect, Qt::AlignCenter, QChar(static_cast<char32_t>(ElaIconType::Xmark)));
++        p->setPen(QPen(ElaThemeColor(_themeMode, BasicText), 1.4, Qt::SolidLine, Qt::RoundCap));
++        const qreal half = qMin(4.0, qMin(opt->rect.width(), opt->rect.height()) / 4.0);
++        const QPointF center = QRectF(opt->rect).center();
++        p->drawLine(center + QPointF(-half, -half), center + QPointF(half, half));
++        p->drawLine(center + QPointF(half, -half), center + QPointF(-half, half));
+         p->restore();
+         return;
+     }
+@@ -139,8 +143,12 @@ void ElaTabBarStyle::drawControl(ControlElement element, const QStyleOption* opt
+             return;
+         }
+     }
+-    case QStyle::CE_TabBarTabLabel:
+-    {
++    case QStyle::CE_TabBarTabLabel:
++    {
++        if (_nativeTabBehavior) {
++            QProxyStyle::drawControl(element, option, painter, widget);
++            return;
++        }
+         //文字和图标绘制
+         if (const QStyleOptionTab* topt = qstyleoption_cast<const QStyleOptionTab*>(option))
+         {
+@@ -189,8 +197,14 @@ QSize ElaTabBarStyle::sizeFromContents(ContentsType type, const QStyleOption* op
+ {
+     switch (type)
+     {
+-    case CT_TabBarTab:
+-    {
++    case CT_TabBarTab:
++    {
++        if (_nativeTabBehavior) {
++            QSize hint = QProxyStyle::sizeFromContents(type, option, size, widget);
++            hint.setHeight(qMax(hint.height(), option->fontMetrics.height() + 14));
++            hint.setWidth(qMax(hint.width() + 14, 64));
++            return hint;
++        }
+         return _pTabSize;
+     }
+     default:
+@@ -201,8 +215,10 @@ QSize ElaTabBarStyle::sizeFromContents(ContentsType type, const QStyleOption* op
+     return QProxyStyle::sizeFromContents(type, option, size, widget);
+ }
+ 
+-QRect ElaTabBarStyle::subElementRect(SubElement element, const QStyleOption* option, const QWidget* widget) const
+-{
++QRect ElaTabBarStyle::subElementRect(SubElement element, const QStyleOption* option, const QWidget* widget) const
++{
++    if (_nativeTabBehavior)
++        return QProxyStyle::subElementRect(element, option, widget);
+     switch (element)
+     {
+     case QStyle::SE_TabBarScrollLeftButton:
+diff --git a/Development/ElaTabBarStyle.h b/Development/ElaTabBarStyle.h
+index cb5018c..85e97bc 100644
+--- a/Development/ElaTabBarStyle.h
++++ b/Development/ElaTabBarStyle.h
+@@ -9,14 +9,16 @@ class ElaTabBarStyle : public QProxyStyle
+     Q_OBJECT
+     Q_PRIVATE_CREATE(QSize, TabSize)
+ public:
+-    explicit ElaTabBarStyle(QStyle* style = nullptr);
+-    ~ElaTabBarStyle() override;
++    explicit ElaTabBarStyle(QStyle* style = nullptr);
++    ~ElaTabBarStyle() override;
++    void setNativeTabBehavior(bool enabled) { _nativeTabBehavior = enabled; }
+     void drawPrimitive(QStyle::PrimitiveElement pe, const QStyleOption* opt, QPainter* p, const QWidget* w) const override;
+     void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+     QSize sizeFromContents(ContentsType type, const QStyleOption* option, const QSize& size, const QWidget* widget) const override;
+     QRect subElementRect(SubElement element, const QStyleOption* option, const QWidget* widget) const override;
+ 
+-private:
++private:
++    bool _nativeTabBehavior{false};
+     ElaThemeType::ThemeMode _themeMode;
+ };
+ 
+diff --git a/Development/ElaTreeViewStyle.cpp b/Development/ElaTreeViewStyle.cpp
+index 82f603d..dbf9d52 100644
+--- a/Development/ElaTreeViewStyle.cpp
++++ b/Development/ElaTreeViewStyle.cpp
+@@ -34,8 +34,10 @@ void ElaTreeViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOptio
+             painter->setRenderHint(QPainter::Antialiasing);
+             QRect itemRect = vopt->rect;
+             itemRect.adjust(0, 2, 0, -2);
+-            QPainterPath path;
+-            path.addRoundedRect(itemRect, 4, 4);
++            QPainterPath path;
++            path.addRoundedRect(itemRect, 4, 4);
++            if (vopt->backgroundBrush.style() != Qt::NoBrush)
++                painter->fillPath(path, vopt->backgroundBrush);
+             bool isEnable = vopt->state.testFlag(QStyle::State_Enabled);
+             if (vopt->state & QStyle::State_Selected)
+             {
+@@ -62,8 +64,30 @@ void ElaTreeViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOptio
+         }
+         return;
+     }
+-    case QStyle::PE_IndicatorBranch:
+-    {
++    case QStyle::PE_IndicatorBranch:
++    {
++        if (_nativeItemContent) {
++            if (option->state.testFlag(State_Children)) {
++                painter->save();
++                painter->setRenderHint(QPainter::Antialiasing);
++                painter->setPen(QPen(ElaThemeColor(_themeMode, BasicText), 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
++                const QPointF center = QRectF(option->rect).center();
++                QPainterPath arrow;
++                if (option->state.testFlag(State_Open)) {
++                    arrow.moveTo(center + QPointF(-3, -1.5));
++                    arrow.lineTo(center + QPointF(0, 1.5));
++                    arrow.lineTo(center + QPointF(3, -1.5));
++                } else {
++                    const qreal direction = option->direction == Qt::RightToLeft ? -1 : 1;
++                    arrow.moveTo(center + QPointF(-1.5 * direction, -3));
++                    arrow.lineTo(center + QPointF(1.5 * direction, 0));
++                    arrow.lineTo(center + QPointF(-1.5 * direction, 3));
++                }
++                painter->drawPath(arrow);
++                painter->restore();
++            }
++            return;
++        }
+         // 展开图标绘制
+         if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
+         {
+@@ -138,8 +162,12 @@ void ElaTreeViewStyle::drawControl(ControlElement element, const QStyleOption* o
+         painter->restore();
+         return;
+     }
+-    case QStyle::CE_HeaderLabel:
+-    {
++    case QStyle::CE_HeaderLabel:
++    {
++        if (_nativeItemContent) {
++            QProxyStyle::drawControl(element, option, painter, widget);
++            return;
++        }
+         // 表头文字绘制
+         if (const QStyleOptionHeader* hopt = qstyleoption_cast<const QStyleOptionHeader*>(option))
+         {
+@@ -166,10 +194,28 @@ void ElaTreeViewStyle::drawControl(ControlElement element, const QStyleOption* o
+         painter->restore();
+         return;
+     }
+-    case QStyle::CE_ItemViewItem:
+-    {
+-        if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
+-        {
++    case QStyle::CE_ItemViewItem:
++    {
++        if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
++        {
++            if (_nativeItemContent) {
++                // Qt retains model fonts/brushes, elision, wrapping, check states and focus.
++                // Its renderer calls our primitive and subElementRect; apply padding once.
++                QProxyStyle::drawControl(element, option, painter, widget);
++                if (vopt->state.testFlag(State_Selected)
++                    && (vopt->viewItemPosition == QStyleOptionViewItem::Beginning
++                        || vopt->viewItemPosition == QStyleOptionViewItem::OnlyOne)) {
++                    painter->save();
++                    painter->setRenderHint(QPainter::Antialiasing);
++                    painter->setPen(Qt::NoPen);
++                    painter->setBrush(ElaThemeColor(_themeMode, PrimaryNormal));
++                    const int inset = vopt->rect.height() / 4;
++                    painter->drawRoundedRect(QRectF(vopt->rect.left() + 2, vopt->rect.top() + inset,
++                                                   3, vopt->rect.height() - 2 * inset), 1.5, 1.5);
++                    painter->restore();
++                }
++                return;
++            }
+             // 背景绘制
+             this->drawPrimitive(QStyle::PE_PanelItemViewItem, option, painter, widget);
+ 
+@@ -253,8 +299,10 @@ QSize ElaTreeViewStyle::sizeFromContents(ContentsType type, const QStyleOption*
+     {
+     case QStyle::CT_ItemViewItem:
+     {
+-        QSize itemSize = QProxyStyle::sizeFromContents(type, option, size, widget);
+-        itemSize.setHeight(_pItemHeight);
++        QSize itemSize = QProxyStyle::sizeFromContents(type, option, size, widget);
++        itemSize.setHeight(qMax(itemSize.height(), _pItemHeight));
++        if (_nativeItemContent)
++            itemSize.rwidth() += 10;
+         return itemSize;
+     }
+     default:
+@@ -281,8 +329,18 @@ int ElaTreeViewStyle::pixelMetric(PixelMetric metric, const QStyleOption* option
+     return QProxyStyle::pixelMetric(metric, option, widget);
+ }
+ 
+-QRect ElaTreeViewStyle::subElementRect(SubElement element, const QStyleOption* option, const QWidget* widget) const
+-{
++QRect ElaTreeViewStyle::subElementRect(SubElement element, const QStyleOption* option, const QWidget* widget) const
++{
++    if (_nativeItemContent) {
++        if (element == SE_ItemViewItemCheckIndicator || element == SE_ItemViewItemDecoration || element == SE_ItemViewItemText) {
++            if (const auto* item = qstyleoption_cast<const QStyleOptionViewItem*>(option)) {
++                QStyleOptionViewItem content(*item);
++                content.rect.adjust(8, 0, -2, 0);
++                return QProxyStyle::subElementRect(element, &content, widget);
++            }
++        }
++        return QProxyStyle::subElementRect(element, option, widget);
++    }
+     switch (element)
+     {
+     case QStyle::SE_ItemViewItemCheckIndicator:
+diff --git a/Development/ElaTreeViewStyle.h b/Development/ElaTreeViewStyle.h
+index 9fa4416..03315f4 100644
+--- a/Development/ElaTreeViewStyle.h
++++ b/Development/ElaTreeViewStyle.h
+@@ -10,15 +10,17 @@ class ElaTreeViewStyle : public QProxyStyle
+     Q_PROPERTY_CREATE(int, ItemHeight)
+     Q_PROPERTY_CREATE(int, HeaderMargin)
+ public:
+-    explicit ElaTreeViewStyle(QStyle* style = nullptr);
+-    ~ElaTreeViewStyle() override;
++    explicit ElaTreeViewStyle(QStyle* style = nullptr);
++    ~ElaTreeViewStyle() override;
++    void setNativeItemContent(bool enabled) { _nativeItemContent = enabled; }
+     void drawPrimitive(PrimitiveElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+     void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+     QSize sizeFromContents(ContentsType type, const QStyleOption* option, const QSize& size, const QWidget* widget) const override;
+     int pixelMetric(PixelMetric metric, const QStyleOption* option = nullptr, const QWidget* widget = nullptr) const override;
+     QRect subElementRect(SubElement element, const QStyleOption* option, const QWidget* widget) const override;
+ 
+-private:
++private:
++    bool _nativeItemContent{false};
+     ElaThemeType::ThemeMode _themeMode;
+     int _leftPadding{11};
+ };
+diff --git a/ElaScrollBar.cpp b/ElaScrollBar.cpp
+index 9c2ea1b..f2b2141 100644
+--- a/ElaScrollBar.cpp
++++ b/ElaScrollBar.cpp
+@@ -24,7 +24,8 @@ ElaScrollBar::ElaScrollBar(QWidget* parent)
+     d->_pTargetMaximum = 0;
+     d->_pIsAnimation = false;
+     connect(this, &ElaScrollBar::rangeChanged, d, &ElaScrollBarPrivate::onRangeChanged);
+-    ElaScrollBarStyle* scrollBarStyle = new ElaScrollBarStyle(style());
++    ElaScrollBarStyle* scrollBarStyle = new ElaScrollBarStyle(style());
++    scrollBarStyle->setParent(this);
+     scrollBarStyle->setScrollBar(this);
+     setStyle(scrollBarStyle);
+     d->_slideSmoothAnimation = new QPropertyAnimation(this, "value");
+@@ -77,9 +78,9 @@ ElaScrollBar::ElaScrollBar(QScrollBar* originScrollBar, QAbstractScrollArea* par
+     });
+ }
+ 
+-ElaScrollBar::~ElaScrollBar()
+-{
+-    delete this->style();
++ElaScrollBar::~ElaScrollBar()
++{
++    setStyle(nullptr);
+ }
+ 
+ bool ElaScrollBar::event(QEvent* event)
+@@ -157,9 +158,13 @@ void ElaScrollBar::mouseMoveEvent(QMouseEvent* event)
+     d->_scrollValue = value();
+ }
+ 
+-void ElaScrollBar::wheelEvent(QWheelEvent* event)
+-{
+-    Q_D(ElaScrollBar);
++void ElaScrollBar::wheelEvent(QWheelEvent* event)
++{
++    Q_D(ElaScrollBar);
++    if (!d->_pIsAnimation) {
++        QScrollBar::wheelEvent(event);
++        return;
++    }
+     int verticalDelta = event->angleDelta().y();
+     if (d->_slideSmoothAnimation->state() == QAbstractAnimation::Stopped)
+     {
+diff --git a/ElaTabBar.cpp b/ElaTabBar.cpp
+index 46437fd..7ed70f4 100644
+--- a/ElaTabBar.cpp
++++ b/ElaTabBar.cpp
+@@ -20,8 +20,9 @@ ElaTabBar::ElaTabBar(QWidget* parent)
+     setTabsClosable(true);
+     setMovable(true);
+     setAcceptDrops(true);
+-    d->_style = new ElaTabBarStyle(style());
+-    setStyle(d->_style);
++    d->_style = new ElaTabBarStyle(style());
++    d->_style->setParent(this);
++    setStyle(d->_style);
+ 
+     d->_pTargetScrollOffset = 0;
+     d->_tabBarPrivate = dynamic_cast<QTabBarPrivate*>(this->QTabBar::d_ptr.data());
+@@ -33,16 +34,32 @@ ElaTabBar::ElaTabBar(QWidget* parent)
+         update();
+     });
+     // Qt 内部(refresh/makeVisible 等)修改 scrollOffset 时同步动画状态
+-    connect(this, &QTabBar::currentChanged, this, [=]() {
++    connect(this, &QTabBar::currentChanged, this, [=]() {
++        if (_nativeTabBehavior)
++            return;
+         d->setTargetScrollOffset(d->_tabBarPrivate->scrollOffset);
+         d->setScrollOffset(d->_tabBarPrivate->scrollOffset);
+     });
+ }
+ 
+-ElaTabBar::~ElaTabBar()
+-{
+-    Q_D(ElaTabBar);
+-    delete d->_style;
++ElaTabBar::~ElaTabBar()
++{
++    setStyle(nullptr);
++}
++
++void ElaTabBar::setNativeTabBehavior(bool enabled)
++{
++    Q_D(ElaTabBar);
++    _nativeTabBehavior = enabled;
++    d->_style->setNativeTabBehavior(enabled);
++    setUsesScrollButtons(enabled);
++    updateGeometry();
++    update();
++}
++
++bool ElaTabBar::nativeTabBehavior() const
++{
++    return _nativeTabBehavior;
+ }
+ 
+ void ElaTabBar::setTabText(int index, const QString& text)
+@@ -63,22 +80,30 @@ QSize ElaTabBar::getTabSize() const
+     return d->_style->getTabSize();
+ }
+ 
+-QSize ElaTabBar::sizeHint() const
+-{
++QSize ElaTabBar::sizeHint() const
++{
++    if (_nativeTabBehavior || !parentWidget())
++        return QTabBar::sizeHint();
+     QSize oldSize = QTabBar::sizeHint();
+     QSize newSize = oldSize;
+     newSize.setWidth(parentWidget()->maximumWidth());
+     return oldSize.expandedTo(newSize);
+ }
+ 
+-QSize ElaTabBar::minimumSizeHint() const
+-{
++QSize ElaTabBar::minimumSizeHint() const
++{
++    if (_nativeTabBehavior)
++        return QTabBar::minimumSizeHint();
+     // useScrollButtons=false 时基类会返回全部 tab 宽度总和，会撑大窗口，宽度最小设为 0 由布局分配
+     return {0, QTabBar::minimumSizeHint().height()};
+ }
+ 
+-void ElaTabBar::tabInserted(int index)
+-{
++void ElaTabBar::tabInserted(int index)
++{
++    if (_nativeTabBehavior) {
++        QTabBar::tabInserted(index);
++        return;
++    }
+     Q_D(ElaTabBar);
+     // 基类 addTab 内部先执行 refresh/makeVisible 再调用本虚函数，
+     // _tabBarPrivate->scrollOffset 已被重置，动画状态仍是插入前的值
+@@ -87,8 +112,12 @@ void ElaTabBar::tabInserted(int index)
+     d->restoreScrollOffset(preScrollOffset);
+ }
+ 
+-void ElaTabBar::tabRemoved(int index)
+-{
++void ElaTabBar::tabRemoved(int index)
++{
++    if (_nativeTabBehavior) {
++        QTabBar::tabRemoved(index);
++        return;
++    }
+     Q_D(ElaTabBar);
+     // 记录移除前的偏移，基类 removeTab 的 refresh/makeVisible 会把偏移重置回最左
+     qreal preScrollOffset = d->getScrollOffset();
+@@ -97,9 +126,11 @@ void ElaTabBar::tabRemoved(int index)
+     d->restoreScrollOffset(preScrollOffset);
+ }
+ 
+-void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
+-{
+-    QTabBar::mouseMoveEvent(event);
++void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
++{
++    QTabBar::mouseMoveEvent(event);
++    if (_nativeTabBehavior)
++        return;
+     Q_D(ElaTabBar);
+     if (d->_tabBarPrivate->pressedIndex >= 0)
+     {
+@@ -163,8 +194,12 @@ void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
+     }
+ }
+ 
+-void ElaTabBar::dragEnterEvent(QDragEnterEvent* event)
+-{
++void ElaTabBar::dragEnterEvent(QDragEnterEvent* event)
++{
++    if (_nativeTabBehavior) {
++        QTabBar::dragEnterEvent(event);
++        return;
++    }
+     Q_D(ElaTabBar);
+     if (event->mimeData()->property("DragType").toString() == "ElaTabBarDrag")
+     {
+@@ -186,8 +221,12 @@ void ElaTabBar::dragEnterEvent(QDragEnterEvent* event)
+     QTabBar::dragEnterEvent(event);
+ }
+ 
+-void ElaTabBar::dragMoveEvent(QDragMoveEvent* event)
+-{
++void ElaTabBar::dragMoveEvent(QDragMoveEvent* event)
++{
++    if (_nativeTabBehavior) {
++        QTabBar::dragMoveEvent(event);
++        return;
++    }
+     Q_D(ElaTabBar);
+     if (event->mimeData()->property("DragType").toString() == "ElaTabBarDrag")
+     {
+@@ -197,8 +236,12 @@ void ElaTabBar::dragMoveEvent(QDragMoveEvent* event)
+     QWidget::dragMoveEvent(event);
+ }
+ 
+-void ElaTabBar::dragLeaveEvent(QDragLeaveEvent* event)
+-{
++void ElaTabBar::dragLeaveEvent(QDragLeaveEvent* event)
++{
++    if (_nativeTabBehavior) {
++        QTabBar::dragLeaveEvent(event);
++        return;
++    }
+     Q_D(ElaTabBar);
+     if (d->_mimeData)
+     {
+@@ -210,8 +253,12 @@ void ElaTabBar::dragLeaveEvent(QDragLeaveEvent* event)
+     QTabBar::dragLeaveEvent(event);
+ }
+ 
+-void ElaTabBar::dropEvent(QDropEvent* event)
+-{
++void ElaTabBar::dropEvent(QDropEvent* event)
++{
++    if (_nativeTabBehavior) {
++        QTabBar::dropEvent(event);
++        return;
++    }
+     Q_D(ElaTabBar);
+     d->_mimeData = nullptr;
+     QMouseEvent releaseEvent(QEvent::MouseButtonRelease, QPoint(-1, -1), QPoint(-1, -1), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+@@ -229,8 +276,12 @@ void ElaTabBar::dropEvent(QDropEvent* event)
+     QTabBar::dropEvent(event);
+ }
+ 
+-void ElaTabBar::wheelEvent(QWheelEvent* event)
+-{
++void ElaTabBar::wheelEvent(QWheelEvent* event)
++{
++    if (_nativeTabBehavior) {
++        QTabBar::wheelEvent(event);
++        return;
++    }
+     Q_D(ElaTabBar);
+     // 滚轮平滑横向滚动，不切换 tab
+     int maxOffset = qMax(0, d->_tabBarPrivate->tabList.size() * d->_style->getTabSize().width() - width());
+@@ -240,9 +291,11 @@ void ElaTabBar::wheelEvent(QWheelEvent* event)
+     event->accept();
+ }
+ 
+-void ElaTabBar::resizeEvent(QResizeEvent* event)
+-{
+-    QTabBar::resizeEvent(event);
++void ElaTabBar::resizeEvent(QResizeEvent* event)
++{
++    QTabBar::resizeEvent(event);
++    if (_nativeTabBehavior)
++        return;
+     Q_D(ElaTabBar);
+     // 窗口变宽时收敛超出的滚动偏移
+     int maxOffset = qMax(0, d->_tabBarPrivate->tabList.size() * d->_style->getTabSize().width() - width());
+@@ -251,8 +304,12 @@ void ElaTabBar::resizeEvent(QResizeEvent* event)
+     d->_tabBarPrivate->scrollOffset = qRound(d->getScrollOffset());
+ }
+ 
+-void ElaTabBar::paintEvent(QPaintEvent* event)
+-{
++void ElaTabBar::paintEvent(QPaintEvent* event)
++{
++    if (_nativeTabBehavior) {
++        QTabBar::paintEvent(event);
++        return;
++    }
+     Q_D(ElaTabBar);
+     QSize tabSize = d->_style->getTabSize();
+     for (int i = 0; i < d->_tabBarPrivate->tabList.size(); i++)
+@@ -265,4 +322,4 @@ void ElaTabBar::paintEvent(QPaintEvent* event)
+     }
+     d->_tabBarPrivate->layoutWidgets();
+     QTabBar::paintEvent(event);
+-}
+\ No newline at end of file
++}
+diff --git a/ElaTabBar.h b/ElaTabBar.h
+index dc8fac3..bd6590c 100644
+--- a/ElaTabBar.h
++++ b/ElaTabBar.h
+@@ -13,10 +13,13 @@ class ELA_EXPORT ElaTabBar : public QTabBar
+     Q_Q_CREATE(ElaTabBar)
+     Q_PROPERTY_CREATE_Q_H(QSize, TabSize)
+ public:
+-    explicit ElaTabBar(QWidget* parent = nullptr);
+-    ~ElaTabBar() override;
+-
+-    void setTabText(int index, const QString& text);
++    explicit ElaTabBar(QWidget* parent = nullptr);
++    ~ElaTabBar() override;
++
++    // Hosts with their own document controller retain Qt layout and input semantics.
++    void setNativeTabBehavior(bool enabled);
++    bool nativeTabBehavior() const;
++    void setTabText(int index, const QString& text);
+ 
+ Q_SIGNALS:
+     Q_SIGNAL void tabBarTextChanged(int tabIndex, const QString& tabText);
+@@ -37,7 +40,10 @@ protected:
+     void dragLeaveEvent(QDragLeaveEvent* event) override;
+     void dropEvent(QDropEvent* event) override;
+     void wheelEvent(QWheelEvent* event) override;
+-    void paintEvent(QPaintEvent* event) override;
+-};
++    void paintEvent(QPaintEvent* event) override;
++
++private:
++    bool _nativeTabBehavior{false};
++};
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELATABBAR_H_
+diff --git a/ElaTreeView.cpp b/ElaTreeView.cpp
+index d62d61a..a8cbd19 100644
+--- a/ElaTreeView.cpp
++++ b/ElaTreeView.cpp
+@@ -32,15 +32,31 @@ ElaTreeView::ElaTreeView(QWidget* parent)
+     setVerticalScrollBar(vScrollBar);
+     setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+ 
+-    d->_treeViewStyle = new ElaTreeViewStyle(style());
++    d->_treeViewStyle = new ElaTreeViewStyle(style());
++    d->_treeViewStyle->setParent(this);
+     setStyle(d->_treeViewStyle);
+ }
+ 
+-ElaTreeView::~ElaTreeView()
+-{
+-    Q_D(ElaTreeView);
+-    delete d->_treeViewStyle;
+-}
++ElaTreeView::~ElaTreeView()
++{
++    setStyle(nullptr);
++}
++
++QStyle* ElaTreeView::createStyle(QObject* owner, int itemHeight)
++{
++    auto* treeStyle = new ElaTreeViewStyle();
++    treeStyle->setParent(owner);
++    treeStyle->setItemHeight(itemHeight);
++    treeStyle->setNativeItemContent(true);
++    return treeStyle;
++}
++
++void ElaTreeView::setNativeItemContent(bool enabled)
++{
++    Q_D(ElaTreeView);
++    d->_treeViewStyle->setNativeItemContent(enabled);
++    viewport()->update();
++}
+ 
+ void ElaTreeView::setItemHeight(int itemHeight)
+ {
+diff --git a/ElaTreeView.h b/ElaTreeView.h
+index db799a8..0186bca 100644
+--- a/ElaTreeView.h
++++ b/ElaTreeView.h
+@@ -14,8 +14,11 @@ class ELA_EXPORT ElaTreeView : public QTreeView
+     Q_PROPERTY_CREATE_Q_H(int, ItemHeight)
+     Q_PROPERTY_CREATE_Q_H(int, HeaderMargin)
+ public:
+-    explicit ElaTreeView(QWidget* parent = nullptr);
+-    ~ElaTreeView();
++    explicit ElaTreeView(QWidget* parent = nullptr);
++    ~ElaTreeView();
++    // Reuse Ela rendering without replacing a host's QTreeWidget item model.
++    static QStyle* createStyle(QObject* owner, int itemHeight = 28);
++    void setNativeItemContent(bool enabled);
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELATREEVIEW_H_
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index 5048367..c9ec876 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -20,12 +20,27 @@ the source. The following ZeroSlack-specific changes are applied:
+ Reconstruction: extract the library subtree at the pinned revision, then apply
+ `patches/01` through `06` in filename order. These patches reproduce all 417
+ files of the audited comparison source, including its historical formatting.
+-Apply `patches/07-zeroslack-control-contracts.patch` last for the migration:
++Use `git -c core.autocrlf=false apply` to retain the recorded file bytes.
++Apply `patches/07-zeroslack-control-contracts.patch` next for the basic-control migration:
+ QIcon/mnemonic/keyboard/checked/focus/default-button painting, selected tool-button
+ icons, theme repaint, ownership of a removed combo-box layout item, and safe style
+ detachment before tool/combo/spin-box destruction. The latter includes the shared
+ popup/view and embedded line-edit styles; visible top-level teardown is tested.
+ 
++Then apply `patches/08-zeroslack-tree-tab-contracts.patch`. It provides a native
++Qt behavior mode for ElaTabBar: Qt owns variable tab sizing, overflow buttons,
++selection, reordering and input, while Ela owns painting. The application keeps
++its QTabWidget page ownership; ElaTabWidget's automatic close and tear-out
++controllers are not used. Close icons use compact strokes.
++
++ElaTreeView exposes a style factory for QTreeWidget hosts and a native item-content
++mode that preserves model fonts/brushes, check states, wrapping, elision and focus.
++Branch painting accepts Qt's generic style option, row sizes honor content height,
++and painting/check-box hit regions use the same padding, applied only once so
++automatic column sizing does not elide otherwise fitting labels. Tree/tab/scroll-bar styles
++are QObject-owned and detached before widget teardown. Disabling scroll-bar
++animation also restores immediate native wheel handling.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids

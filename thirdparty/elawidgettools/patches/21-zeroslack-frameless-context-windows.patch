@@ -1,0 +1,68 @@
+diff --git a/ElaAppBar.cpp b/ElaAppBar.cpp
+index 107a360..7033d69 100644
+--- a/ElaAppBar.cpp
++++ b/ElaAppBar.cpp
+@@ -576,8 +576,9 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+         *result = 0;
+         return 1;
+ #else
+-        RECT* clientRect = &((NCCALCSIZE_PARAMS*)(lParam))->rgrc[0];
+-        if (eWinHelper->getIsWinVersionGreater10())
++        RECT* clientRect = &((NCCALCSIZE_PARAMS*)(lParam))->rgrc[0];
++        const bool frameless = window()->windowFlags().testFlag(Qt::FramelessWindowHint);
++        if (eWinHelper->getIsWinVersionGreater10() && !frameless)
+         {
+             const LONG originTop = clientRect->top;
+             const LRESULT hitTestResult = ::DefWindowProcW(hwnd, WM_NCCALCSIZE, wParam, lParam);
+@@ -588,9 +589,20 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+             }
+             clientRect->top = originTop;
+         }
+-        if (::IsZoomed(hwnd))
+-        {
+-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
++        if (::IsZoomed(hwnd))
++        {
++            if (frameless)
++            {
++                MONITORINFO monitorInfo{};
++                monitorInfo.cbSize = sizeof(monitorInfo);
++                if (::GetMonitorInfoW(::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitorInfo))
++                {
++                    *clientRect = monitorInfo.rcWork;
++                    *result = WVR_REDRAW;
++                    return 1;
++                }
++            }
++#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+             auto geometry = window()->screen()->geometry();
+ #else
+             QScreen* screen = qApp->screenAt(window()->geometry().center());
+@@ -659,10 +671,13 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+         ::GetClientRect(hwnd, &clientRect);
+         auto clientWidth = clientRect.right - clientRect.left;
+         auto clientHeight = clientRect.bottom - clientRect.top;
+-        bool left = nativeLocalPos.x < d->_win7Margins;
+-        bool right = nativeLocalPos.x > clientWidth - d->_win7Margins;
+-        bool top = nativeLocalPos.y < d->_margins;
+-        bool bottom = nativeLocalPos.y > clientHeight - d->_win7Margins;
++        const bool frameless = window()->windowFlags().testFlag(Qt::FramelessWindowHint);
++        const int resizeMargin = frameless ? qRound(d->_margins * window()->devicePixelRatioF()) : d->_win7Margins;
++        const int topMargin = frameless ? resizeMargin : d->_margins;
++        bool left = nativeLocalPos.x < resizeMargin;
++        bool right = nativeLocalPos.x > clientWidth - resizeMargin;
++        bool top = nativeLocalPos.y < topMargin;
++        bool bottom = nativeLocalPos.y > clientHeight - resizeMargin;
+         *result = HTNOWHERE;
+         if (!d->_pIsOnlyAllowMinAndClose && !d->_pIsFixedSize && !window()->isFullScreen() && !window()->isMaximized())
+         {
+@@ -982,7 +997,8 @@ void ElaAppBar::paintEvent(QPaintEvent* event)
+ {
+     if (d_ptr->_externalWindowManagement)
+         return;
+-    if (eWinHelper->getIsWinVersionGreater10() && !eWinHelper->getIsWinVersionGreater11())
++    if (eWinHelper->getIsWinVersionGreater10() && !eWinHelper->getIsWinVersionGreater11()
++        && !window()->windowFlags().testFlag(Qt::FramelessWindowHint))
+     {
+         Q_D(ElaAppBar);
+         QPainter painter(this);

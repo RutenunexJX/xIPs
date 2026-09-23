@@ -1,0 +1,127 @@
+diff --git a/ElaText.cpp b/ElaText.cpp
+index 80837ee..8d3cb5c 100644
+--- a/ElaText.cpp
++++ b/ElaText.cpp
+@@ -38,9 +38,26 @@ ElaText::ElaText(const QString& text, int pixelSize, QWidget* parent)
+     setFont(font);
+ }
+ 
+-ElaText::~ElaText()
+-{
+-}
++ElaText::~ElaText()
++{
++}
++
++void ElaText::setThemeColorEnabled(bool enabled)
++{
++    Q_D(ElaText);
++    if (d->_themeColorEnabled == enabled)
++        return;
++    d->_themeColorEnabled = enabled;
++    if (enabled)
++        d->onThemeChanged(eTheme->getThemeMode());
++    update();
++}
++
++bool ElaText::themeColorEnabled() const
++{
++    Q_D(const ElaText);
++    return d->_themeColorEnabled;
++}
+ 
+ void ElaText::setIsWrapAnywhere(bool isWrapAnywhere)
+ {
+@@ -157,7 +174,7 @@ ElaIconType::IconName ElaText::getElaIcon() const
+ void ElaText::paintEvent(QPaintEvent* event)
+ {
+     Q_D(ElaText);
+-    if (palette().color(QPalette::WindowText) != ElaThemeColor(d->_themeMode, BasicText))
++    if (d->_themeColorEnabled && palette().color(QPalette::WindowText) != ElaThemeColor(d->_themeMode, BasicText))
+     {
+         d->onThemeChanged(d->_themeMode);
+     }
+@@ -169,7 +186,8 @@ void ElaText::paintEvent(QPaintEvent* event)
+         QFont iconFont = QFont("Font Awesome 6 Free");
+         iconFont.setPixelSize(this->font().pixelSize());
+         painter.setFont(iconFont);
+-        painter.setPen(ElaThemeColor(d->_themeMode, BasicText));
++        painter.setPen(d->_themeColorEnabled ? ElaThemeColor(d->_themeMode, BasicText)
++                                            : palette().color(foregroundRole()));
+         painter.drawText(rect(), Qt::AlignCenter, QChar(static_cast<char32_t>(d->_pElaIcon)));
+         painter.restore();
+     }
+@@ -180,7 +198,8 @@ void ElaText::paintEvent(QPaintEvent* event)
+             QPainter painter(this);
+             painter.save();
+             painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+-            painter.setPen(ElaThemeColor(d->_themeMode, BasicText));
++            painter.setPen(d->_themeColorEnabled ? ElaThemeColor(d->_themeMode, BasicText)
++                                                : palette().color(foregroundRole()));
+             painter.drawText(rect(), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap | Qt::TextWrapAnywhere, text());
+             painter.restore();
+         }
+diff --git a/ElaText.h b/ElaText.h
+index cc35bac..960dfa2 100644
+--- a/ElaText.h
++++ b/ElaText.h
+@@ -20,7 +20,11 @@ public:
+     explicit ElaText(QWidget* parent = nullptr);
+     explicit ElaText(const QString& text, QWidget* parent = nullptr);
+     explicit ElaText(const QString& text, int pixelSize, QWidget* parent = nullptr);
+-    ~ElaText() override;
++    ~ElaText() override;
++
++    // Disable forced theme ink when the host supplies semantic or disabled colors.
++    void setThemeColorEnabled(bool enabled);
++    bool themeColorEnabled() const;
+ 
+ protected:
+     virtual void paintEvent(QPaintEvent* event) override;
+diff --git a/private/ElaTextPrivate.cpp b/private/ElaTextPrivate.cpp
+index f916a12..f5d193a 100644
+--- a/private/ElaTextPrivate.cpp
++++ b/private/ElaTextPrivate.cpp
+@@ -15,7 +15,9 @@ ElaTextPrivate::~ElaTextPrivate()
+ void ElaTextPrivate::onThemeChanged(ElaThemeType::ThemeMode themeMode)
+ {
+     Q_Q(ElaText);
+-    _themeMode = themeMode;
++    _themeMode = themeMode;
++    if (!_themeColorEnabled)
++        return;
+     QPalette palette = q->palette();
+     palette.setColor(QPalette::Text, ElaThemeColor(_themeMode, BasicText));
+     palette.setColor(QPalette::WindowText, ElaThemeColor(_themeMode, BasicText));
+diff --git a/private/ElaTextPrivate.h b/private/ElaTextPrivate.h
+index beec186..6f308bb 100644
+--- a/private/ElaTextPrivate.h
++++ b/private/ElaTextPrivate.h
+@@ -18,7 +18,8 @@ public:
+ 
+ private:
+     ElaThemeType::ThemeMode _themeMode;
+-    bool _isWrapAnywhere{false};
++    bool _isWrapAnywhere{false};
++    bool _themeColorEnabled{true};
+     qreal _textSpacing{0.5};
+ };
+ 
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index ee910a3..89fcaed 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -93,6 +93,13 @@ widget and viewport teardown completes. NoFrame is respected; the native mode us
+ the host's Base and Highlight palette roles. ElaScrollArea needs no upstream patch:
+ the adapter restores as-needed scrollbars without enabling drag-scroll gestures.
+ 
++Apply `patches/15-zeroslack-label-palette-contracts.patch` after patch 14. ElaText
++adds an opt-out from forced theme text colors, including its paint-time reset,
++so host semantic and disabled palettes survive theme changes. The default upstream
++behavior is unchanged. ZeroSlack's label adapter disables that override, restores
++its own typography and native QLabel defaults, and clears constructor QSS/palette
++overrides. QLabel continues to handle ordinary text layout, selection and links.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids

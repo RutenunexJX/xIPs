@@ -1,0 +1,171 @@
+diff --git a/ElaNavigationBar.cpp b/ElaNavigationBar.cpp
+index ab10f30..138dc1e 100644
+--- a/ElaNavigationBar.cpp
++++ b/ElaNavigationBar.cpp
+@@ -631,6 +631,23 @@ bool ElaNavigationBar::isDisplayModeAnimating() const
+     return d->_widthTransitioning;
+ }
+ 
++void ElaNavigationBar::setDisplayModeTransitionHandler(std::function<bool(int, int, quint64)> handler)
++{
++    Q_D(ElaNavigationBar);
++    d->_widthTransitionHandler = std::move(handler);
++}
++
++void ElaNavigationBar::finishDisplayModeTransition(quint64 generation)
++{
++    Q_D(ElaNavigationBar);
++    if (!d->_widthTransitioning || generation != d->_widthTransitionSerial)
++        return;
++    const int target = d->_widthTargetMode == ElaNavigationType::Minimal ? 0
++        : d->_widthTargetMode == ElaNavigationType::Compact ? 42 : d->_pNavigationBarWidth;
++    setFixedWidth(target);
++    d->_finishWidthTransition(true);
++}
++
+ QSize ElaNavigationBar::sizeHint() const
+ {
+     Q_D(const ElaNavigationBar);
+diff --git a/ElaNavigationBar.h b/ElaNavigationBar.h
+index 126e1c7..1529c9d 100644
+--- a/ElaNavigationBar.h
++++ b/ElaNavigationBar.h
+@@ -1,7 +1,8 @@
+ #ifndef ELAWORKSPACE_ELAWIDGETTOOLS_ELANAVIGATIONBAR_H_
+ #define ELAWORKSPACE_ELAWIDGETTOOLS_ELANAVIGATIONBAR_H_
+ 
+-#include <QWidget>
++#include <QWidget>
++#include <functional>
+ 
+ #include "ElaWidgetToolsDef.h"
+ #include "ElaWidgetToolsExport.h"
+@@ -57,6 +58,10 @@ public:
+     QWidget* customHeader() const;
+     void setCustomContentWidthRange(int minimum, int maximum);
+     bool isDisplayModeAnimating() const;
++    // A host may composite the transition without resizing its live document.
++    // Return true when accepted, then finish with the supplied generation.
++    void setDisplayModeTransitionHandler(std::function<bool(int, int, quint64)> handler);
++    void finishDisplayModeTransition(quint64 generation);
+     QSize sizeHint() const override;
+     QSize minimumSizeHint() const override;
+ 
+diff --git a/private/ElaNavigationBarPrivate.cpp b/private/ElaNavigationBarPrivate.cpp
+index 5144ef3..ee4bd7c 100644
+--- a/private/ElaNavigationBarPrivate.cpp
++++ b/private/ElaNavigationBarPrivate.cpp
+@@ -530,8 +530,7 @@ void ElaNavigationBarPrivate::_doNavigationBarWidthAnimation(ElaNavigationType::
+             q->setFixedWidth(value.toInt());
+             _updateCustomGeometry();
+         });
+-        connect(_widthAnimation, &QVariantAnimation::finished, this,
+-                &ElaNavigationBarPrivate::_finishWidthTransition);
++        connect(_widthAnimation, &QVariantAnimation::finished, this, [this] { _finishWidthTransition(); });
+     }
+     _widthAnimation->stop();
+     ++_widthTransitionSerial;
+@@ -540,6 +539,13 @@ void ElaNavigationBarPrivate::_doNavigationBarWidthAnimation(ElaNavigationType::
+     const int start = q->width();
+     const int target = displayMode == ElaNavigationType::Minimal ? 0
+         : displayMode == ElaNavigationType::Compact ? 42 : _pNavigationBarWidth;
++    if (isAnimation && _customContainer && _widthTransitionHandler)
++    {
++        if (_widthTransitionHandler(target, 255, _widthTransitionSerial))
++            return;
++        // A failed compositor must not fall back to resizing a heavy host per frame.
++        isAnimation = false;
++    }
+     q->setFixedWidth(start);
+     if (!isAnimation || start == target)
+     {
+@@ -553,10 +559,10 @@ void ElaNavigationBarPrivate::_doNavigationBarWidthAnimation(ElaNavigationType::
+     _widthAnimation->start();
+ }
+ 
+-void ElaNavigationBarPrivate::_finishWidthTransition()
++void ElaNavigationBarPrivate::_finishWidthTransition(bool immediate)
+ {
+     Q_Q(ElaNavigationBar);
+-    if (_customContainer && _widthTargetMode == ElaNavigationType::Maximal)
++    if (_customContainer && !immediate && _widthTargetMode == ElaNavigationType::Maximal)
+     {
+         // Let the host layout consume the final fixed width before restoring
+         // splitter resizing. Otherwise its penultimate frame becomes the saved width.
+@@ -573,9 +579,29 @@ void ElaNavigationBarPrivate::_finishWidthTransition()
+         });
+         return;
+     }
++    if (_customContainer && immediate && _widthTargetMode == ElaNavigationType::Maximal)
++    {
++        const auto serial = _widthTransitionSerial;
++        _updateCustomGeometry();
++        q->updateGeometry();
++        // Keep the endpoint fixed while the host shows and lays out the live dock.
++        Q_EMIT q->displayModeTransitionFinished(_widthTargetMode);
++        if (serial != _widthTransitionSerial) return;
++        q->setMinimumWidth(_customMinimumWidth);
++        q->setMaximumWidth(_customMaximumWidth);
++        _widthTransitioning = false;
++        return;
++    }
+     _widthTransitioning = false;
+     if (_widthTargetMode == ElaNavigationType::Maximal)
+-        _resetLayout();
++    {
++        if (_customContainer)
++        {
++            q->setMinimumWidth(_customMinimumWidth);
++            q->setMaximumWidth(_customMaximumWidth);
++        }
++        else _resetLayout();
++    }
+     _updateCustomGeometry();
+     q->updateGeometry();
+     Q_EMIT q->displayModeTransitionFinished(_widthTargetMode);
+diff --git a/private/ElaNavigationBarPrivate.h b/private/ElaNavigationBarPrivate.h
+index 59745db..ae5995e 100644
+--- a/private/ElaNavigationBarPrivate.h
++++ b/private/ElaNavigationBarPrivate.h
+@@ -6,6 +6,7 @@
+ #include <QMap>
+ #include <QObject>
+ #include <QPointer>
++#include <functional>
+ class QLayout;
+ class ElaMenu;
+ class QVBoxLayout;
+@@ -74,11 +75,12 @@ private:
+     QVariantAnimation* _widthAnimation{nullptr};
+     bool _widthTransitioning{false};
+     quint64 _widthTransitionSerial{0};
++    std::function<bool(int, int, quint64)> _widthTransitionHandler;
+     ElaNavigationType::NavigationDisplayMode _widthTargetMode{ElaNavigationType::Maximal};
+ 
+     void _setCustomWidget(QWidget* widget, bool header);
+     void _updateCustomGeometry();
+-    void _finishWidthTransition();
++    void _finishWidthTransition(bool immediate = false);
+ 
+     QList<ElaNavigationNode*> _lastExpandedNodesList;
+ 
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index 4cc317b..64f5465 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -118,6 +118,15 @@ It no longer first writes maximumWidth through QPropertyAnimation and then chang
+ both constraints in the value callback. Duration, easing, interruption and final
+ width restoration are unchanged; all animation ownership remains in Ela.
+ 
++Apply `patches/18-zeroslack-navigation-composition-contract.patch` after patch 17.
++The optional display-mode transition handler delegates presentation to a host
++compositor, supplying the target width, Ela's 255 ms duration and a generation.
++Late completions from a cancelled generation are ignored. Accepted transitions
++do not animate the real bar width; the endpoint is applied once at completion.
++Fixed endpoint constraints remain in place while the host commits its live layout.
++The application compositor uses the same OutCubic curve on Windows DirectComposition;
++stock Ela bars retain their existing width animation. This is a local API extension.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids

@@ -1,0 +1,12 @@
+diff --git a/Development/ElaCheckBoxStyle.cpp b/Development/ElaCheckBoxStyle.cpp
+--- a/Development/ElaCheckBoxStyle.cpp
++++ b/Development/ElaCheckBoxStyle.cpp
+@@ -75,7 +75,7 @@
+             }
+             painter->drawRoundedRect(checkRect, 2, 2);
+             //图标绘制
+-            painter->setPen(ElaThemeColor(ElaThemeType::Dark, BasicText));
++            painter->setPen(ElaThemeColor(_themeMode, BasicTextInvert));
+             if (bopt->state.testFlag(QStyle::State_On))
+             {
+                 painter->save();

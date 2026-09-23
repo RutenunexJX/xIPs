@@ -1,0 +1,70 @@
+diff --git a/private/ElaNavigationBarPrivate.cpp b/private/ElaNavigationBarPrivate.cpp
+index 71dff38..5144ef3 100644
+--- a/private/ElaNavigationBarPrivate.cpp
++++ b/private/ElaNavigationBarPrivate.cpp
+@@ -19,7 +19,8 @@
+ #include <QDebug>
+ #include <QEvent>
+ #include <QLayout>
+-#include <QPropertyAnimation>
++#include <QPropertyAnimation>
++#include <QVariantAnimation>
+ #include <QScrollBar>
+ #include <QTimer>
+ #include <QVBoxLayout>
+@@ -523,13 +524,13 @@ void ElaNavigationBarPrivate::_doNavigationBarWidthAnimation(ElaNavigationType::
+     Q_Q(ElaNavigationBar);
+     if (!_widthAnimation)
+     {
+-        _widthAnimation = new QPropertyAnimation(q, "maximumWidth", q);
++        _widthAnimation = new QVariantAnimation(q);
+         _widthAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-        connect(_widthAnimation, &QPropertyAnimation::valueChanged, this, [this, q](const QVariant& value) {
++        connect(_widthAnimation, &QVariantAnimation::valueChanged, this, [this, q](const QVariant& value) {
+             q->setFixedWidth(value.toInt());
+             _updateCustomGeometry();
+         });
+-        connect(_widthAnimation, &QPropertyAnimation::finished, this,
++        connect(_widthAnimation, &QVariantAnimation::finished, this,
+                 &ElaNavigationBarPrivate::_finishWidthTransition);
+     }
+     _widthAnimation->stop();
+diff --git a/private/ElaNavigationBarPrivate.h b/private/ElaNavigationBarPrivate.h
+index 3a4a7ab..59745db 100644
+--- a/private/ElaNavigationBarPrivate.h
++++ b/private/ElaNavigationBarPrivate.h
+@@ -11,7 +11,7 @@ class ElaMenu;
+ class QVBoxLayout;
+ class QHBoxLayout;
+ class QLinearGradient;
+-class QPropertyAnimation;
++class QVariantAnimation;
+ 
+ class ElaNavigationBar;
+ class ElaNavigationNode;
+@@ -71,7 +71,7 @@ private:
+     QVBoxLayout* _customLayout{nullptr};
+     int _customMinimumWidth{180};
+     int _customMaximumWidth{QWIDGETSIZE_MAX};
+-    QPropertyAnimation* _widthAnimation{nullptr};
++    QVariantAnimation* _widthAnimation{nullptr};
+     bool _widthTransitioning{false};
+     quint64 _widthTransitionSerial{0};
+     ElaNavigationType::NavigationDisplayMode _widthTargetMode{ElaNavigationType::Maximal};
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index 105e7ed..4cc317b 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -112,6 +112,12 @@ ZeroSlack's adapter is `src/ui/navigationpanecoordinator.cpp`; it retains QDockW
+ only for existing window layout persistence. ElaWindow and its page routing remain
+ unused. This content-host API is a local extension, not an unmodified upstream API.
+ 
++Apply `patches/17-zeroslack-navigation-width-batching.patch` after patch 16.
++The owned width driver uses QVariantAnimation and one setFixedWidth per value.
++It no longer first writes maximumWidth through QPropertyAnimation and then changes
++both constraints in the value callback. Duration, easing, interruption and final
++width restoration are unchanged; all animation ownership remains in Ela.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids

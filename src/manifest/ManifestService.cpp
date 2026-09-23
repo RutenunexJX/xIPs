@@ -31,10 +31,13 @@ ManifestLoadResult ManifestService::load(const QString &manifestPath) const
 {
     QFile file(manifestPath);
     if (!file.open(QIODevice::ReadOnly)) {
+        const QString absolutePath = QFileInfo(manifestPath).absoluteFilePath();
         return {
             .manifest = std::nullopt,
-            .errors = {QStringLiteral("Cannot open manifest: %1")
-                           .arg(file.errorString())},
+            .errors = {sourceError(
+                absolutePath,
+                QStringLiteral("Cannot open manifest: %1")
+                    .arg(file.errorString()))},
         };
     }
     return parse(file.readAll(), QFileInfo(manifestPath).absoluteFilePath());

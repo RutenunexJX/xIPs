@@ -1,0 +1,175 @@
+--- a/Development/ElaToolButtonStyle.cpp
++++ b/Development/ElaToolButtonStyle.cpp
+@@ -192,7 +192,7 @@
+                 QPixmap iconPix = icon.pixmap(iconSize,
+                                               (bopt->state & State_Enabled) ? QIcon::Normal
+                                                                             : QIcon::Disabled,
+-                                              (bopt->state & State_Selected) ? QIcon::On
++                                              (bopt->state & State_On) ? QIcon::On
+                                                                              : QIcon::Off);
+                 switch (bopt->toolButtonStyle)
+                 {
+--- a/ElaComboBox.cpp
++++ b/ElaComboBox.cpp
+@@ -47,7 +47,7 @@
+         QLayout* layout = container->layout();
+         while (layout->count())
+         {
+-            layout->takeAt(0);
++            delete layout->takeAt(0);
+         }
+         layout->addWidget(view());
+         layout->setContentsMargins(6, 0, 6, 6);
+@@ -64,6 +64,12 @@
+ ElaComboBox::~ElaComboBox()
+ {
+     Q_D(ElaComboBox);
++    // The popup and view share this style. Release their references while it
++    // is still alive, before QWidget closes/deletes the popup during teardown.
++    if (lineEdit()) lineEdit()->setStyle(nullptr);
++    view()->setStyle(nullptr);
++    if (auto* container = findChild<QFrame*>()) container->setStyle(nullptr);
++    setStyle(nullptr);
+     delete d->_comboBoxStyle;
+ }
+ 
+--- a/ElaDoubleSpinBox.cpp
++++ b/ElaDoubleSpinBox.cpp
+@@ -27,6 +27,9 @@
+ ElaDoubleSpinBox::~ElaDoubleSpinBox()
+ {
+     Q_D(ElaDoubleSpinBox);
++    setStyle(nullptr);
++    lineEdit()->setStyleSheet(QString());
++    lineEdit()->setStyle(nullptr);
+     delete d->_style;
+ }
+ 
+--- a/ElaPushButton.cpp
++++ b/ElaPushButton.cpp
+@@ -3,6 +3,8 @@
+ #include "ElaApplication.h"
+ #include <QPainter>
+ #include <QPainterPath>
++#include <QStyle>
++#include <QStyleOptionButton>
+ 
+ #include "ElaTheme.h"
+ #include "private/ElaPushButtonPrivate.h"
+@@ -37,6 +39,7 @@
+     setStyleSheet("#ElaPushButton{background-color:transparent;}");
+     connect(eTheme, &ElaTheme::themeModeChanged, this, [=](ElaThemeType::ThemeMode themeMode) {
+         d->_themeMode = themeMode;
++        update();
+     });
+ }
+ 
+@@ -102,22 +105,47 @@
+     if (d->_themeMode == ElaThemeType::Light)
+     {
+         painter.setPen(ElaThemeColor(ElaThemeType::Light, BasicBorder));
+-        painter.setBrush(isEnabled() ? d->_isPressed ? d->_pLightPressColor : (underMouse() ? d->_pLightHoverColor : d->_pLightDefaultColor) : ElaThemeColor(d->_themeMode, BasicDisable));
++        painter.setBrush(isEnabled() ? (isDown() || isChecked()) ? d->_pLightPressColor : (underMouse() ? d->_pLightHoverColor : d->_pLightDefaultColor) : ElaThemeColor(d->_themeMode, BasicDisable));
+     }
+     else
+     {
+         painter.setPen(Qt::NoPen);
+-        painter.setBrush(isEnabled() ? d->_isPressed ? d->_pDarkPressColor : (underMouse() ? d->_pDarkHoverColor : d->_pDarkDefaultColor) : ElaThemeColor(d->_themeMode, BasicDisable));
++        painter.setBrush(isEnabled() ? (isDown() || isChecked()) ? d->_pDarkPressColor : (underMouse() ? d->_pDarkHoverColor : d->_pDarkDefaultColor) : ElaThemeColor(d->_themeMode, BasicDisable));
+     }
+     painter.drawRoundedRect(foregroundRect, d->_pBorderRadius, d->_pBorderRadius);
+     // 底边线绘制
+-    if (!d->_isPressed)
++    if (!isDown())
+     {
+         painter.setPen(ElaThemeColor(d->_themeMode, BasicBaseLine));
+         painter.drawLine(foregroundRect.x() + d->_pBorderRadius, height() - d->_shadowBorderWidth, foregroundRect.width(), height() - d->_shadowBorderWidth);
+     }
+     //文字绘制
+     painter.setPen(isEnabled() ? d->_themeMode == ElaThemeType::Light ? d->_lightTextColor : d->_darkTextColor : ElaThemeColor(d->_themeMode, BasicTextDisable));
+-    painter.drawText(foregroundRect, Qt::AlignCenter, text());
++    QStyleOptionButton option;
++    initStyleOption(&option);
++    const int mnemonic = style()->styleHint(QStyle::SH_UnderlineShortcut, &option, this)
++        ? Qt::TextShowMnemonic : Qt::TextHideMnemonic;
++    const int gap = icon().isNull() || text().isEmpty() ? 0 : 6;
++    const QSize imageSize = icon().isNull() ? QSize(0, 0) : iconSize();
++    const int textWidth = fontMetrics().size(mnemonic, text()).width();
++    QRect content = foregroundRect.adjusted(8, 0, -8, 0);
++    const int contentWidth = qMin(content.width(), imageSize.width() + gap + textWidth);
++    QRect label(content.center().x() - contentWidth / 2, content.y(), contentWidth, content.height());
++    if (!icon().isNull()) {
++        QRect imageRect(label.x(), label.center().y() - imageSize.height() / 2,
++                        imageSize.width(), imageSize.height());
++        imageRect = QStyle::visualRect(layoutDirection(), foregroundRect, imageRect);
++        icon().paint(&painter, imageRect, Qt::AlignCenter,
++                     isEnabled() ? QIcon::Normal : QIcon::Disabled,
++                     isChecked() ? QIcon::On : QIcon::Off);
++        label.setLeft(label.left() + imageSize.width() + gap);
++    }
++    label = QStyle::visualRect(layoutDirection(), foregroundRect, label);
++    painter.drawText(label, Qt::AlignCenter | mnemonic, text());
++    if (isEnabled() && (hasFocus() || isDefault())) {
++        painter.setBrush(Qt::NoBrush);
++        painter.setPen(QPen(ElaThemeColor(d->_themeMode, PrimaryNormal), hasFocus() ? 1.5 : 1.0));
++        painter.drawRoundedRect(foregroundRect.adjusted(1, 1, -1, -1), d->_pBorderRadius, d->_pBorderRadius);
++    }
+     painter.restore();
+ }
+--- a/ElaSpinBox.cpp
++++ b/ElaSpinBox.cpp
+@@ -27,6 +27,9 @@
+ ElaSpinBox::~ElaSpinBox()
+ {
+     Q_D(ElaSpinBox);
++    setStyle(nullptr);
++    lineEdit()->setStyleSheet(QString());
++    lineEdit()->setStyle(nullptr);
+     delete d->_style;
+ }
+ 
+--- a/ElaToolButton.cpp
++++ b/ElaToolButton.cpp
+@@ -26,6 +26,9 @@
+ ElaToolButton::~ElaToolButton()
+ {
+     Q_D(ElaToolButton);
++    // QWidget still queries its style while closing a visible top-level widget.
++    // Detach the local style before freeing it.
++    setStyle(nullptr);
+     delete d->_toolButtonStyle;
+ }
+ 
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -14,8 +14,28 @@
+   use Ela's sample user card, acrylic card, or Mica image features.
+ - Replace the unverified Fontello-generated `ElaAwesome.ttf` with the
+   unmodified Font Awesome Free Solid 6.7.2 font (SIL OFL 1.1) and remap
+-  internally referenced icon values. The mapping is reproducible via
+-  `scripts/remap-ela-icons.py`; eleven unavailable icons use free alternatives.
++  internally referenced icon values. The exact mapping is preserved in
++  `patches/03-icon-font-swap.patch`; eleven unavailable icons use free alternatives.
++
++Reconstruction: extract the library subtree at the pinned revision, then apply
++`patches/01` through `06` in filename order. These patches reproduce all 417
++files of the audited comparison source, including its historical formatting.
++Apply `patches/07-zeroslack-control-contracts.patch` last for the migration:
++QIcon/mnemonic/keyboard/checked/focus/default-button painting, selected tool-button
++icons, theme repaint, ownership of a removed combo-box layout item, and safe style
++detachment before tool/combo/spin-box destruction. The latter includes the shared
++popup/view and embedded line-edit styles; visible top-level teardown is tested.
++
++The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
++ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
++and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids
++upstream's non-interruptible popup animation. No recursive application event
++filter or protected-surface traversal is installed for Ela.
++
++This integration is pinned to Qt 6.10.2 because ElaTabBar includes Qt private
++headers. Rebuild both DLLs and rerun validation before changing the Qt version.
++Upstream CMake declares version 2.0.0 while its public header declares 2.0.3;
++the commit identifier above is the authoritative source version.
+ 
+ Both `LICENSE` (ElaWidgetTools) and `Font/FontAwesome-LICENSE.txt` must
+ accompany redistributed binaries.

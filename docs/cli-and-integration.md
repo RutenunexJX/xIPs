@@ -1,49 +1,98 @@
-# CLI 与唤起协议
-
-xIPs 保留两个稳定且只读的外部边界：CLI 查询和 `xips://` URI。它们不修改资产，也不包含 ZeroSlack 专属数据结构。
+# CLI and native integration
 
 ## CLI
 
-列出或搜索资产：
+The CLI retains a schemaVersion 1 JSON **envelope**; this is separate from the schemaVersion 2 asset format.
+Success is emitted on stdout, and errors on stderr. Exit codes are 0 success, 2 invalid arguments, 3 unavailable/invalid data, and 4 missing asset or revision.
 
 ```powershell
-xips-cli --action list --library E:\Nutstore\xIPs
-xips-cli --action list --library E:\Nutstore\xIPs --query uart
+xips-cli --action list --library E:/Library --query uart
+xips-cli --action resolve --library E:/Library --asset <id>
+xips-cli --action resolve --library E:/Library --asset <id> --asset-version 1 --destination E:/Project/uart.sv
 ```
 
-解析工作副本或历史版本：
+For schema 2, resolve defaults to the highest retained revision and verifies its payload.
+Without --destination it returns metadata, revision ID, digest, and relative file names, with access=metadata-only.
+It never returns the private snapshot directory as an editable source path.
+With --destination it creates a verified new copy and returns the exported path(s).
+A one-file asset needs a final file path; a multi-file asset needs a new directory path.
+The CLI never modifies the library.
 
-```powershell
-xips-cli --action resolve --library E:\Nutstore\xIPs --asset uart_ip
-xips-cli --action resolve --library E:\Nutstore\xIPs --asset uart_ip --asset-version 1.0.0
-```
+Schema 1 preserves its prior behavior: resolution without --asset-version addresses the working copy.
+Saved legacy versions require explicit materialization before exposing paths.
+New integrations should use schema 2 and exact resolvedVersion/contentHash values.
 
-`XIPS_LIBRARY` 可替代 `--library`。所有结果均为单行 JSON：
+The GUI accepts --library, --open-asset, --search, and existing xips://asset and xips://search activation requests.
+XIPS_LIBRARY overrides a saved library when no --library or explicit native library path is given.
+A missing configured directory remains unavailable until changed or restored.
 
-```json
-{
-  "schemaVersion": 1,
-  "ok": true,
-  "action": "resolve",
-  "data": {}
-}
-```
+## Native surface v1
 
-`list` 返回 ID、名称、版本、说明、分组（JSON 字段仍为 `tags`）、相对文件列表、路径、文件数量和资产 URI。`resolve` 额外返回解析版本、目录、绝对文件列表和按需计算的内容哈希；只有一个载荷文件时还返回 `resolvedFile`，供 ZeroSlack 等调用方直接定位该文件。错误写入标准错误流并返回非零退出码。
+The public header is **include/xips/BrowserApi.h**.
+Load the two C exports with QLibrary:
 
-## URI 与桌面参数
+- xips_browser_abi_v1(): compares the Qt patch version, pointer size, and compiler ABI.
+- xips_create_browser_v1(QWidget *parent, QObject *host): creates a browser widget owned by the parent.
 
-```text
-xips://show
-xips://asset/<stable-id>
-xips://search?q=<query>
-```
+Use matching Ela builds as well; the Windows build is Qt 6.10.2 / MinGW 13.1 / 64-bit.
+The host must initialize its Ela theme before creating the panel.
+Keep the component loaded until all widgets and background operations are gone. ZeroSlack uses PreventUnloadHint.
 
-等价桌面参数：
+The returned QWidget exposes public Qt invokables:
 
-```text
-xips.exe --open-asset <stable-id>
-xips.exe --search <query>
-```
+| Method | Purpose |
+| --- | --- |
+| setContext(QString library, QString workspace) | Set explicit library and current project. Empty library uses environment or xIPs settings. |
+| collectPaths(QStringList) | Open the small collection form for selected sources. |
+| revealAsset(QString id) | Select a stable asset ID. |
+| refresh() | Reload external changes. |
+| saveState() -> QVariantMap | Preserve query, category, selected asset, and selected revision. |
+| restoreState(QVariantMap) | Restore panel state. |
 
-当前版本不注册 Windows URI handler，也不把请求转发到已有进程。后续实现全局唤起或 ZeroSlack 嵌入时，继续复用稳定 ID、`list`、`resolve` 和上述 URI，不向资产 manifest 增加集成专属字段。
+An optional host QObject implements:
+
+| Method | Contract |
+| --- | --- |
+| collectionSources() -> QStringList | Return saved files from the current editor, or an empty list on cancellation. |
+| destinationError(QString) -> QString | Empty permits the destination; otherwise show the reason and abort. |
+| exportCompleted(QVariantMap) -> QString | Record provenance after copying; empty means success, otherwise display the returned error and exported location. |
+
+Export receipts use schema **xips.use/v1**, with assetId, name, category, revision, contentHash, path, workspace, and relative files.
+A callback failure does not remove an already created project copy.
+
+## ZeroSlack host
+
+XipsContextProvider registers the xips context resource.
+It supplies workspace context, keeps document saving in TabManager, and validates workspace paths before export.
+The host stores receipts in **.zeroslack/xips-references.json**, schema **zeroslack.xips-references/v1**,
+with a workspace-relative path and the exact revision/digest. Writes are locked and atomic.
+Unreadable or invalid existing provenance is preserved and reported.
+
+Component lookup: XIPS_BROWSER_LIBRARY, application-local xips-browser.dll, adjacent xIPs package, then the location registered by standalone xIPs.
+The fallback panel supports launching the standalone application and retrying component discovery.
+No host code reads xIPs private revision directories.
+
+## AppSuite provider
+
+The optional SuiteApp SDK publishes the **xips** application descriptor using
+**suite-app/v1** and the shared per-user runtime. The standalone process owns
+the provider; loading the native panel does not create another provider or service.
+Runtime lookup follows the SDK's explicit override, environment, application,
+sibling **../Runtime**, and PATH search. Missing runtime is non-fatal.
+
+| Contract | Behavior |
+| --- | --- |
+| `xips://show` | Current library metadata. |
+| `xips://asset/<id>?revision=<n>` | Cached asset metadata and selected revision; omission selects the highest retained revision. |
+| `xips.library.open` | Show the application. |
+| `xips.asset.open` | Show the application and select the exact asset/revision. |
+| `xips.library` | Native ABI v1 surface, with external application fallback. |
+
+Resource metadata reports **contentVerified: false** alongside the recorded
+digest. It is not permission to edit or a substitute for verification during Use.
+Loading catalogs return **provider_busy**; missing assets and revisions return
+structured errors. No suite action writes the library or materializes files.
+
+The **AppSuite/Apps/xIPs/** component contains its own Qt/Ela dependencies,
+**xips.exe**, **xips-cli.exe**, **xips-browser.dll**, and
+**assets/icons/xips-256.png**. The Windows executable embeds **xips.ico**.

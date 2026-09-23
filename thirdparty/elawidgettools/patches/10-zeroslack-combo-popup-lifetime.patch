@@ -1,0 +1,49 @@
+diff --git a/ElaComboBox.cpp b/ElaComboBox.cpp
+index d41de27..f2a24a7 100644
+--- a/ElaComboBox.cpp
++++ b/ElaComboBox.cpp
+@@ -21,7 +21,8 @@ ElaComboBox::ElaComboBox(QWidget* parent)
+     d->_themeMode = eTheme->getThemeMode();
+     setObjectName("ElaComboBox");
+     setFixedHeight(35);
+-    d->_comboBoxStyle = new ElaComboBoxStyle(style());
++    d->_comboBoxStyle = new ElaComboBoxStyle(style());
++    d->_comboBoxStyle->setParent(qApp);
+     setStyle(d->_comboBoxStyle);
+ 
+     //调用view 让container初始化
+@@ -64,13 +65,10 @@ ElaComboBox::ElaComboBox(QWidget* parent)
+ ElaComboBox::~ElaComboBox()
+ {
+     Q_D(ElaComboBox);
+-    // The popup and view share this style. Release their references while it
+-    // is still alive, before QWidget closes/deletes the popup during teardown.
+-    if (lineEdit()) lineEdit()->setStyle(nullptr);
+-    view()->setStyle(nullptr);
+-    if (auto* container = findChild<QFrame*>()) container->setStyle(nullptr);
+-    setStyle(nullptr);
+-    delete d->_comboBoxStyle;
++    // Keep the shared style alive through QComboBox's popup/view destruction.
++    // Resetting popup styles here repolishes its native children mid-teardown.
++    // The application owns the fallback lifetime if its event loop has stopped.
++    d->_comboBoxStyle->deleteLater();
+ }
+ 
+ void ElaComboBox::setEditable(bool editable)
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index 6f5d77f..cfcc9c7 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -45,6 +45,12 @@ Apply `patches/09-zeroslack-radio-contracts.patch` after patch 08. Radio-button
+ styles are QObject-owned and detached before widget teardown. Disabled radio
+ labels and indicators use the disabled theme colors and ignore hover feedback.
+ 
++Apply `patches/10-zeroslack-combo-popup-lifetime.patch` after patch 09. A combo's
++shared style is application-owned and released with deleteLater after its popup,
++view and line edit have been destroyed. It is not reset during combo teardown:
++native popup repolishing from setStyle could invalidate children during Qt's
++style propagation. This supersedes patch 07's combo style-detachment sequence.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids

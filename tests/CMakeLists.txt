@@ -12,6 +12,26 @@ target_link_libraries(tst_core
 add_dependencies(tst_core xips-cli)
 add_test(NAME core COMMAND tst_core)
 
+add_executable(tst_snapshots tst_snapshots.cpp)
+target_link_libraries(tst_snapshots PRIVATE xips_core Qt6::Test)
+add_test(NAME snapshots COMMAND tst_snapshots)
+
+add_executable(tst_native tst_native.cpp)
+target_include_directories(tst_native PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(tst_native PRIVATE XIPS_BROWSER_PATH="$<TARGET_FILE:xips_browser>")
+target_link_libraries(tst_native PRIVATE xips_core Qt6::Test Qt6::Widgets Ela::WidgetTools)
+add_dependencies(tst_native xips_browser)
+add_test(NAME native COMMAND tst_native)
+
+add_executable(tst_cli tst_cli.cpp)
+target_compile_definitions(tst_cli
+    PRIVATE
+        XIPS_CLI_PATH="$<TARGET_FILE:xips-cli>"
+)
+target_link_libraries(tst_cli PRIVATE xips_core Qt6::Test)
+add_dependencies(tst_cli xips-cli)
+add_test(NAME cli COMMAND tst_cli)
+
 add_executable(tst_gui_smoke tst_gui_smoke.cpp)
 target_compile_definitions(tst_gui_smoke
     PRIVATE
@@ -32,10 +52,20 @@ endif()
 get_filename_component(_xips_qt_bin_dir "${_xips_qt_core_location}" DIRECTORY)
 get_filename_component(_xips_qt_prefix "${_xips_qt_bin_dir}/.." ABSOLUTE)
 get_filename_component(_xips_compiler_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-set_tests_properties(core gui_smoke user_journey PROPERTIES
+set(_xips_tests core snapshots cli gui_smoke user_journey native)
+set(_xips_gui_tests gui_smoke user_journey native)
+if(TARGET xips_suite)
+    add_executable(tst_suite tst_suite.cpp)
+    target_compile_definitions(tst_suite PRIVATE XIPS_RUNTIME_PATH="$<TARGET_FILE:SuiteApp::suite-runtime>")
+    target_link_libraries(tst_suite PRIVATE xips_suite Qt6::Test)
+    add_test(NAME suite COMMAND tst_suite)
+    list(APPEND _xips_tests suite)
+    list(APPEND _xips_gui_tests suite)
+endif()
+set_tests_properties(${_xips_tests} PROPERTIES
     ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${_xips_qt_bin_dir};PATH=path_list_prepend:${_xips_compiler_bin_dir};QT_PLUGIN_PATH=set:${_xips_qt_prefix}/plugins"
 )
-set_property(TEST gui_smoke user_journey APPEND PROPERTY
+set_property(TEST ${_xips_gui_tests} APPEND PROPERTY
     ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen"
 )

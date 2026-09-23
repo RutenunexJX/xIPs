@@ -1,0 +1,473 @@
+diff --git a/Development/ElaListViewStyle.cpp b/Development/ElaListViewStyle.cpp
+index cafb4d2..253a754 100644
+--- a/Development/ElaListViewStyle.cpp
++++ b/Development/ElaListViewStyle.cpp
+@@ -33,11 +33,13 @@ void ElaListViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOptio
+             painter->setRenderHint(QPainter::Antialiasing);
+             QRect itemRect = vopt->rect;
+             itemRect.adjust(0, 2, 0, -2);
+-            QPainterPath path;
+-            path.addRoundedRect(itemRect, 4, 4);
++            QPainterPath path;
++            path.addRoundedRect(itemRect, 4, 4);
++            if (_nativeItemContent && vopt->backgroundBrush.style() != Qt::NoBrush)
++                painter->fillPath(path, vopt->backgroundBrush);
+             if (vopt->state & QStyle::State_Selected)
+             {
+-                if (vopt->state & QStyle::State_MouseOver)
++                if (vopt->state & QStyle::State_MouseOver && vopt->state & QStyle::State_Enabled)
+                 {
+                     // 选中时覆盖
+                     painter->fillPath(path, ElaThemeColor(_themeMode, BasicSelectedHoverAlpha));
+@@ -50,7 +52,7 @@ void ElaListViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOptio
+             }
+             else
+             {
+-                if (vopt->state & QStyle::State_MouseOver)
++                if (vopt->state & QStyle::State_MouseOver && vopt->state & QStyle::State_Enabled)
+                 {
+                     // 覆盖时颜色
+                     painter->fillPath(path, ElaThemeColor(_themeMode, BasicHoverAlpha));
+@@ -111,9 +113,13 @@ void ElaListViewStyle::drawControl(ControlElement element, const QStyleOption* o
+     }
+     case QStyle::CE_ItemViewItem:
+     {
+-        if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
+-        {
+-            // 背景绘制
++        if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
++        {
++            if (_nativeItemContent) {
++                QProxyStyle::drawControl(element, option, painter, widget);
++                return;
++            }
++            // 背景绘制
+             this->drawPrimitive(QStyle::PE_PanelItemViewItem, option, painter, widget);
+ 
+             // 内容绘制
+@@ -175,7 +181,9 @@ QSize ElaListViewStyle::sizeFromContents(ContentsType type, const QStyleOption*
+     {
+     case QStyle::CT_ItemViewItem:
+     {
+-        QSize itemSize = QProxyStyle::sizeFromContents(type, option, size, widget);
++        QSize itemSize = QProxyStyle::sizeFromContents(type, option, size, widget);
++        if (_nativeItemContent)
++            return QSize(itemSize.width() + 16, qMax(_pItemHeight, itemSize.height() + 8));
+         const ElaListView* listView = dynamic_cast<const ElaListView*>(widget);
+         QListView::ViewMode viewMode = listView->viewMode();
+         if (viewMode == QListView::ListMode)
+@@ -190,5 +198,18 @@ QSize ElaListViewStyle::sizeFromContents(ContentsType type, const QStyleOption*
+         break;
+     }
+     }
+-    return QProxyStyle::sizeFromContents(type, option, size, widget);
+-}
++    return QProxyStyle::sizeFromContents(type, option, size, widget);
++}
++
++QRect ElaListViewStyle::subElementRect(SubElement element, const QStyleOption* option, const QWidget* widget) const
++{
++    if (_nativeItemContent && (element == SE_ItemViewItemText || element == SE_ItemViewItemDecoration
++                              || element == SE_ItemViewItemCheckIndicator)) {
++        if (const auto* item = qstyleoption_cast<const QStyleOptionViewItem*>(option)) {
++            QStyleOptionViewItem inset(*item);
++            inset.rect.adjust(8, 0, -8, 0);
++            return QProxyStyle::subElementRect(element, &inset, widget);
++        }
++    }
++    return QProxyStyle::subElementRect(element, option, widget);
++}
+diff --git a/Development/ElaListViewStyle.h b/Development/ElaListViewStyle.h
+index 5018a64..e306018 100644
+--- a/Development/ElaListViewStyle.h
++++ b/Development/ElaListViewStyle.h
+@@ -11,12 +11,15 @@ class ElaListViewStyle : public QProxyStyle
+     Q_PROPERTY_CREATE(bool, IsTransparent)
+ public:
+     explicit ElaListViewStyle(QStyle* style = nullptr);
+-    ~ElaListViewStyle();
++    ~ElaListViewStyle();
++    void setNativeItemContent(bool enabled) { _nativeItemContent = enabled; }
+     void drawPrimitive(PrimitiveElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+     void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+-    QSize sizeFromContents(ContentsType type, const QStyleOption* option, const QSize& size, const QWidget* widget) const override;
++    QSize sizeFromContents(ContentsType type, const QStyleOption* option, const QSize& size, const QWidget* widget) const override;
++    QRect subElementRect(SubElement element, const QStyleOption* option, const QWidget* widget) const override;
+ 
+-private:
++private:
++    bool _nativeItemContent{false};
+     ElaThemeType::ThemeMode _themeMode;
+     int _leftPadding{11};
+ };
+diff --git a/Development/ElaMenuStyle.cpp b/Development/ElaMenuStyle.cpp
+index 03bc1f9..dbdf5fc 100644
+--- a/Development/ElaMenuStyle.cpp
++++ b/Development/ElaMenuStyle.cpp
+@@ -58,8 +58,29 @@ void ElaMenuStyle::drawControl(ControlElement element, const QStyleOption* optio
+     case QStyle::CE_MenuItem:
+     {
+         //内容绘制 区分类型
+-        if (const QStyleOptionMenuItem* mopt = qstyleoption_cast<const QStyleOptionMenuItem*>(option))
+-        {
++        if (const QStyleOptionMenuItem* mopt = qstyleoption_cast<const QStyleOptionMenuItem*>(option))
++        {
++            if (_nativeItemContent && mopt->menuItemType != QStyleOptionMenuItem::Separator) {
++                painter->save();
++                painter->setRenderHint(QPainter::Antialiasing);
++                if (mopt->state.testFlag(State_Enabled) && mopt->state.testFlag(State_Selected)) {
++                    painter->setPen(Qt::NoPen);
++                    painter->setBrush(ElaThemeColor(_themeMode, PopupHover));
++                    painter->drawRoundedRect(mopt->rect.adjusted(0, 2, 0, -2), 5, 5);
++                }
++                QStyleOptionMenuItem content(*mopt);
++                content.state &= ~(State_Selected | State_MouseOver);
++                for (auto group : {QPalette::Active, QPalette::Inactive, QPalette::Disabled}) {
++                    const QColor ink = group == QPalette::Disabled
++                        ? ElaThemeColor(_themeMode, BasicTextDisable) : ElaThemeColor(_themeMode, BasicText);
++                    for (auto role : {QPalette::Text, QPalette::WindowText, QPalette::ButtonText})
++                        content.palette.setColor(group, role, ink);
++                }
++                // Qt retains mnemonics, shortcuts, checked/exclusive actions, QIcon and RTL layout.
++                QProxyStyle::drawControl(element, &content, painter, widget);
++                painter->restore();
++                return;
++            }
+             if (mopt->menuItemType == QStyleOptionMenuItem::Separator)
+             {
+                 QRect separatorRect = mopt->rect;
+@@ -179,8 +200,9 @@ int ElaMenuStyle::pixelMetric(PixelMetric metric, const QStyleOption* option, co
+ {
+     switch (metric)
+     {
+-    case QStyle::PM_SmallIconSize:
+-    {
++    case QStyle::PM_SmallIconSize:
++    {
++        if (_nativeItemContent) return 16;
+         //图标宽度
+         _iconWidth = _pMenuItemHeight * 0.7;
+         return _iconWidth;
+@@ -210,8 +232,13 @@ QSize ElaMenuStyle::sizeFromContents(ContentsType type, const QStyleOption* opti
+             {
+                 break;
+             }
+-            QSize menuItemSize = QProxyStyle::sizeFromContents(type, option, size, widget);
+-            const ElaMenu* menu = dynamic_cast<const ElaMenu*>(widget);
++            QSize menuItemSize = QProxyStyle::sizeFromContents(type, option, size, widget);
++            if (_nativeItemContent) {
++                menuItemSize.setHeight(qMax(menuItemSize.height(), qMax(_pMenuItemHeight, mopt->fontMetrics.height() + 12)));
++                return menuItemSize;
++            }
++            const ElaMenu* menu = dynamic_cast<const ElaMenu*>(widget);
++            if (!menu) return menuItemSize;
+             if (menu->isHasIcon() || mopt->menuHasCheckableItems)
+             {
+                 _isAnyoneItemHasIcon = true;
+diff --git a/Development/ElaMenuStyle.h b/Development/ElaMenuStyle.h
+index 144e8e1..0355a36 100644
+--- a/Development/ElaMenuStyle.h
++++ b/Development/ElaMenuStyle.h
+@@ -12,13 +12,15 @@ class ElaMenuStyle : public QProxyStyle
+ 
+ public:
+     explicit ElaMenuStyle(QStyle* style = nullptr);
+-    ~ElaMenuStyle();
++    ~ElaMenuStyle();
++    void setNativeItemContent(bool enabled) { _nativeItemContent = enabled; }
+     void drawPrimitive(PrimitiveElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+     void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+     int pixelMetric(PixelMetric metric, const QStyleOption* option = nullptr, const QWidget* widget = nullptr) const override;
+     QSize sizeFromContents(ContentsType type, const QStyleOption* option, const QSize& size, const QWidget* widget) const override;
+ 
+-private:
++private:
++    bool _nativeItemContent{false};
+     mutable bool _isAnyoneItemHasIcon{false};
+     int _shadowBorderWidth{6};
+     ElaThemeType::ThemeMode _themeMode;
+diff --git a/Development/ElaTableViewStyle.cpp b/Development/ElaTableViewStyle.cpp
+index 9f17fda..782a609 100644
+--- a/Development/ElaTableViewStyle.cpp
++++ b/Development/ElaTableViewStyle.cpp
+@@ -28,8 +28,19 @@ void ElaTableViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOpti
+     case QStyle::PE_PanelItemViewItem:
+     {
+         // 行覆盖绘制
+-        if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
+-        {
++        if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
++        {
++            if (_nativeItemContent) {
++                painter->save();
++                if (vopt->backgroundBrush.style() != Qt::NoBrush)
++                    painter->fillRect(vopt->rect, vopt->backgroundBrush);
++                if (vopt->state.testFlag(State_Selected))
++                    painter->fillRect(vopt->rect, ElaThemeColor(_themeMode, BasicSelectedAlpha));
++                else if (vopt->state.testFlag(State_Enabled) && vopt->state.testFlag(State_MouseOver))
++                    painter->fillRect(vopt->rect, ElaThemeColor(_themeMode, BasicHoverAlpha));
++                painter->restore();
++                return;
++            }
+             const ElaTableView* tabView = dynamic_cast<const ElaTableView*>(widget);
+             if (!tabView)
+             {
+@@ -100,8 +111,12 @@ void ElaTableViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOpti
+     QProxyStyle::drawPrimitive(element, option, painter, widget);
+ }
+ 
+-void ElaTableViewStyle::drawControl(ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget) const
+-{
++void ElaTableViewStyle::drawControl(ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget) const
++{
++    if (_nativeItemContent && (element == CE_ItemViewItem || element == CE_HeaderLabel)) {
++        QProxyStyle::drawControl(element, option, painter, widget);
++        return;
++    }
+     //qDebug() << element << option->rect;
+     switch (element)
+     {
+diff --git a/Development/ElaTableViewStyle.h b/Development/ElaTableViewStyle.h
+index d9ddf22..89e81c1 100644
+--- a/Development/ElaTableViewStyle.h
++++ b/Development/ElaTableViewStyle.h
+@@ -12,12 +12,14 @@ class ElaTableViewStyle : public QProxyStyle
+     Q_PROPERTY_CREATE(int, CurrentHoverRow)
+ public:
+     explicit ElaTableViewStyle(QStyle* style = nullptr);
+-    ~ElaTableViewStyle();
++    ~ElaTableViewStyle();
++    void setNativeItemContent(bool enabled) { _nativeItemContent = enabled; }
+     void drawPrimitive(PrimitiveElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+     void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+     int pixelMetric(PixelMetric metric, const QStyleOption* option = nullptr, const QWidget* widget = nullptr) const override;
+ 
+-private:
++private:
++    bool _nativeItemContent{false};
+     ElaThemeType::ThemeMode _themeMode;
+     int _horizontalPadding{11};
+ };
+diff --git a/ElaListView.cpp b/ElaListView.cpp
+index bc6430c..86a7240 100644
+--- a/ElaListView.cpp
++++ b/ElaListView.cpp
+@@ -23,11 +23,21 @@ ElaListView::ElaListView(QWidget* parent)
+     setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+ }
+ 
+-ElaListView::~ElaListView()
++ElaListView::~ElaListView()
+ {
+     Q_D(ElaListView);
+     delete d->_listViewStyle;
+-}
++}
++
++QStyle* ElaListView::createStyle(QObject* owner, int itemHeight)
++{
++    auto* viewStyle = new ElaListViewStyle();
++    viewStyle->setParent(owner);
++    viewStyle->setItemHeight(itemHeight);
++    viewStyle->setIsTransparent(true);
++    viewStyle->setNativeItemContent(true);
++    return viewStyle;
++}
+ 
+ void ElaListView::setItemHeight(int itemHeight)
+ {
+diff --git a/ElaListView.h b/ElaListView.h
+index c0ad95a..1067244 100644
+--- a/ElaListView.h
++++ b/ElaListView.h
+@@ -15,7 +15,8 @@ class ELA_EXPORT ElaListView : public QListView
+     Q_PROPERTY_CREATE_Q_H(bool, IsTransparent)
+ public:
+     explicit ElaListView(QWidget* parent = nullptr);
+-    ~ElaListView();
++    ~ElaListView();
++    static QStyle* createStyle(QObject* owner, int itemHeight = 28);
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELALISTVIEW_H_
+diff --git a/ElaMenu.cpp b/ElaMenu.cpp
+index 13477c3..d0a0905 100644
+--- a/ElaMenu.cpp
++++ b/ElaMenu.cpp
+@@ -18,7 +18,9 @@ ElaMenu::ElaMenu(QWidget* parent)
+     setWindowFlags(Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
+     setAttribute(Qt::WA_TranslucentBackground);
+     setObjectName("ElaMenu");
+-    d->_menuStyle = new ElaMenuStyle(style());
++    d->_menuStyle = new ElaMenuStyle(style());
++    d->_menuStyle->setParent(qApp);
++    connect(this, &QObject::destroyed, d->_menuStyle, &QObject::deleteLater);
+     setStyle(d->_menuStyle);
+     d->_pAnimationImagePosY = 0;
+ }
+@@ -29,11 +31,16 @@ ElaMenu::ElaMenu(const QString& title, QWidget* parent)
+     setTitle(title);
+ }
+ 
+-ElaMenu::~ElaMenu()
+-{
+-    Q_D(ElaMenu);
+-    delete d->_menuStyle;
+-}
++ElaMenu::~ElaMenu()
++{
++}
++
++void ElaMenu::setNativeMenuBehavior(bool enabled)
++{
++    Q_D(ElaMenu);
++    _nativeMenuBehavior = enabled;
++    d->_menuStyle->setNativeItemContent(enabled);
++}
+ 
+ void ElaMenu::setMenuItemHeight(int menuItemHeight)
+ {
+@@ -131,9 +138,13 @@ bool ElaMenu::isHasIcon() const
+     return false;
+ }
+ 
+-void ElaMenu::showEvent(QShowEvent* event)
+-{
+-    Q_EMIT menuShow();
++void ElaMenu::showEvent(QShowEvent* event)
++{
++    Q_EMIT menuShow();
++    if (_nativeMenuBehavior) {
++        QMenu::showEvent(event);
++        return;
++    }
+     Q_D(ElaMenu);
+     //消除阴影偏移
+     move(this->pos().x() - 6, this->pos().y());
+@@ -180,8 +191,12 @@ void ElaMenu::showEvent(QShowEvent* event)
+     QMenu::showEvent(event);
+ }
+ 
+-void ElaMenu::paintEvent(QPaintEvent* event)
+-{
++void ElaMenu::paintEvent(QPaintEvent* event)
++{
++    if (_nativeMenuBehavior) {
++        QMenu::paintEvent(event);
++        return;
++    }
+     Q_D(ElaMenu);
+     QPainter painter(this);
+     painter.setRenderHints(QPainter::Antialiasing);
+diff --git a/ElaMenu.h b/ElaMenu.h
+index cc729e8..9a79530 100644
+--- a/ElaMenu.h
++++ b/ElaMenu.h
+@@ -18,7 +18,8 @@ public:
+     explicit ElaMenu(const QString& title, QWidget* parent = nullptr);
+     ~ElaMenu();
+     void setMenuItemHeight(int menuItemHeight);
+-    int getMenuItemHeight() const;
++    int getMenuItemHeight() const;
++    void setNativeMenuBehavior(bool enabled);
+ 
+     QAction* addMenu(QMenu* menu);
+     ElaMenu* addMenu(const QString& title);
+@@ -35,7 +36,9 @@ Q_SIGNALS:
+ 
+ protected:
+     virtual void showEvent(QShowEvent* event) override;
+-    virtual void paintEvent(QPaintEvent* event) override;
++    virtual void paintEvent(QPaintEvent* event) override;
++private:
++    bool _nativeMenuBehavior{false};
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELAMENU_H_
+diff --git a/ElaTableView.cpp b/ElaTableView.cpp
+index 0a6ecd2..47cf57b 100644
+--- a/ElaTableView.cpp
++++ b/ElaTableView.cpp
+@@ -1,6 +1,7 @@
+ #include "ElaTableView.h"
+ 
+-#include <QHeaderView>
++#include <QHeaderView>
++#include <QApplication>
+ #include <QMouseEvent>
+ 
+ #include "ElaTableViewStyle.h"
+@@ -23,15 +24,30 @@ ElaTableView::ElaTableView(QWidget* parent)
+     this->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+     setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+     setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+-    d->_tableViewStyle = new ElaTableViewStyle(style());
++    d->_tableViewStyle = new ElaTableViewStyle(style());
++    d->_tableViewStyle->setParent(qApp);
++    connect(this, &QObject::destroyed, d->_tableViewStyle, &QObject::deleteLater);
+     setStyle(d->_tableViewStyle);
+ }
+ 
+-ElaTableView::~ElaTableView()
+-{
+-    Q_D(ElaTableView);
+-    delete d->_tableViewStyle;
+-}
++ElaTableView::~ElaTableView()
++{
++}
++
++QStyle* ElaTableView::createStyle(QObject* owner)
++{
++    auto* viewStyle = new ElaTableViewStyle();
++    viewStyle->setParent(owner);
++    viewStyle->setNativeItemContent(true);
++    return viewStyle;
++}
++
++void ElaTableView::setNativeItemContent(bool enabled)
++{
++    Q_D(ElaTableView);
++    d->_tableViewStyle->setNativeItemContent(enabled);
++    viewport()->update();
++}
+ 
+ void ElaTableView::setHeaderMargin(int headerMargin)
+ {
+diff --git a/ElaTableView.h b/ElaTableView.h
+index 4bfe289..6361d5c 100644
+--- a/ElaTableView.h
++++ b/ElaTableView.h
+@@ -14,7 +14,9 @@ class ELA_EXPORT ElaTableView : public QTableView
+     Q_PROPERTY_CREATE_Q_H(int, HeaderMargin)
+ public:
+     explicit ElaTableView(QWidget* parent = nullptr);
+-    ~ElaTableView();
++    ~ElaTableView();
++    static QStyle* createStyle(QObject* owner);
++    void setNativeItemContent(bool enabled);
+ 
+ Q_SIGNALS:
+     Q_SIGNAL void tableViewShow();
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index cfcc9c7..deae863 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -51,6 +51,17 @@ view and line edit have been destroyed. It is not reset during combo teardown:
+ native popup repolishing from setStyle could invalidate children during Qt's
+ style propagation. This supersedes patch 07's combo style-detachment sequence.
+ 
++Apply `patches/11-zeroslack-menu-item-view-contracts.patch` after patch 10. ElaMenu
++adds an immediate Qt popup mode, retaining QAction ownership, mnemonics, checked
++and exclusive actions, disabled state, icons, shortcuts and submenu navigation.
++Qt measures item content and Ela paints the rounded popup and hover background.
++ElaListView and ElaTableView expose style factories for existing QListWidget and
++QTableWidget models. Native item-content mode preserves model fonts/brushes,
++check indicators, wrapping, editing delegates, header labels and sort indicators.
++List padding is shared by painting and check-box hit testing. Menu/table and
++adapter-created list styles are application-owned and released with deleteLater
++after their widgets are destroyed, including visible popup teardown.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids

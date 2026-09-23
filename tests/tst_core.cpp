@@ -1,6 +1,7 @@
 #include "integration/IntegrationService.h"
 #include "library/AssetLibraryService.h"
 #include "library/AssetScanner.h"
+#include "library/FileSystemUtil.h"
 #include "manifest/ManifestService.h"
 
 #include <QDir>
@@ -86,10 +87,17 @@ class CoreTest final : public QObject {
 
 private slots:
     void manifestWritesMinimalSchemaAndPreservesUnknownFields();
+    void importRejectsUnavailableLibraryRoot();
     void importFolderCreatesPortableAsset();
     void importSingleFileCreatesAsset();
+    void externalSourceCopyIsBoundToOneVerifiedMoment();
+    void copyPayloadRejectsLinkedStagingBeforeWrite();
     void batchImportRecoversCollisionsAndAssignsGroups();
+    void batchImportAvoidsAmbiguousManifestIds();
     void scannerListsPayloadAndHashesOnDemand();
+    void linkedLibraryRootIsRejected();
+    void staleAssetRecordRejectsLinkedAncestor();
+    void scannerRejectsCaseOnlyDuplicateIds();
     void metadataKeepsStableId();
     void metadataMergesConcurrentManifestChangesAndRejectsConflicts();
     void metadataNoOpRechecksLiveManifest();
@@ -116,6 +124,12 @@ private slots:
     void corruptSavedVersionIsRejectedEverywhere_data();
     void corruptSavedVersionIsRejectedEverywhere();
     void versionInventoryKeepsValidVersionsWhenOneIsCorrupt();
+    void metadataChangesDoNotCreateCodeVersions();
+    void corruptVersionDoesNotBlockHealthyVersionWorkflows();
+    void payloadTransactionsRestoreVisibleDataAfterIsolationCrash();
+    void payloadRecoveryIgnoresForgedControlDataInsideAssets();
+    void payloadRecoveryDoesNotFollowLinkedInternalDirectory();
+    void payloadRecoveryRetainsRecordWithConcurrentEvidence();
     void versionInventorySkipsLinkedVersionDirectories();
     void createVersionRejectsConcurrentWorkingCopyMutation_data();
     void createVersionRejectsConcurrentWorkingCopyMutation();
@@ -165,6 +179,31 @@ void CoreTest::manifestWritesMinimalSchemaAndPreservesUnknownFields()
              QStringLiteral("Renamed legacy IP"));
 }
 
+void CoreTest::importRejectsUnavailableLibraryRoot()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("offline.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module offline; endmodule\n")));
+    const QString missingLibrary = temporary.filePath(
+        QStringLiteral("Jianguoyun/offline-xIPs"));
+    AssetLibraryService service;
+    AssetRecord ignored;
+    QString error;
+    QVERIFY(!service.importAsset(
+        {.libraryRoot = missingLibrary,
+         .sourcePath = source,
+         .metadata = {.id = QStringLiteral("offline"),
+                      .name = QStringLiteral("Offline"),
+                      .description = {},
+                      .tags = {}}},
+        &ignored,
+        &error));
+    QVERIFY(error.contains(QStringLiteral("must already exist")));
+    QVERIFY(!QFileInfo::exists(missingLibrary));
+}
+
 void CoreTest::importFolderCreatesPortableAsset()
 {
     QTemporaryDir temporary;
@@ -172,6 +211,7 @@ void CoreTest::importFolderCreatesPortableAsset()
     const QString source = createSourceIp(temporary.path());
     QVERIFY(!source.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord created;
     QString error;
@@ -215,6 +255,7 @@ void CoreTest::importSingleFileCreatesAsset()
     QVERIFY(writeFile(source, contents));
 
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetMetadata metadata = service.suggestedMetadata(source);
     QCOMPARE(metadata.name, QStringLiteral("uart_rx.sv"));
@@ -269,6 +310,165 @@ void CoreTest::importSingleFileCreatesAsset()
     QCOMPARE(resolved.value(QStringLiteral("resolvedFiles")).toArray().size(), 1);
 }
 
+void CoreTest::externalSourceCopyIsBoundToOneVerifiedMoment()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("source.sv"));
+    const QByteArray original = QByteArrayLiteral("module source; endmodule\n");
+    const QByteArray changed = QByteArrayLiteral(
+        "module source; localparam CHANGED = 1; endmodule\n");
+    QVERIFY(writeFile(source, original));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+
+    AssetLibraryService service;
+    int hookCount = 0;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::ImportSourceCopiedBeforeVerification,
+        [&](const WorkingCopyTestPoint point, const QString &) {
+            if (point
+                == WorkingCopyTestPoint::ImportSourceCopiedBeforeVerification) {
+                ++hookCount;
+                QVERIFY(writeFile(source, changed));
+            }
+        });
+    AssetRecord rejected;
+    QString error;
+    QVERIFY(!service.importAsset(
+        {.libraryRoot = library,
+         .sourcePath = source,
+         .metadata = {.id = QStringLiteral("source"),
+                      .name = QStringLiteral("Source"),
+                      .description = {},
+                      .tags = {}}},
+        &rejected,
+        &error));
+    QCOMPARE(hookCount, 1);
+    QVERIFY(error.contains(QStringLiteral("changed while it was copied")));
+    QVERIFY(!QFileInfo::exists(QDir(library).absoluteFilePath(
+        QStringLiteral("source"))));
+
+    QVERIFY(writeFile(source, original));
+    AssetRecord asset;
+    error.clear();
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("source"),
+                               .name = QStringLiteral("Source"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    const QString updateSource = temporary.filePath(
+        QStringLiteral("update.sv"));
+    const QByteArray replacement = QByteArrayLiteral(
+        "module source; localparam REV = 2; endmodule\n");
+    QVERIFY(writeFile(updateSource, replacement));
+    hookCount = 0;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::UpdateSourceCopiedBeforeVerification,
+        [&](const WorkingCopyTestPoint point, const QString &) {
+            if (point
+                == WorkingCopyTestPoint::UpdateSourceCopiedBeforeVerification) {
+                ++hookCount;
+                QVERIFY(writeFile(updateSource, changed));
+            }
+        });
+    UpdateAssetResult update;
+    error.clear();
+    QVERIFY(!service.updateAsset(asset,
+                                 updateSource,
+                                 WorkingCopyRecoveryMode::Permanent,
+                                 &update,
+                                 &error));
+    QCOMPARE(hookCount, 1);
+    QVERIFY(error.contains(QStringLiteral("changed while it was copied")));
+    QCOMPARE(readFile(QDir(asset.assetRoot).absoluteFilePath(
+                          QStringLiteral("source.sv"))),
+             original);
+}
+
+void CoreTest::copyPayloadRejectsLinkedStagingBeforeWrite()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("source.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module source; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("copy_source"),
+                               .name = QStringLiteral("Copy source"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+
+    const QString destinationParent = temporary.filePath(
+        QStringLiteral("copy-destination"));
+    const QString outside = temporary.filePath(QStringLiteral("outside"));
+    QVERIFY(QDir().mkpath(destinationParent));
+    QVERIFY(QDir().mkpath(outside));
+    const QString sentinel = QDir(outside).absoluteFilePath(
+        QStringLiteral("sentinel.bin"));
+    const QByteArray sentinelBytes = QByteArrayLiteral("outside-unchanged");
+    QVERIFY(writeFile(sentinel, sentinelBytes));
+
+    QString linkedStaging;
+    bool linkCreated = false;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::CopyStagingCreatedBeforePayloadCopy,
+        [&](const WorkingCopyTestPoint, const QString &stagingRoot) {
+            linkedStaging = stagingRoot;
+            if (!QDir().rmdir(stagingRoot)) {
+                return;
+            }
+#ifdef Q_OS_WIN
+            QProcess junction;
+            junction.start(QStringLiteral("cmd.exe"),
+                           {QStringLiteral("/d"),
+                            QStringLiteral("/c"),
+                            QStringLiteral("mklink"),
+                            QStringLiteral("/J"),
+                            QDir::toNativeSeparators(stagingRoot),
+                            QDir::toNativeSeparators(outside)});
+            linkCreated = junction.waitForFinished(10000)
+                          && junction.exitStatus() == QProcess::NormalExit
+                          && junction.exitCode() == 0;
+#else
+            linkCreated = QFile::link(outside, stagingRoot);
+#endif
+        });
+
+    const QString requestedTarget = QDir(destinationParent).absoluteFilePath(
+        QStringLiteral("copied.sv"));
+    QVERIFY(!service.copyVersionPayload(asset,
+                                        QString(),
+                                        requestedTarget,
+                                        nullptr,
+                                        &error));
+    QVERIFY(linkCreated);
+    QVERIFY(!QFileInfo::exists(requestedTarget));
+    QCOMPARE(readFile(sentinel), sentinelBytes);
+    QVERIFY(!QFileInfo::exists(QDir(outside).absoluteFilePath(
+        QStringLiteral("source.sv"))));
+#ifdef Q_OS_WIN
+    QVERIFY(QDir().rmdir(linkedStaging));
+#else
+    QVERIFY(QFile::remove(linkedStaging));
+#endif
+}
+
 void CoreTest::batchImportRecoversCollisionsAndAssignsGroups()
 {
     QTemporaryDir temporary;
@@ -278,6 +478,7 @@ void CoreTest::batchImportRecoversCollisionsAndAssignsGroups()
     QVERIFY(writeFile(first, QByteArrayLiteral("module uart_one; endmodule\n")));
     QVERIFY(writeFile(second, QByteArrayLiteral("module uart_two; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     Manifest existing;
     existing.id = QStringLiteral("uart_sv");
     existing.name = QStringLiteral("Existing UART");
@@ -305,6 +506,66 @@ void CoreTest::batchImportRecoversCollisionsAndAssignsGroups()
     QCOMPARE(result.created.at(0).manifest.tags,
              QStringList{QStringLiteral("UART")});
     QVERIFY(result.errors.first().contains(QStringLiteral("missing.sv")));
+}
+
+void CoreTest::batchImportAvoidsAmbiguousManifestIds()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+    const QString firstRoot = QDir(library).absoluteFilePath(
+        QStringLiteral("nested/first"));
+    const QString secondRoot = QDir(library).absoluteFilePath(
+        QStringLiteral("nested/second"));
+    QVERIFY(writeFile(QDir(firstRoot).absoluteFilePath(
+                          QStringLiteral("first.sv")),
+                      QByteArrayLiteral("module first; endmodule\n")));
+    QVERIFY(writeFile(QDir(secondRoot).absoluteFilePath(
+                          QStringLiteral("second.sv")),
+                      QByteArrayLiteral("module second; endmodule\n")));
+
+    QString error;
+    Manifest first;
+    first.id = QStringLiteral("uart_sv");
+    first.name = QStringLiteral("First UART");
+    QVERIFY2(ManifestService().write(
+                 QDir(firstRoot).absoluteFilePath(
+                     QStringLiteral(".xips.json")),
+                 first,
+                 &error),
+             qPrintable(error));
+    Manifest second;
+    second.id = QStringLiteral("UART_SV");
+    second.name = QStringLiteral("Second UART");
+    QVERIFY2(ManifestService().write(
+                 QDir(secondRoot).absoluteFilePath(
+                     QStringLiteral(".xips.json")),
+                 second,
+                 &error),
+             qPrintable(error));
+
+    const ScanResult ambiguous = AssetScanner().scan(library);
+    QVERIFY(ambiguous.assets.isEmpty());
+    QCOMPARE(ambiguous.discoveredAssetIds.size(), 2);
+
+    const QString source = temporary.filePath(
+        QStringLiteral("incoming/uart.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module imported_uart; endmodule\n")));
+    const ImportBatchResult imported = AssetLibraryService().importAssets(
+        library, {source});
+    QCOMPARE(imported.errors.size(), 0);
+    QCOMPARE(imported.created.size(), 1);
+    QCOMPARE(imported.created.first().manifest.id,
+             QStringLiteral("uart_sv_2"));
+
+    const ScanResult refreshed = AssetScanner().scan(library);
+    QCOMPARE(refreshed.assets.size(), 1);
+    QCOMPARE(refreshed.assets.first().manifest.id,
+             QStringLiteral("uart_sv_2"));
+    QCOMPARE(refreshed.discoveredAssetIds.size(), 3);
+    QCOMPARE(refreshed.errors.size(), 2);
 }
 
 void CoreTest::scannerListsPayloadAndHashesOnDemand()
@@ -337,12 +598,291 @@ void CoreTest::scannerListsPayloadAndHashesOnDemand()
     QVERIFY(after.assets.first().files.contains(QStringLiteral("data/table.mem")));
 }
 
+void CoreTest::linkedLibraryRootIsRejected()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("source.sv"));
+    const QByteArray sourceBytes = QByteArrayLiteral(
+        "module source; endmodule\n");
+    QVERIFY(writeFile(source, sourceBytes));
+    const QString realLibrary = temporary.filePath(
+        QStringLiteral("real-library"));
+    QVERIFY(QDir().mkpath(realLibrary));
+    AssetLibraryService service;
+    AssetRecord realAsset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = realLibrary,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("linked_root_asset"),
+                               .name = QStringLiteral("Linked root asset"),
+                               .description = {},
+                               .tags = {}}},
+                 &realAsset,
+                 &error),
+             qPrintable(error));
+    const QString linkedLibrary = temporary.filePath(
+        QStringLiteral("linked-library"));
+#ifdef Q_OS_WIN
+    QProcess junction;
+    junction.start(QStringLiteral("cmd.exe"),
+                   {QStringLiteral("/d"),
+                    QStringLiteral("/c"),
+                    QStringLiteral("mklink"),
+                    QStringLiteral("/J"),
+                    QDir::toNativeSeparators(linkedLibrary),
+                    QDir::toNativeSeparators(realLibrary)});
+    QVERIFY(junction.waitForFinished(10000));
+    QCOMPARE(junction.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(junction.exitCode(), 0);
+#else
+    QVERIFY(QFile::link(realLibrary, linkedLibrary));
+#endif
+
+    const ScanResult scan = AssetScanner().scan(linkedLibrary);
+    QVERIFY(scan.assets.isEmpty());
+    QVERIFY(!scan.errors.isEmpty());
+
+    AssetRecord linkedAsset = realAsset;
+    linkedAsset.assetRoot = QDir(linkedLibrary).absoluteFilePath(
+        realAsset.manifest.id);
+    linkedAsset.manifestPath = QDir(linkedAsset.assetRoot).absoluteFilePath(
+        QStringLiteral(".xips.json"));
+    AssetDeletionProof proof = service.assetDeletionProof(realAsset);
+    QVERIFY(proof.ok());
+    proof.assetRoot = linkedAsset.assetRoot;
+    error.clear();
+    QVERIFY(!service.deleteAsset(linkedLibrary,
+                                 linkedAsset,
+                                 proof,
+                                 RemovalMode::Permanent,
+                                 nullptr,
+                                 &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(QFileInfo(realAsset.assetRoot).isDir());
+    QCOMPARE(readFile(QDir(realAsset.assetRoot).absoluteFilePath(
+                          QStringLiteral("source.sv"))),
+             sourceBytes);
+#ifdef Q_OS_WIN
+    QVERIFY(QDir().rmdir(linkedLibrary));
+#else
+    QVERIFY(QFile::remove(linkedLibrary));
+#endif
+}
+
+void CoreTest::staleAssetRecordRejectsLinkedAncestor()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    const QString linkedParent = QDir(library).absoluteFilePath(
+        QStringLiteral("nested/container"));
+    QVERIFY(QDir().mkpath(linkedParent));
+    const QString source = temporary.filePath(
+        QStringLiteral("incoming/stale.sv"));
+    const QByteArray firstRevision = QByteArrayLiteral(
+        "module stale; localparam REV = 1; endmodule\n");
+    const QByteArray secondRevision = QByteArrayLiteral(
+        "module stale; localparam REV = 2; endmodule\n");
+    const QByteArray thirdRevision = QByteArrayLiteral(
+        "module stale; localparam REV = 3; endmodule\n");
+    QVERIFY(writeFile(source, firstRevision));
+
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = linkedParent,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("stale_asset"),
+                               .name = QStringLiteral("Stale asset"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    VersionInfo first;
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   &first,
+                                   &error),
+             qPrintable(error));
+    const QString workingFile = QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("stale.sv"));
+    QVERIFY(writeFile(workingFile, secondRevision));
+    VersionInfo second;
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("2.0.0"),
+                                   &second,
+                                   &error),
+             qPrintable(error));
+    QVERIFY(writeFile(QDir(second.path).absoluteFilePath(
+                          QStringLiteral("stale.sv")),
+                      QByteArrayLiteral("corrupt saved version\n")));
+    const VersionInventoryResult inventory = service.versionInventory(
+        asset.assetRoot);
+    QCOMPARE(inventory.invalidVersions.size(), 1);
+    const auto invalidVersion = inventory.invalidVersions.first();
+    QCOMPARE(invalidVersion.version, QStringLiteral("2.0.0"));
+    QVERIFY(writeFile(workingFile, thirdRevision));
+
+    const QString relocatedParent = temporary.filePath(
+        QStringLiteral("relocated-container"));
+    QVERIFY(QDir().rename(linkedParent, relocatedParent));
+    bool linkCreated = false;
+#ifdef Q_OS_WIN
+    QProcess junction;
+    junction.start(QStringLiteral("cmd.exe"),
+                   {QStringLiteral("/d"),
+                    QStringLiteral("/c"),
+                    QStringLiteral("mklink"),
+                    QStringLiteral("/J"),
+                    QDir::toNativeSeparators(linkedParent),
+                    QDir::toNativeSeparators(relocatedParent)});
+    linkCreated = junction.waitForFinished(10000)
+                  && junction.exitStatus() == QProcess::NormalExit
+                  && junction.exitCode() == 0;
+#else
+    linkCreated = QFile::link(relocatedParent, linkedParent);
+#endif
+    QVERIFY(linkCreated);
+    QVERIFY(!files::isLinkLike(QFileInfo(asset.assetRoot)));
+    QVERIFY(files::isLinkLike(QFileInfo(linkedParent)));
+
+    const QString replacement = temporary.filePath(
+        QStringLiteral("incoming/replacement.sv"));
+    QVERIFY(writeFile(replacement,
+                      QByteArrayLiteral(
+                          "module stale; localparam REV = 4; endmodule\n")));
+    UpdateAssetResult updated;
+    error.clear();
+    QVERIFY(!service.updateAsset(asset,
+                                 replacement,
+                                 WorkingCopyRecoveryMode::Permanent,
+                                 &updated,
+                                 &error));
+    QVERIFY(!error.isEmpty());
+
+    UpdateAssetResult restored;
+    error.clear();
+    QVERIFY(!service.restoreVersion(asset,
+                                    QStringLiteral("1.0.0"),
+                                    WorkingCopyRecoveryMode::Permanent,
+                                    &restored,
+                                    &error));
+    QVERIFY(!error.isEmpty());
+
+    DeleteVersionResult deleted;
+    error.clear();
+    QVERIFY(!service.deleteVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   RemovalMode::Permanent,
+                                   &deleted,
+                                   &error));
+    QVERIFY(!error.isEmpty());
+
+    CorruptVersionIsolationResult isolated;
+    error.clear();
+    QVERIFY(!service.isolateCorruptVersion(asset,
+                                           invalidVersion.version,
+                                           invalidVersion.fingerprint,
+                                           &isolated,
+                                           &error));
+    QVERIFY(!error.isEmpty());
+
+    QVERIFY(!service.copyPlan(asset, QString()).ok());
+    QVERIFY(!service.copyPlan(asset, QStringLiteral("1.0.0")).ok());
+    QCOMPARE(readFile(QDir(relocatedParent).absoluteFilePath(
+                          QStringLiteral("stale_asset/stale.sv"))),
+             thirdRevision);
+    QVERIFY(QFileInfo(QDir(relocatedParent).absoluteFilePath(
+                         QStringLiteral(
+                             "stale_asset/.xips/versions/1.0.0")))
+                .isDir());
+    const QString relocatedVersions = QDir(relocatedParent).absoluteFilePath(
+        QStringLiteral("stale_asset/.xips/versions"));
+    QVERIFY(QFileInfo(QDir(relocatedVersions).absoluteFilePath(
+                         QStringLiteral("2.0.0")))
+                .isDir());
+    QVERIFY(QDir(relocatedVersions)
+                .entryList({QStringLiteral(".staging-*")},
+                           QDir::Dirs | QDir::Hidden
+                               | QDir::NoDotAndDotDot)
+                .isEmpty());
+    QVERIFY(QDir(relocatedParent)
+                .entryList({QStringLiteral(".xips-create-*")},
+                           QDir::Dirs | QDir::Hidden
+                               | QDir::NoDotAndDotDot)
+                .isEmpty());
+
+#ifdef Q_OS_WIN
+    QVERIFY(QDir().rmdir(linkedParent));
+#else
+    QVERIFY(QFile::remove(linkedParent));
+#endif
+}
+
+void CoreTest::scannerRejectsCaseOnlyDuplicateIds()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+    const QString firstRoot = QDir(library).absoluteFilePath(
+        QStringLiteral("first"));
+    const QString secondRoot = QDir(library).absoluteFilePath(
+        QStringLiteral("second"));
+    QVERIFY(writeFile(QDir(firstRoot).absoluteFilePath(QStringLiteral("a.sv")),
+                      QByteArrayLiteral("module a; endmodule\n")));
+    QVERIFY(writeFile(QDir(secondRoot).absoluteFilePath(QStringLiteral("b.sv")),
+                      QByteArrayLiteral("module b; endmodule\n")));
+
+    QString error;
+    Manifest first;
+    first.id = QStringLiteral("Shared_ID");
+    first.name = QStringLiteral("First");
+    QVERIFY2(ManifestService().write(
+                 QDir(firstRoot).absoluteFilePath(QStringLiteral(".xips.json")),
+                 first,
+                 &error),
+             qPrintable(error));
+    Manifest second;
+    second.id = QStringLiteral("shared_id");
+    second.name = QStringLiteral("Second");
+    QVERIFY2(ManifestService().write(
+                 QDir(secondRoot).absoluteFilePath(QStringLiteral(".xips.json")),
+                 second,
+                 &error),
+             qPrintable(error));
+
+    const ScanResult scan = AssetScanner().scan(library);
+    QCOMPARE(scan.assets.size(), 0);
+    QCOMPARE(scan.errors.size(), 2);
+    const QString firstManifest = QFileInfo(
+        QDir(firstRoot).absoluteFilePath(QStringLiteral(".xips.json")))
+                                      .absoluteFilePath();
+    const QString secondManifest = QFileInfo(
+        QDir(secondRoot).absoluteFilePath(QStringLiteral(".xips.json")))
+                                       .absoluteFilePath();
+    bool firstReported = false;
+    bool secondReported = false;
+    for (const QString &problem : scan.errors) {
+        QVERIFY(problem.contains(QStringLiteral("Duplicate asset id")));
+        firstReported = firstReported || problem.contains(firstManifest);
+        secondReported = secondReported || problem.contains(secondManifest);
+    }
+    QVERIFY(firstReported);
+    QVERIFY(secondReported);
+}
+
 void CoreTest::metadataKeepsStableId()
 {
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
     const QString source = createSourceIp(temporary.path());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -393,6 +933,7 @@ void CoreTest::metadataMergesConcurrentManifestChangesAndRejectsConflicts()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module metadata; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord baseline;
     QString error;
@@ -547,6 +1088,7 @@ void CoreTest::metadataNoOpRechecksLiveManifest()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module noop; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -612,6 +1154,7 @@ void CoreTest::manifestTransactionsRecoverCrashWindows()
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     QString error;
     const auto transactionDirectories = [&]() {
@@ -806,6 +1349,7 @@ void CoreTest::manifestTransactionsRecoverNestedAssets()
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     const QString nestedLibrary = QDir(library).absoluteFilePath(
         QStringLiteral("protocols/uart"));
     QVERIFY(QDir().mkpath(nestedLibrary));
@@ -882,6 +1426,7 @@ void CoreTest::manifestTransactionChainsRestoreLatestOriginal()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module chain; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord stateA;
     QString error;
@@ -1020,6 +1565,7 @@ void CoreTest::corruptManifestTransactionBlocksAssetRecovery()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module blocked; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord stateA;
     QString error;
@@ -1094,6 +1640,7 @@ void CoreTest::manifestTransactionChainsRetireAllAncestors()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module long_chain; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord current;
     QString error;
@@ -1175,6 +1722,7 @@ void CoreTest::corruptAncestorTransactionDoesNotHideNestedRecovery()
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     const QString protocols = QDir(library).absoluteFilePath(
         QStringLiteral("Protocols"));
     QVERIFY(QDir().mkpath(protocols));
@@ -1245,6 +1793,7 @@ void CoreTest::manifestTransactionRetirementPreservesDataWhenLiveChanges()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module retire_race; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord stateA;
     QString error;
@@ -1335,6 +1884,7 @@ void CoreTest::manifestCasRetirementRejectsThirdPartyLive()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module cas_retire; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -1405,6 +1955,7 @@ void CoreTest::manifestRecoveryPathIdentityIsCaseInsensitiveOnWindows()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module case_path; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord stateA;
     QString error;
@@ -1483,6 +2034,7 @@ void CoreTest::updateReplacesWorkingCopyAndPreservesSavedVersions()
     const QString original = createSourceIp(temporary.path());
     QVERIFY(!original.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -1617,6 +2169,7 @@ void CoreTest::workingCopyUndoFailsClosedAtSecurityBoundaries()
     const QString original = createSourceIp(temporary.path());
     QVERIFY(!original.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -1991,6 +2544,7 @@ void CoreTest::workingCopyTransactionsRejectConcurrentMutation()
         QVERIFY(!source.isEmpty());
         const QString library = QDir(caseRoot).absoluteFilePath(
             QStringLiteral("library"));
+        QVERIFY(QDir().mkpath(library));
         const QString replacement = QDir(caseRoot).absoluteFilePath(
             QStringLiteral("replacement"));
         const QString replacementFile = QDir(replacement).absoluteFilePath(
@@ -2076,6 +2630,7 @@ void CoreTest::workingCopyTransactionsRejectConcurrentMutation()
     QVERIFY(!source.isEmpty());
     const QString library = QDir(discardRoot).absoluteFilePath(
         QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     const QString replacement = QDir(discardRoot).absoluteFilePath(
         QStringLiteral("replacement"));
     const QString replacementFile = QDir(replacement).absoluteFilePath(
@@ -2233,6 +2788,7 @@ void CoreTest::workingCopyDiscardRequiresValidLiveAsset()
     const QString source = createSourceIp(temporary.path());
     QVERIFY(!source.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     const QString replacement = temporary.filePath(
         QStringLiteral("replacement"));
     const QByteArray originalBytes = QByteArrayLiteral(
@@ -2317,6 +2873,7 @@ void CoreTest::recoveryIsolationRacePreservesUndoData()
     const QString source = createSourceIp(temporary.path());
     QVERIFY(!source.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     const QString replacement = temporary.filePath(
         QStringLiteral("replacement"));
     const QByteArray originalBytes = QByteArrayLiteral(
@@ -2431,6 +2988,7 @@ void CoreTest::assetDeletionIsBoundedAndLeavesSourcesUntouched()
     const QString source = temporary.filePath(QStringLiteral("delete_me.sv"));
     QVERIFY(writeFile(source, QByteArrayLiteral("module delete_me; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -2481,6 +3039,7 @@ void CoreTest::assetDeletionProofRejectsStaleAndBoundaryChanges()
         "module delete_me; localparam REV = 1; endmodule\n");
     QVERIFY(writeFile(source, importedBytes));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     const ImportBatchResult imported = service.importAssets(library, {source});
     QCOMPARE(imported.errors.size(), 0);
@@ -2585,6 +3144,7 @@ void CoreTest::versionsAreImmutableAndCopyable()
     QVERIFY(temporary.isValid());
     const QString source = createSourceIp(temporary.path());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -2682,6 +3242,7 @@ void CoreTest::versionStateCopyToAndDeletionFormASafeWorkflow()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module uart_rx; localparam V = 1; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -2920,6 +3481,7 @@ void CoreTest::corruptSavedVersionIsRejectedEverywhere()
     const QString source = createSourceIp(temporary.path());
     QVERIFY(!source.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -2968,7 +3530,7 @@ void CoreTest::corruptSavedVersionIsRejectedEverywhere()
     const QList<VersionInfo> rejectedVersions = service.versions(
         asset.assetRoot, &error);
     QVERIFY(rejectedVersions.isEmpty());
-    QVERIFY(!error.isEmpty());
+    QVERIFY(error.isEmpty());
 
     const CopyPlan rejectedPlan = service.copyPlan(
         asset, QStringLiteral("1.0.0"));
@@ -3048,6 +3610,7 @@ void CoreTest::versionInventoryKeepsValidVersionsWhenOneIsCorrupt()
         source,
         QByteArrayLiteral("module counter; localparam REV = 1; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
 
     AssetLibraryService service;
     AssetRecord asset;
@@ -3096,8 +3659,761 @@ void CoreTest::versionInventoryKeepsValidVersionsWhenOneIsCorrupt()
     error.clear();
     const QList<VersionInfo> strictVersions = service.versions(asset.assetRoot,
                                                                &error);
-    QVERIFY(strictVersions.isEmpty());
-    QVERIFY(!error.isEmpty());
+    QCOMPARE(strictVersions.size(), 1);
+    QCOMPARE(strictVersions.first().version, QStringLiteral("1.0.1"));
+    QVERIFY(error.isEmpty());
+}
+
+void CoreTest::metadataChangesDoNotCreateCodeVersions()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("metadata.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module metadata; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("metadata"),
+                               .name = QStringLiteral("Metadata"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    VersionInfo first;
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   &first,
+                                   &error),
+             qPrintable(error));
+
+    MetadataUpdateResult metadataResult;
+    QVERIFY2(service.updateMetadata(
+                 asset,
+                 {.id = asset.manifest.id,
+                  .name = QStringLiteral("Renamed metadata asset"),
+                  .description = QStringLiteral("Description only"),
+                  .tags = {QStringLiteral("Protocol")}},
+                 &metadataResult,
+                 &error),
+             qPrintable(error));
+    QVERIFY(metadataResult.changed);
+    const WorkingCopyState state = service.workingCopyState(asset);
+    QVERIFY2(state.error.isEmpty(), qPrintable(state.error));
+    QVERIFY(state.hasSavedVersion);
+    QVERIFY(!state.changed);
+    VersionInfo rejected;
+    error.clear();
+    QVERIFY(!service.createVersion(asset,
+                                   QStringLiteral("1.0.1"),
+                                   &rejected,
+                                   &error));
+    QVERIFY(error.contains(QStringLiteral("has not changed")));
+    QCOMPARE(readFile(QDir(first.path).absoluteFilePath(
+                          QStringLiteral("metadata.sv"))),
+             QByteArrayLiteral("module metadata; endmodule\n"));
+}
+
+void CoreTest::corruptVersionDoesNotBlockHealthyVersionWorkflows()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("healthy.sv"));
+    const QByteArray firstBytes = QByteArrayLiteral(
+        "module healthy; localparam REV = 1; endmodule\n");
+    const QByteArray secondBytes = QByteArrayLiteral(
+        "module healthy; localparam REV = 2; endmodule\n");
+    const QByteArray corruptBytes = QByteArrayLiteral("corrupt snapshot\n");
+    QVERIFY(writeFile(source, firstBytes));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("healthy"),
+                               .name = QStringLiteral("Healthy"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    VersionInfo first;
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   &first,
+                                   &error),
+             qPrintable(error));
+    const QString workingFile = QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral("healthy.sv"));
+    QVERIFY(writeFile(workingFile, secondBytes));
+    VersionInfo corrupt;
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("2.0.0"),
+                                   &corrupt,
+                                   &error),
+             qPrintable(error));
+    const QString corruptFile = QDir(corrupt.path).absoluteFilePath(
+        QStringLiteral("healthy.sv"));
+    QVERIFY(writeFile(corruptFile, corruptBytes));
+
+    VersionInventoryResult inventory = service.versionInventory(
+        asset.assetRoot);
+    QCOMPARE(inventory.validVersions.size(), 1);
+    QCOMPARE(inventory.invalidVersions.size(), 1);
+    QCOMPARE(inventory.invalidVersions.first().version,
+             QStringLiteral("2.0.0"));
+    const WorkingCopyState state = service.workingCopyState(asset, inventory);
+    QVERIFY2(state.error.isEmpty(), qPrintable(state.error));
+    QCOMPARE(state.latestVersion, QStringLiteral("1.0.0"));
+    QVERIFY(state.changed);
+
+    VersionInfo rejected;
+    error.clear();
+    QVERIFY(!service.createVersion(asset,
+                                   QStringLiteral("2.0.0"),
+                                   &rejected,
+                                   &error));
+    QCOMPARE(readFile(corruptFile), corruptBytes);
+    VersionInfo third;
+    error.clear();
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("3.0.0"),
+                                   &third,
+                                   &error),
+             qPrintable(error));
+    DeleteVersionResult deleted;
+    error.clear();
+    QVERIFY2(service.deleteVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   RemovalMode::Permanent,
+                                   &deleted,
+                                   &error),
+             qPrintable(error));
+    QVERIFY(deleted.snapshotRemoved);
+    QVERIFY(QFileInfo(corrupt.path).isDir());
+    QVERIFY(QFileInfo(third.path).isDir());
+
+    inventory = service.versionInventory(asset.assetRoot);
+    QCOMPARE(inventory.invalidVersions.size(), 1);
+    const auto problem = inventory.invalidVersions.first();
+    CorruptVersionIsolationResult isolated;
+    error.clear();
+    QVERIFY(!service.isolateCorruptVersion(
+        asset,
+        problem.version,
+        QStringLiteral("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+        &isolated,
+        &error));
+    QVERIFY(QFileInfo(problem.path).isDir());
+    error.clear();
+    QVERIFY2(service.isolateCorruptVersion(asset,
+                                           problem.version,
+                                           problem.fingerprint,
+                                           &isolated,
+                                           &error),
+             qPrintable(error));
+    QVERIFY(isolated.isolated);
+    QVERIFY(!QFileInfo::exists(problem.path));
+    QVERIFY(QFileInfo(isolated.retainedPath).isDir());
+    QVERIFY(isolated.retainedPath.contains(
+        QStringLiteral(".staging-quarantine-corrupt-")));
+    QCOMPARE(readFile(QDir(isolated.retainedPath).absoluteFilePath(
+                          QStringLiteral("healthy.sv"))),
+             corruptBytes);
+}
+
+void CoreTest::payloadTransactionsRestoreVisibleDataAfterIsolationCrash()
+{
+    const auto expectCrash = [](auto operation) {
+        bool crashed = false;
+        try {
+            operation();
+        } catch (const SimulatedManifestCrash &) {
+            crashed = true;
+        }
+        return crashed;
+    };
+
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QString source = temporary.filePath(QStringLiteral("update.sv"));
+        const QString replacement = temporary.filePath(
+            QStringLiteral("replacement.sv"));
+        const QByteArray original = QByteArrayLiteral("module update; endmodule\n");
+        QVERIFY(writeFile(source, original));
+        QVERIFY(writeFile(replacement,
+                          QByteArrayLiteral("module update; wire changed; endmodule\n")));
+        const QString library = temporary.filePath(QStringLiteral("library"));
+        QVERIFY(QDir().mkpath(library));
+        AssetLibraryService service;
+        AssetRecord asset;
+        QString error;
+        QVERIFY2(service.importAsset(
+                     {.libraryRoot = library,
+                      .sourcePath = source,
+                      .metadata = {.id = QStringLiteral("update"),
+                                   .name = QStringLiteral("Update"),
+                                   .description = {},
+                                   .tags = {}}},
+                     &asset,
+                     &error),
+                 qPrintable(error));
+        service.setWorkingCopyTestHook(
+            WorkingCopyTestPoint::StagingVerifiedBeforePublish,
+            [](const WorkingCopyTestPoint, const QString &) {
+                throw SimulatedManifestCrash{};
+            });
+        QVERIFY(expectCrash([&] {
+            UpdateAssetResult ignored;
+            service.updateAsset(asset,
+                                replacement,
+                                WorkingCopyRecoveryMode::Permanent,
+                                &ignored,
+                                &error);
+        }));
+        QVERIFY(!QFileInfo::exists(asset.assetRoot));
+        const QStringList transactionNames = QDir(library).entryList(
+            {QStringLiteral(".xips-create-transaction-*")},
+            QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+        QCOMPARE(transactionNames.size(), 1);
+        const QString transactionRecord = QDir(library).absoluteFilePath(
+            transactionNames.first() + QStringLiteral("/transaction.json"));
+        const QByteArray originalRecord = readFile(transactionRecord);
+        QVERIFY(!originalRecord.isEmpty());
+        bool changedRecord = false;
+        service.setWorkingCopyTestHook(
+            WorkingCopyTestPoint::PayloadTransactionReadBeforeRecovery,
+            [&](const WorkingCopyTestPoint, const QString &) {
+                QJsonObject changedRecordObject = QJsonDocument::fromJson(
+                    originalRecord).object();
+                changedRecordObject.insert(QStringLiteral("concurrent"), true);
+                changedRecord = writeFile(
+                    transactionRecord,
+                    QJsonDocument(changedRecordObject).toJson(
+                        QJsonDocument::Indented));
+            });
+        const PayloadTransactionRecoveryResult rejectedRecovery =
+            service.recoverPayloadTransactions(library);
+        QVERIFY(changedRecord);
+        QCOMPARE(rejectedRecovery.retained, 1);
+        QVERIFY(!QFileInfo::exists(asset.assetRoot));
+        const auto recordWithPhase = [&](const QString &phase) {
+            QJsonObject object = QJsonDocument::fromJson(originalRecord)
+                                     .object();
+            object.insert(QStringLiteral("phase"), phase);
+            return QJsonDocument(object).toJson(QJsonDocument::Indented);
+        };
+        QVERIFY(writeFile(transactionRecord,
+                          recordWithPhase(QStringLiteral("published"))));
+        const PayloadTransactionRecoveryResult publishedRecovery =
+            service.recoverPayloadTransactions(library);
+        QCOMPARE(publishedRecovery.retained, 1);
+        QVERIFY(!QFileInfo::exists(asset.assetRoot));
+        QVERIFY(writeFile(transactionRecord,
+                          recordWithPhase(QStringLiteral("prepared"))));
+        const PayloadTransactionRecoveryResult preparedRecovery =
+            service.recoverPayloadTransactions(library);
+        QCOMPARE(preparedRecovery.retained, 1);
+        QVERIFY(!QFileInfo::exists(asset.assetRoot));
+
+        QVERIFY(writeFile(transactionRecord, originalRecord));
+        const QString incompleteTransaction = QDir(library).absoluteFilePath(
+            QStringLiteral(
+                ".xips-create-delete-11111111-1111-1111-1111-111111111111"));
+        QVERIFY(QDir().mkpath(incompleteTransaction));
+        const PayloadTransactionRecoveryResult incompleteRecovery =
+            service.recoverPayloadTransactions(library);
+        QCOMPARE(incompleteRecovery.retained, 2);
+        QVERIFY(!QFileInfo::exists(asset.assetRoot));
+        QVERIFY(QDir().rmdir(incompleteTransaction));
+        const PayloadTransactionRecoveryResult recovered =
+            service.recoverPayloadTransactions(library);
+        QCOMPARE(recovered.restoredVisible, 1);
+        QCOMPARE(readFile(QDir(asset.assetRoot).absoluteFilePath(
+                              QStringLiteral("update.sv"))),
+                 original);
+    }
+
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QString source = temporary.filePath(QStringLiteral("delete.sv"));
+        QVERIFY(writeFile(source,
+                          QByteArrayLiteral("module delete_me; endmodule\n")));
+        const QString library = temporary.filePath(QStringLiteral("library"));
+        QVERIFY(QDir().mkpath(library));
+        AssetLibraryService service;
+        AssetRecord asset;
+        QString error;
+        QVERIFY2(service.importAsset(
+                     {.libraryRoot = library,
+                      .sourcePath = source,
+                      .metadata = {.id = QStringLiteral("delete_me"),
+                                   .name = QStringLiteral("Delete"),
+                                   .description = {},
+                                   .tags = {}}},
+                     &asset,
+                     &error),
+                 qPrintable(error));
+        const AssetDeletionProof proof = service.assetDeletionProof(asset);
+        QVERIFY(proof.ok());
+        service.setWorkingCopyTestHook(
+            WorkingCopyTestPoint::DeleteAssetIsolatedBeforeRemoval,
+            [](const WorkingCopyTestPoint, const QString &) {
+                throw SimulatedManifestCrash{};
+            });
+        QVERIFY(expectCrash([&] {
+            QString ignored;
+            service.deleteAsset(library,
+                                asset,
+                                proof,
+                                RemovalMode::Permanent,
+                                &ignored,
+                                &error);
+        }));
+        QVERIFY(!QFileInfo::exists(asset.assetRoot));
+        const QStringList deleteTransactions = QDir(library).entryList(
+            {QStringLiteral(".xips-create-delete-*")},
+            QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+        QCOMPARE(deleteTransactions.size(), 1);
+        const QString deleteRecord = QDir(library).absoluteFilePath(
+            deleteTransactions.first() + QStringLiteral("/transaction.json"));
+        const QByteArray isolatedDeleteRecord = readFile(deleteRecord);
+        QJsonObject preparedDelete = QJsonDocument::fromJson(
+            isolatedDeleteRecord).object();
+        preparedDelete.insert(QStringLiteral("phase"),
+                              QStringLiteral("prepared"));
+        QVERIFY(writeFile(deleteRecord,
+                          QJsonDocument(preparedDelete).toJson(
+                              QJsonDocument::Indented)));
+        const PayloadTransactionRecoveryResult preparedRecovery =
+            service.recoverPayloadTransactions(library);
+        QCOMPARE(preparedRecovery.retained, 1);
+        QVERIFY(!QFileInfo::exists(asset.assetRoot));
+        QVERIFY(writeFile(deleteRecord, isolatedDeleteRecord));
+        const PayloadTransactionRecoveryResult recovered =
+            service.recoverPayloadTransactions(library);
+        QCOMPARE(recovered.restoredVisible, 1);
+        QVERIFY(QFileInfo(asset.assetRoot).isDir());
+    }
+
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QString source = temporary.filePath(QStringLiteral("version.sv"));
+        QVERIFY(writeFile(source,
+                          QByteArrayLiteral("module version; endmodule\n")));
+        const QString library = temporary.filePath(QStringLiteral("library"));
+        QVERIFY(QDir().mkpath(library));
+        AssetLibraryService service;
+        AssetRecord asset;
+        QString error;
+        QVERIFY2(service.importAsset(
+                     {.libraryRoot = library,
+                      .sourcePath = source,
+                      .metadata = {.id = QStringLiteral("version"),
+                                   .name = QStringLiteral("Version"),
+                                   .description = {},
+                                   .tags = {}}},
+                     &asset,
+                     &error),
+                 qPrintable(error));
+        VersionInfo saved;
+        QVERIFY2(service.createVersion(asset,
+                                       QStringLiteral("1.0.0"),
+                                       &saved,
+                                       &error),
+                 qPrintable(error));
+        service.setWorkingCopyTestHook(
+            WorkingCopyTestPoint::DeleteVersionIsolatedBeforeMarkerCas,
+            [](const WorkingCopyTestPoint, const QString &) {
+                throw SimulatedManifestCrash{};
+            });
+        QVERIFY(expectCrash([&] {
+            DeleteVersionResult ignored;
+            service.deleteVersion(asset,
+                                  QStringLiteral("1.0.0"),
+                                  RemovalMode::Permanent,
+                                  &ignored,
+                                  &error);
+        }));
+        QVERIFY(!QFileInfo::exists(saved.path));
+        const QString versionsRoot = QFileInfo(saved.path).absolutePath();
+        const QStringList deleteTransactions = QDir(versionsRoot).entryList(
+            {QStringLiteral(".staging-transaction-*")},
+            QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+        QCOMPARE(deleteTransactions.size(), 1);
+        const QString deleteRecord = QDir(versionsRoot).absoluteFilePath(
+            deleteTransactions.first() + QStringLiteral("/transaction.json"));
+        const QByteArray isolatedDeleteRecord = readFile(deleteRecord);
+        QJsonObject preparedDelete = QJsonDocument::fromJson(
+            isolatedDeleteRecord).object();
+        preparedDelete.insert(QStringLiteral("phase"),
+                              QStringLiteral("prepared"));
+        QVERIFY(writeFile(deleteRecord,
+                          QJsonDocument(preparedDelete).toJson(
+                              QJsonDocument::Indented)));
+        const PayloadTransactionRecoveryResult preparedRecovery =
+            service.recoverPayloadTransactions(library);
+        QCOMPARE(preparedRecovery.retained, 1);
+        QVERIFY(!QFileInfo::exists(saved.path));
+        QVERIFY(writeFile(deleteRecord, isolatedDeleteRecord));
+        const PayloadTransactionRecoveryResult recovered =
+            service.recoverPayloadTransactions(library);
+        QCOMPARE(recovered.restoredVisible, 1);
+        QVERIFY(QFileInfo(saved.path).isDir());
+    }
+}
+
+void CoreTest::payloadRecoveryIgnoresForgedControlDataInsideAssets()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("payload.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module payload; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("payload"),
+                               .name = QStringLiteral("Payload"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+
+    const QString forgedRoot = QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral(
+            ".xips-create-transaction-11111111-1111-1111-1111-111111111111"));
+    const QString forgedRecord = QDir(forgedRoot).absoluteFilePath(
+        QStringLiteral("transaction.json"));
+    const QByteArray forgedBytes = R"({
+        "schemaVersion": 1,
+        "owner": "xips-payload-transaction",
+        "operation": "update",
+        "transactionId": "11111111-1111-1111-1111-111111111111",
+        "phase": "published",
+        "assetName": "payload",
+        "assetId": "payload",
+        "stagingName": ".xips-create-update-11111111-1111-1111-1111-111111111111",
+        "isolatedName": ".xips-create-recovery-11111111-1111-1111-1111-111111111111",
+        "version": "",
+        "expectedFingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    })";
+    QVERIFY(writeFile(forgedRecord, forgedBytes));
+
+    const PayloadTransactionRecoveryResult recovered =
+        service.recoverPayloadTransactions(library);
+    QVERIFY2(recovered.fatalError.isEmpty(),
+             qPrintable(recovered.fatalError));
+    QVERIFY(recovered.items.isEmpty());
+    QVERIFY(QFileInfo(forgedRoot).isDir());
+    QCOMPARE(readFile(forgedRecord), forgedBytes);
+    QCOMPARE(readFile(QDir(asset.assetRoot).absoluteFilePath(
+                          QStringLiteral("payload.sv"))),
+             QByteArrayLiteral("module payload; endmodule\n"));
+}
+
+void CoreTest::payloadRecoveryDoesNotFollowLinkedInternalDirectory()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+    const QString assetRoot = QDir(library).absoluteFilePath(
+        QStringLiteral("linked_asset"));
+    QVERIFY(writeFile(QDir(assetRoot).absoluteFilePath(
+                          QStringLiteral(".xips.json")),
+                      QByteArrayLiteral(
+                          "{\"schemaVersion\":1,\"id\":\"linked_asset\",\"name\":\"Linked\"}")));
+    const QString outside = temporary.filePath(QStringLiteral("outside"));
+    const QString transactionRoot = QDir(outside).absoluteFilePath(
+        QStringLiteral(
+            "versions/.staging-transaction-11111111-1111-1111-1111-111111111111"));
+    const QString recordPath = QDir(transactionRoot).absoluteFilePath(
+        QStringLiteral("transaction.json"));
+    const QByteArray recordBytes = R"({
+        "schemaVersion": 1,
+        "owner": "xips-payload-transaction",
+        "operation": "delete-version",
+        "transactionId": "11111111-1111-1111-1111-111111111111",
+        "phase": "removed",
+        "assetName": "linked_asset",
+        "assetId": "linked_asset",
+        "stagingName": "",
+        "isolatedName": ".staging-delete-11111111-1111-1111-1111-111111111111",
+        "version": "1.0.0",
+        "expectedFingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    })";
+    QVERIFY(writeFile(recordPath, recordBytes));
+    const QString outsideVersion = QDir(outside).absoluteFilePath(
+        QStringLiteral("versions/1.0.0"));
+    const QString outsidePayload = QDir(outsideVersion).absoluteFilePath(
+        QStringLiteral("outside.sv"));
+    const QByteArray outsideBytes = QByteArrayLiteral(
+        "module outside; endmodule\n");
+    QVERIFY(writeFile(outsidePayload, outsideBytes));
+    const QString linkedInternal = QDir(assetRoot).absoluteFilePath(
+        QStringLiteral(".xips"));
+#ifdef Q_OS_WIN
+    QProcess junction;
+    junction.start(QStringLiteral("cmd.exe"),
+                   {QStringLiteral("/d"),
+                    QStringLiteral("/c"),
+                    QStringLiteral("mklink"),
+                    QStringLiteral("/J"),
+                    QDir::toNativeSeparators(linkedInternal),
+                    QDir::toNativeSeparators(outside)});
+    QVERIFY(junction.waitForFinished(10000));
+    QCOMPARE(junction.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(junction.exitCode(), 0);
+#else
+    QVERIFY2(QFile::link(outside, linkedInternal),
+             qPrintable(QStringLiteral("Cannot create directory link: %1")
+                            .arg(linkedInternal)));
+#endif
+
+    AssetLibraryService service;
+    const PayloadTransactionRecoveryResult recovered =
+        service.recoverPayloadTransactions(library);
+    QVERIFY2(recovered.fatalError.isEmpty(),
+             qPrintable(recovered.fatalError));
+    QVERIFY(recovered.items.isEmpty());
+    QVERIFY(QFileInfo(transactionRoot).isDir());
+    QCOMPARE(readFile(recordPath), recordBytes);
+
+    const VersionInventoryResult inventory = service.versionInventory(
+        assetRoot);
+    QVERIFY(!inventory.fatalError.isEmpty());
+    QVERIFY(inventory.invalidVersions.isEmpty());
+    const ManifestLoadResult loaded = ManifestService().load(
+        QDir(assetRoot).absoluteFilePath(QStringLiteral(".xips.json")));
+    QVERIFY(loaded.ok());
+    AssetRecord linkedAsset{
+        .manifest = *loaded.manifest,
+        .assetRoot = assetRoot,
+        .manifestPath = QDir(assetRoot).absoluteFilePath(
+            QStringLiteral(".xips.json")),
+        .files = {},
+        .lastModified = {},
+    };
+    CorruptVersionIsolationResult isolation;
+    QString isolationError;
+    QVERIFY(!service.isolateCorruptVersion(
+        linkedAsset,
+        QStringLiteral("1.0.0"),
+        QStringLiteral(
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+        &isolation,
+        &isolationError));
+    QVERIFY(QFileInfo(outsideVersion).isDir());
+    QCOMPARE(readFile(outsidePayload), outsideBytes);
+    const QStringList quarantineEntries = QDir(
+        QDir(outside).absoluteFilePath(QStringLiteral("versions")))
+                                              .entryList(
+        {QStringLiteral(".staging-quarantine-corrupt-*")},
+        QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+    QVERIFY(quarantineEntries.isEmpty());
+
+#ifdef Q_OS_WIN
+    QVERIFY(QDir().rmdir(linkedInternal));
+#else
+    QVERIFY(QFile::remove(linkedInternal));
+#endif
+    QVERIFY(QFileInfo(transactionRoot).isDir());
+    QCOMPARE(readFile(recordPath), recordBytes);
+}
+
+void CoreTest::payloadRecoveryRetainsRecordWithConcurrentEvidence()
+{
+    {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("original.sv"));
+    const QString replacement = temporary.filePath(
+        QStringLiteral("replacement.sv"));
+    const QByteArray original = QByteArrayLiteral(
+        "module original; endmodule\n");
+    QVERIFY(writeFile(source, original));
+    QVERIFY(writeFile(replacement,
+                      QByteArrayLiteral(
+                          "module original; wire changed; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("concurrent_evidence"),
+                               .name = QStringLiteral("Concurrent evidence"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::StagingVerifiedBeforePublish,
+        [](const WorkingCopyTestPoint, const QString &) {
+            throw SimulatedManifestCrash{};
+        });
+    bool crashed = false;
+    try {
+        UpdateAssetResult ignored;
+        service.updateAsset(asset,
+                            replacement,
+                            WorkingCopyRecoveryMode::Permanent,
+                            &ignored,
+                            &error);
+    } catch (const SimulatedManifestCrash &) {
+        crashed = true;
+    }
+    QVERIFY(crashed);
+    const QStringList transactionNames = QDir(library).entryList(
+        {QStringLiteral(".xips-create-transaction-*")},
+        QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+    QCOMPARE(transactionNames.size(), 1);
+    const QString transactionRoot = QDir(library).absoluteFilePath(
+        transactionNames.first());
+    const QString recordPath = QDir(transactionRoot).absoluteFilePath(
+        QStringLiteral("transaction.json"));
+    QVERIFY(QFileInfo(recordPath).isFile());
+    const QString concurrentEvidence = QDir(transactionRoot).absoluteFilePath(
+        QStringLiteral("concurrent.keep"));
+    const QByteArray evidenceBytes = QByteArrayLiteral("synchronizer evidence");
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::PayloadTransactionReadBeforeRecovery,
+        [&](const WorkingCopyTestPoint, const QString &path) {
+            if (path == transactionRoot) {
+                QVERIFY(writeFile(concurrentEvidence, evidenceBytes));
+            }
+        });
+    const PayloadTransactionRecoveryResult recovered =
+        service.recoverPayloadTransactions(library);
+    QCOMPARE(recovered.retained, 1);
+    QVERIFY(QFileInfo(recordPath).isFile());
+    QCOMPARE(readFile(concurrentEvidence), evidenceBytes);
+    QVERIFY(QFileInfo(asset.assetRoot).isDir());
+    QCOMPARE(readFile(QDir(asset.assetRoot).absoluteFilePath(
+                          QStringLiteral("original.sv"))),
+             original);
+    }
+
+    {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString source = temporary.filePath(QStringLiteral("linked.sv"));
+    const QString replacement = temporary.filePath(
+        QStringLiteral("linked-replacement.sv"));
+    QVERIFY(writeFile(source,
+                      QByteArrayLiteral("module linked; endmodule\n")));
+    QVERIFY(writeFile(replacement,
+                      QByteArrayLiteral(
+                          "module linked; wire changed; endmodule\n")));
+    const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
+    AssetLibraryService service;
+    AssetRecord asset;
+    QString error;
+    QVERIFY2(service.importAsset(
+                 {.libraryRoot = library,
+                  .sourcePath = source,
+                  .metadata = {.id = QStringLiteral("linked_recovery"),
+                               .name = QStringLiteral("Linked recovery"),
+                               .description = {},
+                               .tags = {}}},
+                 &asset,
+                 &error),
+             qPrintable(error));
+    VersionInfo version;
+    QVERIFY2(service.createVersion(asset,
+                                   QStringLiteral("1.0.0"),
+                                   &version,
+                                   &error),
+             qPrintable(error));
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::StagingVerifiedBeforePublish,
+        [](const WorkingCopyTestPoint, const QString &) {
+            throw SimulatedManifestCrash{};
+        });
+    bool crashed = false;
+    try {
+        UpdateAssetResult ignored;
+        service.updateAsset(asset,
+                            replacement,
+                            WorkingCopyRecoveryMode::Permanent,
+                            &ignored,
+                            &error);
+    } catch (const SimulatedManifestCrash &) {
+        crashed = true;
+    }
+    QVERIFY(crashed);
+
+    const QString outside = temporary.filePath(QStringLiteral("outside"));
+    const QString outsideSentinel = QDir(outside).absoluteFilePath(
+        QStringLiteral(".xips/sentinel.bin"));
+    const QByteArray outsideBytes = QByteArrayLiteral("outside-internal");
+    QVERIFY(writeFile(outsideSentinel, outsideBytes));
+    QString linkedStaging;
+    QString preservedStaging;
+    bool linkCreated = false;
+    service.setWorkingCopyTestHook(
+        WorkingCopyTestPoint::PayloadRecoveryBeforeInternalReattach,
+        [&](const WorkingCopyTestPoint, const QString &stagingRoot) {
+            linkedStaging = stagingRoot;
+            preservedStaging = stagingRoot + QStringLiteral(".preserved");
+            QDir parent(QFileInfo(stagingRoot).absolutePath());
+            if (!parent.rename(QFileInfo(stagingRoot).fileName(),
+                               QFileInfo(preservedStaging).fileName())) {
+                return;
+            }
+#ifdef Q_OS_WIN
+            QProcess junction;
+            junction.start(QStringLiteral("cmd.exe"),
+                           {QStringLiteral("/d"),
+                            QStringLiteral("/c"),
+                            QStringLiteral("mklink"),
+                            QStringLiteral("/J"),
+                            QDir::toNativeSeparators(stagingRoot),
+                            QDir::toNativeSeparators(outside)});
+            linkCreated = junction.waitForFinished(10000)
+                          && junction.exitStatus() == QProcess::NormalExit
+                          && junction.exitCode() == 0;
+#else
+            linkCreated = QFile::link(outside, stagingRoot);
+#endif
+        });
+    const PayloadTransactionRecoveryResult recovered =
+        service.recoverPayloadTransactions(library);
+    QCOMPARE(recovered.retained, 1);
+    QVERIFY(linkCreated);
+    QCOMPARE(readFile(outsideSentinel), outsideBytes);
+    QVERIFY(QFileInfo(QDir(outside).absoluteFilePath(
+                         QStringLiteral(".xips"))).isDir());
+    QVERIFY(QFileInfo(preservedStaging).isDir());
+#ifdef Q_OS_WIN
+    QVERIFY(QDir().rmdir(linkedStaging));
+#else
+    QVERIFY(QFile::remove(linkedStaging));
+#endif
+    }
 }
 
 void CoreTest::versionInventorySkipsLinkedVersionDirectories()
@@ -3108,6 +4424,7 @@ void CoreTest::versionInventorySkipsLinkedVersionDirectories()
     QVERIFY(writeFile(source,
                       QByteArrayLiteral("module safe_link; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
 
     AssetLibraryService service;
     AssetRecord asset;
@@ -3163,8 +4480,8 @@ void CoreTest::versionInventorySkipsLinkedVersionDirectories()
     QVERIFY(QFileInfo(sentinel).isFile());
 
     error.clear();
-    QVERIFY(service.versions(asset.assetRoot, &error).isEmpty());
-    QVERIFY(error.contains(linkedVersion));
+    QCOMPARE(service.versions(asset.assetRoot, &error).size(), 1);
+    QVERIFY(error.isEmpty());
 
 #ifdef Q_OS_WIN
     QVERIFY(QDir().rmdir(linkedVersion));
@@ -3180,6 +4497,9 @@ void CoreTest::createVersionRejectsConcurrentWorkingCopyMutation_data()
 
     QTest::newRow("manifest-change") << QStringLiteral("manifest");
     QTest::newRow("payload-change") << QStringLiteral("payload");
+    QTest::newRow("internal-junction") << QStringLiteral("internal-junction");
+    QTest::newRow("asset-root-junction")
+        << QStringLiteral("asset-root-junction");
 }
 
 void CoreTest::createVersionRejectsConcurrentWorkingCopyMutation()
@@ -3191,6 +4511,7 @@ void CoreTest::createVersionRejectsConcurrentWorkingCopyMutation()
     const QString source = createSourceIp(temporary.path());
     QVERIFY(!source.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -3214,14 +4535,71 @@ void CoreTest::createVersionRejectsConcurrentWorkingCopyMutation()
         "description written by concurrent sync");
     int hookCount = 0;
     bool mutationSucceeded = false;
+    const QString internalRoot = QDir(asset.assetRoot).absoluteFilePath(
+        QStringLiteral(".xips"));
+    const QString outside = temporary.filePath(
+        QStringLiteral("outside-version-root"));
+    const QString outsideSentinel = QDir(outside).absoluteFilePath(
+        QStringLiteral("sentinel.bin"));
+    const QByteArray outsideBytes = QByteArrayLiteral("outside-unchanged");
+    QVERIFY(writeFile(outsideSentinel, outsideBytes));
+    const QString preservedAssetRoot = asset.assetRoot
+                                       + QStringLiteral(".preserved");
+    const WorkingCopyTestPoint testPoint =
+        mutation.endsWith(QStringLiteral("junction"))
+            ? WorkingCopyTestPoint::VersionHierarchyCheckedBeforeCreate
+            : WorkingCopyTestPoint::VersionStagingVerifiedBeforePublish;
     service.setWorkingCopyTestHook(
-        WorkingCopyTestPoint::VersionStagingVerifiedBeforePublish,
+        testPoint,
         [&](const WorkingCopyTestPoint point, const QString &) {
-            if (point
-                != WorkingCopyTestPoint::VersionStagingVerifiedBeforePublish) {
+            if (point != testPoint) {
                 return;
             }
             ++hookCount;
+            if (mutation == QStringLiteral("asset-root-junction")) {
+                QDir assetParent(QFileInfo(asset.assetRoot).absolutePath());
+                if (!assetParent.rename(QFileInfo(asset.assetRoot).fileName(),
+                                        QFileInfo(preservedAssetRoot)
+                                            .fileName())) {
+                    return;
+                }
+#ifdef Q_OS_WIN
+                QProcess junction;
+                junction.start(QStringLiteral("cmd.exe"),
+                               {QStringLiteral("/d"),
+                                QStringLiteral("/c"),
+                                QStringLiteral("mklink"),
+                                QStringLiteral("/J"),
+                                QDir::toNativeSeparators(asset.assetRoot),
+                                QDir::toNativeSeparators(outside)});
+                mutationSucceeded = junction.waitForFinished(10000)
+                                    && junction.exitStatus()
+                                           == QProcess::NormalExit
+                                    && junction.exitCode() == 0;
+#else
+                mutationSucceeded = QFile::link(outside, asset.assetRoot);
+#endif
+                return;
+            }
+            if (mutation == QStringLiteral("internal-junction")) {
+#ifdef Q_OS_WIN
+                QProcess junction;
+                junction.start(QStringLiteral("cmd.exe"),
+                               {QStringLiteral("/d"),
+                                QStringLiteral("/c"),
+                                QStringLiteral("mklink"),
+                                QStringLiteral("/J"),
+                                QDir::toNativeSeparators(internalRoot),
+                                QDir::toNativeSeparators(outside)});
+                mutationSucceeded = junction.waitForFinished(10000)
+                                    && junction.exitStatus()
+                                           == QProcess::NormalExit
+                                    && junction.exitCode() == 0;
+#else
+                mutationSucceeded = QFile::link(outside, internalRoot);
+#endif
+                return;
+            }
             if (mutation == QStringLiteral("payload")) {
                 mutationSucceeded = writeFile(liveTop, concurrentBytes);
                 return;
@@ -3252,6 +4630,29 @@ void CoreTest::createVersionRejectsConcurrentWorkingCopyMutation()
     QVERIFY(created.path.isEmpty());
     QVERIFY(created.strictContentHash.isEmpty());
 
+    if (mutation == QStringLiteral("asset-root-junction")) {
+        QCOMPARE(readFile(outsideSentinel), outsideBytes);
+        QVERIFY(!QFileInfo::exists(QDir(outside).absoluteFilePath(
+            QStringLiteral(".xips"))));
+#ifdef Q_OS_WIN
+        QVERIFY(QDir().rmdir(asset.assetRoot));
+#else
+        QVERIFY(QFile::remove(asset.assetRoot));
+#endif
+        QDir assetParent(QFileInfo(asset.assetRoot).absolutePath());
+        QVERIFY(assetParent.rename(QFileInfo(preservedAssetRoot).fileName(),
+                                   QFileInfo(asset.assetRoot).fileName()));
+    } else if (mutation == QStringLiteral("internal-junction")) {
+        QCOMPARE(readFile(outsideSentinel), outsideBytes);
+        QVERIFY(!QFileInfo::exists(QDir(outside).absoluteFilePath(
+            QStringLiteral("versions"))));
+#ifdef Q_OS_WIN
+        QVERIFY(QDir().rmdir(internalRoot));
+#else
+        QVERIFY(QFile::remove(internalRoot));
+#endif
+    }
+
     const QString versionsRoot = QDir(asset.assetRoot).absoluteFilePath(
         QStringLiteral(".xips/versions"));
     QVERIFY(!QFileInfo::exists(QDir(versionsRoot).absoluteFilePath(
@@ -3273,9 +4674,12 @@ void CoreTest::createVersionRejectsConcurrentWorkingCopyMutation()
     if (mutation == QStringLiteral("manifest")) {
         QCOMPARE(liveManifest.manifest->description, concurrentDescription);
         QCOMPARE(readFile(liveTop), originalBytes);
-    } else {
+    } else if (mutation == QStringLiteral("payload")) {
         QVERIFY(liveManifest.manifest->description.isEmpty());
         QCOMPARE(readFile(liveTop), concurrentBytes);
+    } else {
+        QVERIFY(liveManifest.manifest->description.isEmpty());
+        QCOMPARE(readFile(liveTop), originalBytes);
     }
     QCOMPARE(readFile(QDir(source).absoluteFilePath(
                           QStringLiteral("rtl/top.sv"))),
@@ -3299,6 +4703,7 @@ void CoreTest::savedVersionConsumersRejectPostCopyMutation()
     const QString source = createSourceIp(temporary.path());
     QVERIFY(!source.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -3402,6 +4807,7 @@ void CoreTest::restoreBindsVerifiedStagingToUpdate()
     const QString source = createSourceIp(temporary.path());
     QVERIFY(!source.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -3510,6 +4916,7 @@ void CoreTest::unverifiedOperationStagingIsRetained()
     const QString source = createSourceIp(temporary.path());
     QVERIFY(!source.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -3638,6 +5045,7 @@ void CoreTest::deleteVersionRejectsConcurrentBoundaryMutation()
     const QString source = createSourceIp(temporary.path());
     QVERIFY(!source.isEmpty());
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     AssetRecord asset;
     QString error;
@@ -3821,6 +5229,7 @@ void CoreTest::groupChangesApplyAcrossAssets()
     QVERIFY(writeFile(first, QByteArrayLiteral("module one; endmodule\n")));
     QVERIFY(writeFile(second, QByteArrayLiteral("module two; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     const ImportBatchResult imported = service.importAssets(library, {first, second});
     QCOMPARE(imported.created.size(), 2);
@@ -3870,6 +5279,7 @@ void CoreTest::groupChangesMergeConcurrencyAndKeepPartialSuccess()
     QVERIFY(writeFile(secondSource,
                       QByteArrayLiteral("module second; endmodule\n")));
     const QString library = temporary.filePath(QStringLiteral("library"));
+    QVERIFY(QDir().mkpath(library));
     AssetLibraryService service;
     const ImportBatchResult imported = service.importAssets(
         library,

@@ -1,3 +1,9 @@
+#include "app/Branding.h"
+#include "app/BrowserPanel.h"
+#ifdef XIPS_HAS_SUITEAPP
+#include "integration/SuiteIntegration.h"
+#include <QTimer>
+#endif
 #include "app/MainWindow.h"
 #include "integration/IntegrationService.h"
 
@@ -11,18 +17,19 @@
 
 #include <optional>
 
-namespace {
+namespace
+{
 
 QString defaultLibraryPath()
 {
-    QSettings settings;
-    QString saved = settings.value(QStringLiteral("library/root")).toString();
-    if (QFileInfo(saved).isDir()) {
-        return QFileInfo(saved).absoluteFilePath();
-    }
     const QString environment = qEnvironmentVariable("XIPS_LIBRARY");
-    if (QFileInfo(environment).isDir()) {
+    if (!environment.isEmpty())
         return QFileInfo(environment).absoluteFilePath();
+    QSettings settings;
+    const QString saved = settings.value(QStringLiteral("library/root")).toString().trimmed();
+    if (!saved.isEmpty())
+    {
+        return QFileInfo(saved).absoluteFilePath();
     }
     return {};
 }
@@ -38,22 +45,18 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationVersion(QStringLiteral(XIPS_VERSION));
 
     QCommandLineParser parser;
-    parser.setApplicationDescription(
-        QStringLiteral("Personal FPGA reusable asset library"));
+    parser.setApplicationDescription(QStringLiteral("Personal FPGA reusable asset library"));
     parser.addHelpOption();
     parser.addVersionOption();
-    const QCommandLineOption libraryOption(
-        {QStringLiteral("l"), QStringLiteral("library")},
-        QStringLiteral("Asset library directory."),
-        QStringLiteral("directory"));
-    const QCommandLineOption assetOption(
-        QStringLiteral("open-asset"),
-        QStringLiteral("Open an asset by stable ID."),
-        QStringLiteral("id"));
-    const QCommandLineOption searchOption(
-        QStringLiteral("search"),
-        QStringLiteral("Open the library with a search query."),
-        QStringLiteral("query"));
+    const QCommandLineOption libraryOption({QStringLiteral("l"), QStringLiteral("library")},
+                                           QStringLiteral("Asset library directory."),
+                                           QStringLiteral("directory"));
+    const QCommandLineOption assetOption(QStringLiteral("open-asset"),
+                                         QStringLiteral("Open an asset by stable ID."),
+                                         QStringLiteral("id"));
+    const QCommandLineOption searchOption(QStringLiteral("search"),
+                                          QStringLiteral("Open the library with a search query."),
+                                          QStringLiteral("query"));
     parser.addOption(libraryOption);
     parser.addOption(assetOption);
     parser.addOption(searchOption);
@@ -61,44 +64,54 @@ int main(int argc, char *argv[])
         QStringLiteral("uri"),
         QStringLiteral("Optional xips://asset/... or xips://search?... URI."),
         QStringLiteral("[uri]"));
-    if (!parser.parse(application.arguments())) {
+    if (!parser.parse(application.arguments()))
+    {
         QTextStream(stderr) << parser.errorText() << u'\n';
         return 2;
     }
-    if (parser.isSet(QStringLiteral("help"))) {
+    if (parser.isSet(QStringLiteral("help")))
+    {
         QTextStream(stdout) << parser.helpText();
         return 0;
     }
-    if (parser.isSet(QStringLiteral("version"))) {
+    if (parser.isSet(QStringLiteral("version")))
+    {
         QTextStream(stdout) << QCoreApplication::applicationName() << u' '
                             << QCoreApplication::applicationVersion() << u'\n';
         return 0;
     }
 
     std::optional<xips::ActivationRequest> activation;
-    if (parser.isSet(assetOption) && parser.isSet(searchOption)) {
+    if (parser.isSet(assetOption) && parser.isSet(searchOption))
+    {
         QTextStream(stderr) << "--open-asset and --search cannot be combined\n";
         return 2;
     }
-    if (parser.isSet(assetOption)) {
+    if (parser.isSet(assetOption))
+    {
         activation = xips::ActivationRequest{
             .action = xips::ActivationAction::OpenAsset,
             .value = parser.value(assetOption),
         };
-    } else if (parser.isSet(searchOption)) {
+    }
+    else if (parser.isSet(searchOption))
+    {
         activation = xips::ActivationRequest{
             .action = xips::ActivationAction::Search,
             .value = parser.value(searchOption),
         };
     }
     const QStringList positional = parser.positionalArguments();
-    if (positional.size() > 1 || (!positional.isEmpty() && activation)) {
+    if (positional.size() > 1 || (!positional.isEmpty() && activation))
+    {
         QTextStream(stderr) << "Specify only one activation request\n";
         return 2;
     }
-    if (!positional.isEmpty()) {
+    if (!positional.isEmpty())
+    {
         activation = xips::IntegrationService::parseUri(QUrl(positional.first()));
-        if (!activation) {
+        if (!activation)
+        {
             QTextStream(stderr) << "Invalid xIPs URI\n";
             return 2;
         }
@@ -107,14 +120,20 @@ int main(int argc, char *argv[])
     const QString library = parser.isSet(libraryOption)
                                 ? QFileInfo(parser.value(libraryOption)).absoluteFilePath()
                                 : defaultLibraryPath();
-    if (!library.isEmpty() && !QDir().mkpath(library)) {
-        QTextStream(stderr) << "Cannot create asset library: " << library << u'\n';
-        return 3;
-    }
+    QSettings().setValue(
+        QStringLiteral("runtime/browserLibrary"),
+        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("xips-browser.dll")));
+    xips::initializeEla();
+    application.setWindowIcon(xips::applicationIcon());
     xips::MainWindow window(library);
     window.show();
-    if (activation) {
+    if (activation)
+    {
         window.applyActivation(*activation);
     }
+#ifdef XIPS_HAS_SUITEAPP
+    xips::SuiteIntegration suite(window.findChild<xips::BrowserPanel *>(), &window);
+    QTimer::singleShot(0, &suite, [&suite] { suite.start(); });
+#endif
     return application.exec();
 }

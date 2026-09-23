@@ -1,0 +1,461 @@
+diff --git a/ElaNavigationBar.cpp b/ElaNavigationBar.cpp
+index 417ca7d..ab10f30 100644
+--- a/ElaNavigationBar.cpp
++++ b/ElaNavigationBar.cpp
+@@ -115,20 +115,30 @@ ElaNavigationBar::~ElaNavigationBar()
+ {
+ }
+ 
+-void ElaNavigationBar::setNavigationBarWidth(int navigationBarWidth)
+-{
+-    Q_D(ElaNavigationBar);
+-    if (navigationBarWidth < 180)
+-    {
+-        navigationBarWidth = 180;
+-    }
+-    if (d->_currentDisplayMode == ElaNavigationType::NavigationDisplayMode::Maximal)
+-    {
+-        setFixedWidth(navigationBarWidth);
+-    }
+-    d->_pNavigationBarWidth = navigationBarWidth;
+-    Q_EMIT pNavigationBarWidthChanged();
+-}
++void ElaNavigationBar::setNavigationBarWidth(int navigationBarWidth)
++{
++    Q_D(ElaNavigationBar);
++    navigationBarWidth = d->_customContainer
++        ? qBound(d->_customMinimumWidth, navigationBarWidth, d->_customMaximumWidth)
++        : qMax(180, navigationBarWidth);
++    d->_pNavigationBarWidth = navigationBarWidth;
++    if (d->_currentDisplayMode == ElaNavigationType::NavigationDisplayMode::Maximal)
++    {
++        if (d->_widthTransitioning)
++            d->_doNavigationBarWidthAnimation(d->_currentDisplayMode, true);
++        else if (d->_customContainer)
++        {
++            setMinimumWidth(d->_customMinimumWidth);
++            setMaximumWidth(d->_customMaximumWidth);
++            resize(navigationBarWidth, height());
++        }
++        else
++            setFixedWidth(navigationBarWidth);
++    }
++    d->_updateCustomGeometry();
++    updateGeometry();
++    Q_EMIT pNavigationBarWidthChanged();
++}
+ 
+ int ElaNavigationBar::getNavigationBarWidth() const
+ {
+@@ -556,10 +566,11 @@ void ElaNavigationBar::navigation(const QString& pageKey, bool isLogClicked, boo
+     }
+ }
+ 
+-void ElaNavigationBar::setDisplayMode(ElaNavigationType::NavigationDisplayMode displayMode, bool isAnimation)
+-{
+-    Q_D(ElaNavigationBar);
+-    if (d->_currentDisplayMode == displayMode || displayMode == ElaNavigationType::Auto)
++void ElaNavigationBar::setDisplayMode(ElaNavigationType::NavigationDisplayMode displayMode, bool isAnimation)
++{
++    Q_D(ElaNavigationBar);
++    if ((d->_currentDisplayMode == displayMode && (isAnimation || !d->_widthTransitioning))
++        || displayMode == ElaNavigationType::Auto)
+     {
+         return;
+     }
+@@ -571,15 +582,86 @@ void ElaNavigationBar::setDisplayMode(ElaNavigationType::NavigationDisplayMode d
+     {
+         d->_navigationModel->setIsMaximalMode(false);
+     }
+-    d->_doComponentAnimation(displayMode, isAnimation);
+-    d->_raiseNavigationBar();
+-}
++    d->_doComponentAnimation(displayMode, isAnimation);
++    d->_raiseNavigationBar();
++    Q_EMIT displayModeChanged(displayMode);
++}
+ 
+-ElaNavigationType::NavigationDisplayMode ElaNavigationBar::getDisplayMode() const
++ElaNavigationType::NavigationDisplayMode ElaNavigationBar::getDisplayMode() const
+ {
+     Q_D(const ElaNavigationBar);
+-    return d->_currentDisplayMode;
+-}
++    return d->_currentDisplayMode;
++}
++
++void ElaNavigationBar::setCustomContent(QWidget* content)
++{
++    Q_D(ElaNavigationBar);
++    d->_setCustomWidget(content, false);
++}
++
++QWidget* ElaNavigationBar::customContent() const
++{
++    Q_D(const ElaNavigationBar);
++    return d->_customContent;
++}
++
++void ElaNavigationBar::setCustomHeader(QWidget* header)
++{
++    Q_D(ElaNavigationBar);
++    d->_setCustomWidget(header, true);
++}
++
++QWidget* ElaNavigationBar::customHeader() const
++{
++    Q_D(const ElaNavigationBar);
++    return d->_customHeader;
++}
++
++void ElaNavigationBar::setCustomContentWidthRange(int minimum, int maximum)
++{
++    Q_D(ElaNavigationBar);
++    d->_customMinimumWidth = qMax(180, minimum);
++    d->_customMaximumWidth = qMax(d->_customMinimumWidth, maximum);
++    setNavigationBarWidth(d->_pNavigationBarWidth);
++}
++
++bool ElaNavigationBar::isDisplayModeAnimating() const
++{
++    Q_D(const ElaNavigationBar);
++    return d->_widthTransitioning;
++}
++
++QSize ElaNavigationBar::sizeHint() const
++{
++    Q_D(const ElaNavigationBar);
++    if (d->_customContainer)
++        return QSize(d->_currentDisplayMode == ElaNavigationType::Minimal ? 0 : d->_pNavigationBarWidth,
++                     d->_customLayout->sizeHint().height());
++    return QWidget::sizeHint();
++}
++
++QSize ElaNavigationBar::minimumSizeHint() const
++{
++    Q_D(const ElaNavigationBar);
++    if (d->_customContainer)
++        return QSize(0, 0);
++    return QWidget::minimumSizeHint();
++}
++
++void ElaNavigationBar::resizeEvent(QResizeEvent* event)
++{
++    QWidget::resizeEvent(event);
++    Q_D(ElaNavigationBar);
++    if (d->_customContainer && isVisible() && !d->_widthTransitioning
++        && d->_currentDisplayMode == ElaNavigationType::Maximal
++        && width() >= d->_customMinimumWidth && width() <= d->_customMaximumWidth
++        && width() != d->_pNavigationBarWidth)
++    {
++        d->_pNavigationBarWidth = width();
++        Q_EMIT pNavigationBarWidthChanged();
++    }
++    d->_updateCustomGeometry();
++}
+ 
+ int ElaNavigationBar::getPageOpenInNewWindowCount(const QString& nodeKey) const
+ {
+diff --git a/ElaNavigationBar.h b/ElaNavigationBar.h
+index f5a7b3d..126e1c7 100644
+--- a/ElaNavigationBar.h
++++ b/ElaNavigationBar.h
+@@ -47,20 +47,34 @@ public:
+ 
+     void navigation(const QString& pageKey, bool isLogClicked = true, bool isRouteBack = false);
+     void setDisplayMode(ElaNavigationType::NavigationDisplayMode displayMode, bool isAnimation = true);
+-    ElaNavigationType::NavigationDisplayMode getDisplayMode() const;
++    ElaNavigationType::NavigationDisplayMode getDisplayMode() const;
++
++    // Optional content host for applications with their own navigation models.
++    // The bar owns these widgets, their layout and display-mode transitions.
++    void setCustomContent(QWidget* content);
++    QWidget* customContent() const;
++    void setCustomHeader(QWidget* header);
++    QWidget* customHeader() const;
++    void setCustomContentWidthRange(int minimum, int maximum);
++    bool isDisplayModeAnimating() const;
++    QSize sizeHint() const override;
++    QSize minimumSizeHint() const override;
+ 
+     int getPageOpenInNewWindowCount(const QString& nodeKey) const;
+ 
+     const QList<ElaSuggestBox::SuggestData>& getSuggestDataList() const;
+ 
+-Q_SIGNALS:
++Q_SIGNALS:
++    Q_SIGNAL void displayModeChanged(ElaNavigationType::NavigationDisplayMode displayMode);
++    Q_SIGNAL void displayModeTransitionFinished(ElaNavigationType::NavigationDisplayMode displayMode);
+     Q_SIGNAL void pageOpenInNewWindow(QString nodeKey);
+     Q_SIGNAL void userInfoCardClicked();
+     Q_SIGNAL void navigationNodeClicked(ElaNavigationType::NavigationNodeType nodeType, QString nodeKey, bool isRouteBack);
+     Q_SIGNAL void navigationNodeAdded(ElaNavigationType::NavigationNodeType nodeType, QString nodeKey, QWidget* page);
+     Q_SIGNAL void navigationNodeRemoved(ElaNavigationType::NavigationNodeType nodeType, QString nodeKey);
+ 
+-protected:
++protected:
++    void resizeEvent(QResizeEvent* event) override;
+     virtual void paintEvent(QPaintEvent* event) override;
+ };
+ 
+diff --git a/private/ElaNavigationBarPrivate.cpp b/private/ElaNavigationBarPrivate.cpp
+index 9a3ae66..71dff38 100644
+--- a/private/ElaNavigationBarPrivate.cpp
++++ b/private/ElaNavigationBarPrivate.cpp
+@@ -21,7 +21,8 @@
+ #include <QLayout>
+ #include <QPropertyAnimation>
+ #include <QScrollBar>
+-#include <QTimer>
++#include <QTimer>
++#include <QVBoxLayout>
+ ElaNavigationBarPrivate::ElaNavigationBarPrivate(QObject* parent)
+     : QObject{parent}
+ {
+@@ -437,8 +438,14 @@ void ElaNavigationBarPrivate::_smoothScrollNavigationView(const QModelIndex& ind
+     });
+ }
+ 
+-void ElaNavigationBarPrivate::_doComponentAnimation(ElaNavigationType::NavigationDisplayMode displayMode, bool isAnimation)
+-{
++void ElaNavigationBarPrivate::_doComponentAnimation(ElaNavigationType::NavigationDisplayMode displayMode, bool isAnimation)
++{
++    if (_customContainer)
++    {
++        _currentDisplayMode = displayMode;
++        _doNavigationBarWidthAnimation(displayMode, isAnimation);
++        return;
++    }
+     switch (displayMode)
+     {
+     case ElaNavigationType::Minimal:
+@@ -511,49 +518,119 @@ void ElaNavigationBarPrivate::_resetLayout()
+     _userButtonLayout->addWidget(_userButton);
+ }
+ 
+-void ElaNavigationBarPrivate::_doNavigationBarWidthAnimation(ElaNavigationType::NavigationDisplayMode displayMode, bool isAnimation)
+-{
+-    Q_Q(ElaNavigationBar);
+-    QPropertyAnimation* navigationBarWidthAnimation = new QPropertyAnimation(q, "maximumWidth");
+-    navigationBarWidthAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-    navigationBarWidthAnimation->setStartValue(q->width());
+-    navigationBarWidthAnimation->setDuration(isAnimation ? 255 : 0);
+-    switch (displayMode)
+-    {
+-    case ElaNavigationType::Minimal:
+-    {
+-        connect(navigationBarWidthAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-            q->setFixedWidth(value.toUInt());
+-        });
+-        navigationBarWidthAnimation->setEndValue(0);
+-        break;
+-    }
+-    case ElaNavigationType::Compact:
+-    {
+-        connect(navigationBarWidthAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-            q->setFixedWidth(value.toUInt());
+-        });
+-        navigationBarWidthAnimation->setEndValue(42);
+-        break;
+-    }
+-    case ElaNavigationType::Maximal:
+-    {
+-        connect(navigationBarWidthAnimation, &QPropertyAnimation::finished, this, [=]() {
+-            _resetLayout();
+-        });
+-        connect(navigationBarWidthAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-            q->setFixedWidth(value.toUInt());
+-        });
+-        navigationBarWidthAnimation->setEndValue(_pNavigationBarWidth);
+-        break;
+-    }
+-    default:
+-    {
+-        break;
+-    }
+-    }
+-    navigationBarWidthAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-}
++void ElaNavigationBarPrivate::_doNavigationBarWidthAnimation(ElaNavigationType::NavigationDisplayMode displayMode, bool isAnimation)
++{
++    Q_Q(ElaNavigationBar);
++    if (!_widthAnimation)
++    {
++        _widthAnimation = new QPropertyAnimation(q, "maximumWidth", q);
++        _widthAnimation->setEasingCurve(QEasingCurve::OutCubic);
++        connect(_widthAnimation, &QPropertyAnimation::valueChanged, this, [this, q](const QVariant& value) {
++            q->setFixedWidth(value.toInt());
++            _updateCustomGeometry();
++        });
++        connect(_widthAnimation, &QPropertyAnimation::finished, this,
++                &ElaNavigationBarPrivate::_finishWidthTransition);
++    }
++    _widthAnimation->stop();
++    ++_widthTransitionSerial;
++    _widthTargetMode = displayMode;
++    _widthTransitioning = true;
++    const int start = q->width();
++    const int target = displayMode == ElaNavigationType::Minimal ? 0
++        : displayMode == ElaNavigationType::Compact ? 42 : _pNavigationBarWidth;
++    q->setFixedWidth(start);
++    if (!isAnimation || start == target)
++    {
++        q->setFixedWidth(target);
++        _finishWidthTransition();
++        return;
++    }
++    _widthAnimation->setDuration(255);
++    _widthAnimation->setStartValue(start);
++    _widthAnimation->setEndValue(target);
++    _widthAnimation->start();
++}
++
++void ElaNavigationBarPrivate::_finishWidthTransition()
++{
++    Q_Q(ElaNavigationBar);
++    if (_customContainer && _widthTargetMode == ElaNavigationType::Maximal)
++    {
++        // Let the host layout consume the final fixed width before restoring
++        // splitter resizing. Otherwise its penultimate frame becomes the saved width.
++        const auto serial = _widthTransitionSerial;
++        QTimer::singleShot(0, q, [this, q, serial] {
++            if (serial != _widthTransitionSerial)
++                return;
++            _widthTransitioning = false;
++            q->setMinimumWidth(_customMinimumWidth);
++            q->setMaximumWidth(_customMaximumWidth);
++            _updateCustomGeometry();
++            q->updateGeometry();
++            Q_EMIT q->displayModeTransitionFinished(_widthTargetMode);
++        });
++        return;
++    }
++    _widthTransitioning = false;
++    if (_widthTargetMode == ElaNavigationType::Maximal)
++        _resetLayout();
++    _updateCustomGeometry();
++    q->updateGeometry();
++    Q_EMIT q->displayModeTransitionFinished(_widthTargetMode);
++}
++
++void ElaNavigationBarPrivate::_setCustomWidget(QWidget* widget, bool header)
++{
++    Q_Q(ElaNavigationBar);
++    auto& previous = header ? _customHeader : _customContent;
++    if (previous == widget)
++        return;
++    if (!_customContainer)
++    {
++        q->layout()->setSizeConstraint(QLayout::SetNoConstraint);
++        q->layout()->setEnabled(false);
++        _userCard->hide();
++        _userButton->hide();
++        _navigationView->hide();
++        _footerView->hide();
++        _customContainer = new QWidget(q);
++        _customLayout = new QVBoxLayout(_customContainer);
++        _customLayout->setContentsMargins(0, 0, 0, 0);
++        _customLayout->setSpacing(0);
++        q->setMinimumWidth(_customMinimumWidth);
++        q->setMaximumWidth(_customMaximumWidth);
++        _customContainer->show();
++    }
++    if (previous)
++    {
++        _customLayout->removeWidget(previous);
++        previous->hide();
++        previous->deleteLater();
++    }
++    previous = widget;
++    if (widget)
++    {
++        if (header)
++            _customLayout->insertWidget(0, widget);
++        else
++            _customLayout->addWidget(widget, 1);
++        widget->show();
++    }
++    _updateCustomGeometry();
++    q->updateGeometry();
++}
++
++void ElaNavigationBarPrivate::_updateCustomGeometry()
++{
++    Q_Q(ElaNavigationBar);
++    if (!_customContainer)
++        return;
++    // Keep navigation controls stable while the bar clips and slides their viewport.
++    _customContainer->setFixedWidth(_pNavigationBarWidth);
++    _customContainer->setGeometry(q->width() - _pNavigationBarWidth, 0,
++                                  _pNavigationBarWidth, q->height());
++}
+ 
+ void ElaNavigationBarPrivate::_doNavigationViewWidthAnimation(bool isAnimation)
+ {
+diff --git a/private/ElaNavigationBarPrivate.h b/private/ElaNavigationBarPrivate.h
+index 9b4a58d..3a4a7ab 100644
+--- a/private/ElaNavigationBarPrivate.h
++++ b/private/ElaNavigationBarPrivate.h
+@@ -4,12 +4,14 @@
+ #include "ElaWidgetToolsDef.h"
+ #include "ElaSuggestBox.h"
+ #include <QMap>
+-#include <QObject>
++#include <QObject>
++#include <QPointer>
+ class QLayout;
+ class ElaMenu;
+ class QVBoxLayout;
+ class QHBoxLayout;
+-class QLinearGradient;
++class QLinearGradient;
++class QPropertyAnimation;
+ 
+ class ElaNavigationBar;
+ class ElaNavigationNode;
+@@ -62,7 +64,21 @@ private:
+     ElaFooterModel* _footerModel{nullptr};
+     ElaFooterDelegate* _footerDelegate{nullptr};
+     ElaInteractiveCard* _userCard{nullptr};
+-    bool _isShowUserCard{true};
++    bool _isShowUserCard{true};
++    QPointer<QWidget> _customContainer;
++    QPointer<QWidget> _customContent;
++    QPointer<QWidget> _customHeader;
++    QVBoxLayout* _customLayout{nullptr};
++    int _customMinimumWidth{180};
++    int _customMaximumWidth{QWIDGETSIZE_MAX};
++    QPropertyAnimation* _widthAnimation{nullptr};
++    bool _widthTransitioning{false};
++    quint64 _widthTransitionSerial{0};
++    ElaNavigationType::NavigationDisplayMode _widthTargetMode{ElaNavigationType::Maximal};
++
++    void _setCustomWidget(QWidget* widget, bool header);
++    void _updateCustomGeometry();
++    void _finishWidthTransition();
+ 
+     QList<ElaNavigationNode*> _lastExpandedNodesList;
+ 
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index 89fcaed..105e7ed 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -100,6 +100,18 @@ behavior is unchanged. ZeroSlack's label adapter disables that override, restore
+ its own typography and native QLabel defaults, and clears constructor QSS/palette
+ overrides. QLabel continues to handle ordinary text layout, selection and links.
+ 
++Apply `patches/16-zeroslack-navigation-content-host.patch` after patch 15.
++ElaNavigationBar adds optional custom header/content hosting for existing navigation
++models. It owns their vertical layout and stable-width sliding viewport, while its
++native Maximal/Minimal/Compact modes drive the width transition. A single owned
++animation supports reversal and instant settlement; generation-guarded completion
++releases custom width constraints after layout has consumed the final frame.
++The public mode/completion signals let an external dock synchronize its saved size
++once at completion. The host may resize the expanded bar within its configured range.
++ZeroSlack's adapter is `src/ui/navigationpanecoordinator.cpp`; it retains QDockWidget
++only for existing window layout persistence. ElaWindow and its page routing remain
++unused. This content-host API is a local extension, not an unmodified upstream API.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids

@@ -10,6 +10,8 @@ add_library(xips_core STATIC
     library/AssetScanner.h
     library/FileSystemUtil.cpp
     library/FileSystemUtil.h
+    library/SnapshotLibrary.cpp
+    library/SnapshotLibrary.h
     manifest/ManifestService.cpp
     manifest/ManifestService.h
 )
@@ -20,12 +22,11 @@ if(BUILD_TESTING)
 endif()
 
 add_library(xips_app STATIC
-    app/AssetTableModel.cpp
-    app/AssetTableModel.h
-    app/LibraryController.cpp
-    app/LibraryController.h
-    app/MainWindow.cpp
-    app/MainWindow.h
+    app/Branding.cpp
+    app/Branding.h
+    ${CMAKE_SOURCE_DIR}/assets/xips.qrc
+    app/BrowserPanel.cpp
+    app/BrowserPanel.h
 )
 target_include_directories(xips_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xips_app
@@ -33,11 +34,25 @@ target_link_libraries(xips_app
         xips_core
         Qt6::Concurrent
         Qt6::Widgets
+        Ela::WidgetTools
 )
 
-add_executable(xips app/main.cpp)
+add_executable(xips app/main.cpp app/MainWindow.cpp app/MainWindow.h)
 target_compile_definitions(xips PRIVATE XIPS_VERSION="${PROJECT_VERSION}")
 target_link_libraries(xips PRIVATE xips_app)
+if(WIN32)
+    enable_language(RC)
+    set(XIPS_ICON_PATH "${CMAKE_SOURCE_DIR}/assets/icons/xips.ico")
+    configure_file(${CMAKE_SOURCE_DIR}/assets/icons/xips.rc.in ${CMAKE_CURRENT_BINARY_DIR}/xips.rc @ONLY)
+    target_sources(xips PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/xips.rc)
+endif()
+if(XIPS_ENABLE_SUITEAPP AND SuiteApp_FOUND)
+    add_library(xips_suite STATIC integration/SuiteIntegration.cpp integration/SuiteIntegration.h)
+    target_include_directories(xips_suite PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(xips_suite PUBLIC xips_app SuiteApp::suiteapp)
+    target_link_libraries(xips PRIVATE xips_suite)
+    target_compile_definitions(xips PRIVATE XIPS_HAS_SUITEAPP=1)
+endif()
 set_target_properties(xips PROPERTIES
     WIN32_EXECUTABLE TRUE
     MACOSX_BUNDLE TRUE
@@ -48,3 +63,12 @@ target_compile_definitions(xips-cli PRIVATE XIPS_VERSION="${PROJECT_VERSION}")
 target_link_libraries(xips-cli PRIVATE xips_core)
 
 set_target_properties(xips xips-cli PROPERTIES FOLDER "qtc_runnable")
+
+add_library(xips_browser SHARED app/BrowserApi.cpp)
+target_include_directories(xips_browser PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(xips_browser PRIVATE xips_app)
+set_target_properties(xips_browser PROPERTIES PREFIX "" OUTPUT_NAME "xips-browser")
+install(TARGETS xips_browser RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES ${CMAKE_SOURCE_DIR}/include/xips/BrowserApi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/xips)
+install(FILES ${CMAKE_SOURCE_DIR}/assets/icons/xips-256.png ${CMAKE_SOURCE_DIR}/assets/icons/xips.ico
+    DESTINATION ${CMAKE_INSTALL_BINDIR}/assets/icons)

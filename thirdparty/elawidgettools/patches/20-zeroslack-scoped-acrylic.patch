@@ -1,0 +1,213 @@
+diff --git a/Development/ElaWinShadowHelper.cpp b/Development/ElaWinShadowHelper.cpp
+index bb309d1..27829c6 100644
+--- a/Development/ElaWinShadowHelper.cpp
++++ b/Development/ElaWinShadowHelper.cpp
+@@ -122,9 +122,13 @@ void ElaWinShadowHelper::setWindowThemeMode(quint64 hwnd, bool isLightMode)
+     _dwmSetWindowAttribute((HWND)hwnd, dwAttritube, &bIsLightMode, sizeof(bIsLightMode));
+ }
+ 
+-void ElaWinShadowHelper::setWindowDisplayMode(QWidget* widget, ElaApplicationType::WindowDisplayMode displayMode, ElaApplicationType::WindowDisplayMode lastDisplayMode)
+-{
+-    HWND winHwnd = (HWND)widget->winId();
++bool ElaWinShadowHelper::setWindowDisplayMode(QWidget* widget, ElaApplicationType::WindowDisplayMode displayMode, ElaApplicationType::WindowDisplayMode lastDisplayMode)
++{
++    if (!widget || !_dwmSetWindowAttribute || !_dwmExtendFrameIntoClientArea)
++    {
++        return false;
++    }
++    HWND winHwnd = (HWND)widget->winId();
+     switch (lastDisplayMode)
+     {
+     case ElaApplicationType::Mica:
+@@ -193,53 +197,70 @@ void ElaWinShadowHelper::setWindowDisplayMode(QWidget* widget, ElaApplicationTyp
+     }
+     }
+ 
+-    switch (displayMode)
+-    {
+-    case ElaApplicationType::Mica:
+-    {
+-        if (!compareWindowsVersion(Win11_Origin))
+-        {
+-            break;
++    switch (displayMode)
++    {
++    case ElaApplicationType::Normal:
++    {
++        // Explicitly remove a per-window material, including its full-client margins.
++        const MARGINS margins{};
++        const bool clearedMargins = SUCCEEDED(_dwmExtendFrameIntoClientArea(winHwnd, &margins));
++        if (compareWindowsVersion(Win11_22H2))
++        {
++            const _DWM_SYSTEMBACKDROP_TYPE backdropType = _DWMSBT_NONE;
++            return SUCCEEDED(_dwmSetWindowAttribute(winHwnd, _DWMWA_SYSTEMBACKDROP_TYPE,
++                &backdropType, sizeof(backdropType))) && clearedMargins;
++        }
++        return clearedMargins;
++    }
++    case ElaApplicationType::Mica:
++    {
++        if (!compareWindowsVersion(Win11_Origin))
++        {
++            return false;
+         }
+         _externWindowMargins(winHwnd);
+         if (compareWindowsVersion(Win11_22H2))
+         {
+             const _DWM_SYSTEMBACKDROP_TYPE backdropType = _DWMSBT_MAINWINDOW;
+-            _dwmSetWindowAttribute(winHwnd, _DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
++            return SUCCEEDED(_dwmSetWindowAttribute(winHwnd, _DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType)));
+         }
+         else
+         {
+             const BOOL enable = TRUE;
+-            _dwmSetWindowAttribute(winHwnd, _DWMWA_MICA_EFFECT, &enable, sizeof(enable));
+-        }
+-        break;
++            return SUCCEEDED(_dwmSetWindowAttribute(winHwnd, _DWMWA_MICA_EFFECT, &enable, sizeof(enable)));
++        }
+     }
+     case ElaApplicationType::MicaAlt:
+     {
+-        if (!compareWindowsVersion(Win11_22H2))
+-        {
+-            break;
++        if (!compareWindowsVersion(Win11_22H2))
++        {
++            return false;
+         }
+         _externWindowMargins(winHwnd);
+         const _DWM_SYSTEMBACKDROP_TYPE backdropType = _DWMSBT_TABBEDWINDOW;
+-        _dwmSetWindowAttribute(winHwnd, _DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
+-        break;
++        return SUCCEEDED(_dwmSetWindowAttribute(winHwnd, _DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType)));
+     }
+     case ElaApplicationType::Acrylic:
+     {
+-        if (!compareWindowsVersion(Win11_Origin))
+-        {
+-            break;
+-        }
+-        _externWindowMargins(winHwnd);
+-        const _DWM_SYSTEMBACKDROP_TYPE backdropType = _DWMSBT_TRANSIENTWINDOW;
+-        _dwmSetWindowAttribute(winHwnd, _DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
+-        break;
++        if (!compareWindowsVersion(Win11_22H2) || !getIsCompositionEnabled())
++        {
++            return false;
++        }
++        const MARGINS margins{-1, -1, -1, -1};
++        if (FAILED(_dwmExtendFrameIntoClientArea(winHwnd, &margins)))
++        {
++            return false;
++        }
++        const _DWM_SYSTEMBACKDROP_TYPE backdropType = _DWMSBT_TRANSIENTWINDOW;
++        return SUCCEEDED(_dwmSetWindowAttribute(winHwnd, _DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType)));
+     }
+     case ElaApplicationType::DWMBlur:
+     {
+         MARGINS windowMargins = {0, 1, 0, 0};
+-        _dwmExtendFrameIntoClientArea(winHwnd, &windowMargins);
++        if (FAILED(_dwmExtendFrameIntoClientArea(winHwnd, &windowMargins)))
++        {
++            return false;
++        }
+         if (compareWindowsVersion(Win7_Origin))
+         {
+             _ACCENT_POLICY policy{};
+@@ -249,20 +270,19 @@ void ElaWinShadowHelper::setWindowDisplayMode(QWidget* widget, ElaApplicationTyp
+             wcad.Attrib = _WCA_ACCENT_POLICY;
+             wcad.pvData = &policy;
+             wcad.cbData = sizeof(policy);
+-            _setWindowCompositionAttribute(winHwnd, &wcad);
++            return _setWindowCompositionAttribute && _setWindowCompositionAttribute(winHwnd, &wcad);
+         }
+         else
+         {
+             DWM_BLURBEHIND bb{};
+             bb.fEnable = TRUE;
+             bb.dwFlags = DWM_BB_ENABLE;
+-            _dwmEnableBlurBehindWindow(winHwnd, &bb);
+-        }
+-        break;
++            return _dwmEnableBlurBehindWindow && SUCCEEDED(_dwmEnableBlurBehindWindow(winHwnd, &bb));
++        }
+     }
+     default:
+     {
+-        break;
++        return false;
+     }
+     }
+ }
+@@ -356,4 +376,4 @@ void ElaWinShadowHelper::_externWindowMargins(HWND hwnd)
+         _dwmExtendFrameIntoClientArea(hwnd, &margins);
+     }
+ }
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Development/ElaWinShadowHelper.h b/Development/ElaWinShadowHelper.h
+index 51c487c..57a71dd 100644
+--- a/Development/ElaWinShadowHelper.h
++++ b/Development/ElaWinShadowHelper.h
+@@ -31,7 +31,7 @@ public:
+ 
+     void setWindowShadow(quint64 hwnd);
+     void setWindowThemeMode(quint64 hwnd, bool isLightMode);
+-    void setWindowDisplayMode(QWidget* widget, ElaApplicationType::WindowDisplayMode displayMode, ElaApplicationType::WindowDisplayMode lastDisplayMode);
++    bool setWindowDisplayMode(QWidget* widget, ElaApplicationType::WindowDisplayMode displayMode, ElaApplicationType::WindowDisplayMode lastDisplayMode);
+     bool getIsCompositionEnabled() const;
+     bool getIsFullScreen(const HWND& hwnd);
+     MONITORINFOEXW getMonitorForWindow(const HWND& hwnd);
+diff --git a/ElaApplication.cpp b/ElaApplication.cpp
+index 1388d5f..334db78 100644
+--- a/ElaApplication.cpp
++++ b/ElaApplication.cpp
+@@ -171,7 +171,28 @@ void ElaApplication::syncWindowDisplayMode(QWidget* widget, bool isSync)
+     }
+ }
+ 
+-bool ElaApplication::containsCursorToItem(QWidget* item)
++bool ElaApplication::applyWindowDisplayMode(QWidget* widget, ElaApplicationType::WindowDisplayMode mode,
++                                          ElaApplicationType::WindowDisplayMode previousMode)
++{
++#ifdef Q_OS_WIN
++    Q_D(ElaApplication);
++    if (!widget || !widget->isWindow() || !widget->internalWinId()
++        || QGuiApplication::platformName() != QStringLiteral("windows"))
++    {
++        return false;
++    }
++    const bool applied = eWinHelper->setWindowDisplayMode(widget, mode, previousMode);
++    eWinHelper->setWindowThemeMode(widget->internalWinId(), d->_themeMode == ElaThemeType::Light);
++    return applied;
++#else
++    Q_UNUSED(widget);
++    Q_UNUSED(mode);
++    Q_UNUSED(previousMode);
++    return false;
++#endif
++}
++
++bool ElaApplication::containsCursorToItem(QWidget* item)
+ {
+     if (!item || !item->isVisible())
+     {
+diff --git a/ElaApplication.h b/ElaApplication.h
+index aaad87c..ade11df 100644
+--- a/ElaApplication.h
++++ b/ElaApplication.h
+@@ -22,7 +22,11 @@ private:
+ 
+ public:
+     void init();
+-    void syncWindowDisplayMode(QWidget* widget, bool isSync = true);
++    void syncWindowDisplayMode(QWidget* widget, bool isSync = true);
++    // Apply a native material to one window without changing the global mode.
++    // The caller owns refresh timing and opts out of global synchronization.
++    bool applyWindowDisplayMode(QWidget* widget, ElaApplicationType::WindowDisplayMode mode,
++                                ElaApplicationType::WindowDisplayMode previousMode);
+     static bool containsCursorToItem(QWidget* item);
+ };
+ 

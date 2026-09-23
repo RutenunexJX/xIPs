@@ -88,6 +88,34 @@ struct ManifestTransactionRecoveryResult {
     }
 };
 
+enum class PayloadTransactionRecoveryOutcome {
+    RestoredVisible,
+    Completed,
+    Retained
+};
+
+struct PayloadTransactionRecoveryItem {
+    QString transactionPath;
+    QString assetRoot;
+    QString operation;
+    PayloadTransactionRecoveryOutcome outcome =
+        PayloadTransactionRecoveryOutcome::Retained;
+    QString message;
+};
+
+struct PayloadTransactionRecoveryResult {
+    QList<PayloadTransactionRecoveryItem> items;
+    int restoredVisible = 0;
+    int completed = 0;
+    int retained = 0;
+    QString fatalError;
+
+    [[nodiscard]] bool complete() const
+    {
+        return fatalError.isEmpty() && retained == 0;
+    }
+};
+
 struct ImportAssetRequest {
     QString libraryRoot;
     QString sourcePath;
@@ -100,12 +128,24 @@ struct VersionInfo {
     QDateTime createdAt;
     QString contentHash;
     QString strictContentHash;
+    // A manifest-independent proof of the snapshot payload. This is computed
+    // while the snapshot is verified and is intentionally not a second source
+    // of persisted snapshot metadata.
+    QString payloadFingerprint;
     QString path;
     QString warning;
 };
 
 struct VersionInventoryResult {
+    struct InvalidVersion {
+        QString version;
+        QString path;
+        QString fingerprint;
+        QString problem;
+    };
+
     QList<VersionInfo> validVersions;
+    QList<InvalidVersion> invalidVersions;
     QStringList problems;
     QString fatalError;
 
@@ -193,6 +233,14 @@ struct DeleteVersionResult {
     QString warning;
 };
 
+struct CorruptVersionIsolationResult {
+    bool isolated = false;
+    QString originalPath;
+    QString retainedPath;
+    QString fingerprint;
+    QString warning;
+};
+
 struct CopyPlan {
     QString version;
     QString sourceRoot;
@@ -226,12 +274,16 @@ enum class WorkingCopyDiscardPolicy {
 
 #ifdef XIPS_ENABLE_TEST_HOOKS
 enum class WorkingCopyTestPoint {
+    ImportSourceCopiedBeforeVerification,
+    UpdateSourceCopiedBeforeVerification,
     StagingVerifiedBeforePublish,
     RecoveryVerifiedBeforeDiscardIsolation,
     RecoveryIsolatedBeforeLiveReverification,
     VersionStagingVerifiedBeforePublish,
     VersionStagingPreparedBeforeInitialVerification,
+    VersionHierarchyCheckedBeforeCreate,
     SavedVersionCopiedBeforeVerification,
+    CopyStagingCreatedBeforePayloadCopy,
     CopyStagingPreparedBeforeInitialVerification,
     RestoreStagingPreparedBeforeInitialVerification,
     RestoreStagingVerifiedBeforeUpdateAsset,
@@ -240,6 +292,8 @@ enum class WorkingCopyTestPoint {
     DeleteVersionMarkerPublishedBeforeFinalProof,
     DeleteVersionVerifiedBeforeRemoval,
     DeleteAssetIsolatedBeforeRemoval,
+    PayloadTransactionReadBeforeRecovery,
+    PayloadRecoveryBeforeInternalReattach,
     MetadataMergedBeforeManifestCas,
     GroupMembershipMergedBeforeManifestCas,
     ManifestOriginalIsolatedBeforePublish,
@@ -333,6 +387,8 @@ public:
                                QString *error = nullptr) const;
     [[nodiscard]] ManifestTransactionRecoveryResult
     recoverManifestTransactions(const QString &libraryRoot) const;
+    [[nodiscard]] PayloadTransactionRecoveryResult
+    recoverPayloadTransactions(const QString &libraryRoot) const;
 
     [[nodiscard]] QList<VersionInfo> versions(
         const QString &assetRoot,
@@ -345,11 +401,23 @@ public:
                        QString *error = nullptr) const;
     [[nodiscard]] WorkingCopyState workingCopyState(
         const AssetRecord &asset) const;
+    [[nodiscard]] WorkingCopyState workingCopyState(
+        const AssetRecord &asset,
+        const VersionInventoryResult &inventory) const;
     bool deleteVersion(const AssetRecord &asset,
                        const QString &version,
                        RemovalMode mode = RemovalMode::MoveToTrash,
                        DeleteVersionResult *result = nullptr,
                        QString *error = nullptr) const;
+    // Isolates, but never deletes, a snapshot that fails full verification.
+    // The exact opaque tree is bound before and after the rename so an
+    // unverified or concurrently changing directory is retained in place.
+    bool isolateCorruptVersion(
+        const AssetRecord &asset,
+        const QString &version,
+        const QString &expectedFingerprint,
+        CorruptVersionIsolationResult *result,
+        QString *error = nullptr) const;
     [[nodiscard]] CopyPlan copyPlan(const AssetRecord &asset,
                                     const QString &version) const;
     bool copyVersionPayload(const AssetRecord &asset,

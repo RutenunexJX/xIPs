@@ -29,6 +29,11 @@ struct AssetRecord {
 
 struct ScanResult {
     QList<AssetRecord> assets;
+    // Every ID from a manifest that passed schema validation, including IDs
+    // later excluded from assets because their case-insensitive identity is
+    // ambiguous. Mutating callers use this list to avoid creating another
+    // colliding asset.
+    QStringList discoveredAssetIds;
     QStringList errors;
     bool cancelled = false;
 };

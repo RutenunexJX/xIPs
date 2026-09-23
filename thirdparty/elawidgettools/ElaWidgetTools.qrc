@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/include">
+        <file>Font/FontAwesomeFreeSolid.ttf</file>
+    </qresource>
+</RCC>

@@ -86,10 +86,10 @@ ScanResult AssetScanner::scan(const QString &libraryRoot,
                               const std::atomic_bool *cancelled) const
 {
     ScanResult result;
-    const QFileInfo rootInfo(libraryRoot);
-    if (!rootInfo.isDir()) {
+    const QFileInfo rootInfo(files::normalizedAbsolute(libraryRoot));
+    if (!rootInfo.isDir() || files::isLinkLike(rootInfo)) {
         result.errors.append(
-            QStringLiteral("Library root does not exist or is not a directory: %1")
+            QStringLiteral("Library root does not exist, is not a directory, or is linked: %1")
                 .arg(files::normalizedAbsolute(libraryRoot)));
         return result;
     }
@@ -97,7 +97,8 @@ ScanResult AssetScanner::scan(const QString &libraryRoot,
     QStringList manifests;
     discoverManifests(rootInfo.absoluteFilePath(), manifests, cancelled);
     std::sort(manifests.begin(), manifests.end());
-    QHash<QString, QString> firstPathById;
+    QHash<QString, QList<AssetRecord>> candidatesById;
+    QStringList identityOrder;
     for (const QString &manifestPath : manifests) {
         if (isCancelled(cancelled)) {
             result.cancelled = true;
@@ -109,15 +110,11 @@ ScanResult AssetScanner::scan(const QString &libraryRoot,
             continue;
         }
         const Manifest &manifest = *loaded.manifest;
-        if (firstPathById.contains(manifest.id)) {
-            result.errors.append(
-                QStringLiteral("Duplicate asset id '%1': %2 and %3")
-                    .arg(manifest.id,
-                         firstPathById.value(manifest.id),
-                         manifestPath));
-            continue;
+        result.discoveredAssetIds.append(manifest.id);
+        const QString identityKey = manifest.id.toCaseFolded();
+        if (!candidatesById.contains(identityKey)) {
+            identityOrder.append(identityKey);
         }
-        firstPathById.insert(manifest.id, manifestPath);
 
         AssetRecord record;
         record.manifest = manifest;
@@ -133,7 +130,21 @@ ScanResult AssetScanner::scan(const QString &libraryRoot,
                 record.lastModified = info.lastModified();
             }
         }
-        result.assets.append(record);
+        candidatesById[identityKey].append(std::move(record));
+    }
+
+    for (const QString &identityKey : std::as_const(identityOrder)) {
+        const QList<AssetRecord> &candidates = candidatesById[identityKey];
+        if (candidates.size() == 1) {
+            result.assets.append(candidates.first());
+            continue;
+        }
+        for (const AssetRecord &candidate : candidates) {
+            result.errors.append(
+                QStringLiteral("%1: Duplicate asset id '%2'")
+                    .arg(candidate.manifestPath,
+                         candidates.first().manifest.id));
+        }
     }
 
     std::sort(result.assets.begin(), result.assets.end(),

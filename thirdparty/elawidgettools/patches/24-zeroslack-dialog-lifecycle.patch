@@ -1,0 +1,250 @@
+diff --git a/Development/ElaMaskWidget.cpp b/Development/ElaMaskWidget.cpp
+index 620372f..fc30067 100644
+--- a/Development/ElaMaskWidget.cpp
++++ b/Development/ElaMaskWidget.cpp
+@@ -16,7 +16,11 @@ ElaMaskWidget::~ElaMaskWidget()
+ 
+ void ElaMaskWidget::doMaskAnimation(int endValue)
+ {
+-    QPropertyAnimation* opacityAnimation = new QPropertyAnimation(this, "pMaskAlpha");
++    for (auto* running : findChildren<QPropertyAnimation*>()) {
++        running->stop();
++        running->deleteLater();
++    }
++    QPropertyAnimation* opacityAnimation = new QPropertyAnimation(this, "pMaskAlpha", this);
+     connect(opacityAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+         update();
+     });
+diff --git a/ElaContentDialog.cpp b/ElaContentDialog.cpp
+index 2ca0c92..58cb4dd 100644
+--- a/ElaContentDialog.cpp
++++ b/ElaContentDialog.cpp
+@@ -8,7 +8,8 @@
+ #include "ElaWinShadowHelper.h"
+ #include "private/ElaContentDialogPrivate.h"
+ #include <QApplication>
+-#include <QGuiApplication>
++#include <QGuiApplication>
++#include <QHideEvent>
+ #include <QHBoxLayout>
+ #include <QKeyEvent>
+ #include <QPainter>
+@@ -22,10 +23,12 @@ ElaContentDialog::ElaContentDialog(QWidget* parent)
+     Q_D(ElaContentDialog);
+     d->q_ptr = this;
+ 
+-    d->_maskWidget = new ElaMaskWidget(parent);
+-    d->_maskWidget->move(0, 0);
+-    d->_maskWidget->setFixedSize(parent->size());
+-    d->_maskWidget->setVisible(false);
++    if (parent) {
++        d->_maskWidget = new ElaMaskWidget(parent);
++        d->_maskWidget->setGeometry(parent->rect());
++        d->_maskWidget->hide();
++        parent->installEventFilter(this);
++    }
+ 
+     resize(400, height());
+     setWindowModality(Qt::ApplicationModal);
+@@ -42,7 +45,7 @@ ElaContentDialog::ElaContentDialog(QWidget* parent)
+     connect(d->_leftButton, &ElaPushButton::clicked, this, [=]() {
+         onLeftButtonClicked();
+         d->_doCloseAnimation(false);
+-        QTimer::singleShot(0, nullptr, [=]() {
++        QTimer::singleShot(0, this, [=]() {
+             Q_EMIT leftButtonClicked();
+         });
+     });
+@@ -53,7 +56,7 @@ ElaContentDialog::ElaContentDialog(QWidget* parent)
+     d->_middleButton = new ElaPushButton("minimum", this);
+     connect(d->_middleButton, &ElaPushButton::clicked, this, [=]() {
+         onMiddleButtonClicked();
+-        QTimer::singleShot(0, nullptr, [=]() {
++        QTimer::singleShot(0, this, [=]() {
+             Q_EMIT middleButtonClicked();
+         });
+     });
+@@ -65,7 +68,7 @@ ElaContentDialog::ElaContentDialog(QWidget* parent)
+     connect(d->_rightButton, &ElaPushButton::clicked, this, [=]() {
+         onRightButtonClicked();
+         d->_doCloseAnimation(true);
+-        QTimer::singleShot(0, nullptr, [=]() {
++        QTimer::singleShot(0, this, [=]() {
+             Q_EMIT rightButtonClicked();
+         });
+     });
+@@ -114,7 +117,10 @@ ElaContentDialog::ElaContentDialog(QWidget* parent)
+ ElaContentDialog::~ElaContentDialog()
+ {
+     Q_D(ElaContentDialog);
+-    d->_maskWidget->deleteLater();
++    if (d->_maskWidget) {
++        d->_maskWidget->hide();
++        d->_maskWidget->deleteLater();
++    }
+ }
+ 
+ void ElaContentDialog::onLeftButtonClicked()
+@@ -132,8 +138,8 @@ void ElaContentDialog::onRightButtonClicked()
+ void ElaContentDialog::setCentralWidget(QWidget* centralWidget)
+ {
+     Q_D(ElaContentDialog);
+-    d->_mainLayout->takeAt(0);
+-    d->_mainLayout->takeAt(0);
++    delete d->_mainLayout->takeAt(0);
++    delete d->_mainLayout->takeAt(0);
+     delete d->_centralWidget;
+     d->_centralWidget = centralWidget;
+     d->_mainLayout->addWidget(centralWidget);
+@@ -158,19 +164,49 @@ void ElaContentDialog::setRightButtonText(const QString& text)
+     d->_rightButton->setText(text);
+ }
+ 
+-void ElaContentDialog::close()
+-{
+-    Q_D(ElaContentDialog);
+-    d->_doCloseAnimation(false);
+-}
++void ElaContentDialog::close()
++{
++    QDialog::close();
++}
++
++void ElaContentDialog::setStandardButtonsVisible(bool visible)
++{
++    Q_D(ElaContentDialog);
++    d->_standardButtonsVisible = visible;
++    d->_buttonWidget->setVisible(visible);
++}
++
++void ElaContentDialog::done(int result)
++{
++    Q_D(ElaContentDialog);
++    if (d->_maskWidget) d->_maskWidget->hide();
++    QDialog::done(result);
++}
++
++void ElaContentDialog::hideEvent(QHideEvent* event)
++{
++    Q_D(ElaContentDialog);
++    if (d->_maskWidget) d->_maskWidget->hide();
++    QDialog::hideEvent(event);
++}
++
++bool ElaContentDialog::eventFilter(QObject* watched, QEvent* event)
++{
++    Q_D(ElaContentDialog);
++    if (watched == parentWidget() && event->type() == QEvent::Resize && d->_maskWidget)
++        d->_maskWidget->setGeometry(parentWidget()->rect());
++    return QDialog::eventFilter(watched, event);
++}
+ 
+ void ElaContentDialog::showEvent(QShowEvent* event)
+ {
+     Q_D(ElaContentDialog);
+-    d->_maskWidget->setVisible(true);
+-    d->_maskWidget->raise();
+-    d->_maskWidget->setFixedSize(parentWidget()->size());
+-    d->_maskWidget->doMaskAnimation(90);
++    if (d->_maskWidget) {
++        d->_maskWidget->setGeometry(parentWidget()->rect());
++        d->_maskWidget->show();
++        d->_maskWidget->raise();
++        d->_maskWidget->doMaskAnimation(60);
++    }
+     d->_moveToCenter();
+     QDialog::showEvent(event);
+ }
+@@ -186,8 +222,10 @@ void ElaContentDialog::paintEvent(QPaintEvent* event)
+     // 背景绘制
+     painter.drawRect(rect());
+     // 按钮栏背景绘制
+-    painter.setBrush(ElaThemeColor(d->_themeMode, DialogLayoutArea));
+-    painter.drawRoundedRect(QRectF(0, height() - 60, width(), 60), 8, 8);
++    if (d->_standardButtonsVisible) {
++        painter.setBrush(ElaThemeColor(d->_themeMode, DialogLayoutArea));
++        painter.drawRoundedRect(QRectF(0, height() - 60, width(), 60), 8, 8);
++    }
+     painter.restore();
+ }
+ 
+diff --git a/ElaContentDialog.h b/ElaContentDialog.h
+index 104ea49..ad33416 100644
+--- a/ElaContentDialog.h
++++ b/ElaContentDialog.h
+@@ -18,7 +18,9 @@ public:
+     Q_SLOT virtual void onLeftButtonClicked();
+     Q_SLOT virtual void onMiddleButtonClicked();
+     Q_SLOT virtual void onRightButtonClicked();
+-    void setCentralWidget(QWidget* centralWidget);
++    void setCentralWidget(QWidget* centralWidget);
++    void setStandardButtonsVisible(bool visible);
++    void done(int result) override;
+ 
+     void setLeftButtonText(const QString& text);
+     void setMiddleButtonText(const QString& text);
+@@ -31,7 +33,9 @@ Q_SIGNALS:
+     Q_SIGNAL void rightButtonClicked();
+ 
+ protected:
+-    virtual void showEvent(QShowEvent* event) override;
++    virtual void showEvent(QShowEvent* event) override;
++    void hideEvent(QHideEvent* event) override;
++    bool eventFilter(QObject* watched, QEvent* event) override;
+     virtual void paintEvent(QPaintEvent* event) override;
+     virtual void keyPressEvent(QKeyEvent* event) override;
+ };
+diff --git a/private/ElaContentDialogPrivate.cpp b/private/ElaContentDialogPrivate.cpp
+index 14ff551..59fa0fb 100644
+--- a/private/ElaContentDialogPrivate.cpp
++++ b/private/ElaContentDialogPrivate.cpp
+@@ -19,13 +19,7 @@ ElaContentDialogPrivate::~ElaContentDialogPrivate()
+ void ElaContentDialogPrivate::_doCloseAnimation(bool isAccept)
+ {
+     Q_Q(ElaContentDialog);
+-    _maskWidget->doMaskAnimation(0);
+-    isAccept ? q->accept() : q->reject();
+-    QApplication::processEvents();
+-    if (const auto windowHandle = q->windowHandle())
+-    {
+-        windowHandle->close();
+-    }
++    isAccept ? q->accept() : q->reject();
+ }
+ 
+ void ElaContentDialogPrivate::_moveToCenter()
+@@ -33,6 +27,8 @@ void ElaContentDialogPrivate::_moveToCenter()
+     Q_Q(ElaContentDialog);
+     int width = q->width();
+     int height = q->height();
+-    auto globalPos = _maskWidget->mapToGlobal(QPoint{0, 0});
+-    q->setGeometry(globalPos.x() + (_maskWidget->width() - width) / 2, globalPos.y() + (_maskWidget->height() - height) / 2, width, height);
++    const QRect area = _maskWidget
++        ? QRect(_maskWidget->mapToGlobal(QPoint()), _maskWidget->size())
++        : q->screen()->availableGeometry();
++    q->move(area.center() - QPoint(width / 2, height / 2));
+ }
+diff --git a/private/ElaContentDialogPrivate.h b/private/ElaContentDialogPrivate.h
+index 749d2b7..0024d99 100644
+--- a/private/ElaContentDialogPrivate.h
++++ b/private/ElaContentDialogPrivate.h
+@@ -1,7 +1,8 @@
+ #ifndef ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACONTENTDIALOGPRIVATE_H_
+ #define ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACONTENTDIALOGPRIVATE_H_
+ 
+-#include <QObject>
++#include <QObject>
++#include <QPointer>
+ 
+ #include "ElaWidgetToolsDef.h"
+ class QVBoxLayout;
+@@ -21,7 +22,8 @@ private:
+     qint64 _currentWinID{0};
+     ElaAppBar* _appBar{nullptr};
+     ElaThemeType::ThemeMode _themeMode;
+-    ElaMaskWidget* _maskWidget{nullptr};
++    QPointer<ElaMaskWidget> _maskWidget;
++    bool _standardButtonsVisible{true};
+     QWidget* _centralWidget{nullptr};
+     QWidget* _buttonWidget{nullptr};
+     QVBoxLayout* _mainLayout{nullptr};

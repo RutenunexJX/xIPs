@@ -1,95 +1,122 @@
-# xIPs 1.4
+# xIPs 2.1
 
-xIPs 是个人使用的 FPGA 可复用资产管理器。它只处理三件事：收集代码资产、按名称或文件名查找资产、保存和取用历史版本。资产可以是完整 IP 目录，也可以是单个 `.v`、`.sv`、`.svh`、约束或脚本文件。
+xIPs is a small, local library for reusable FPGA assets: Module, IP, Artifact, or Other.
+It collects files, keeps explicit immutable revisions, and copies a selected revision into a project.
+The interface uses Ela controls and shares ZeroSlack's compact panel layout. All application text is English.
 
-xIPs 不解析 HDL，不执行仿真或综合，不管理依赖，不接管 Git，也不实现云盘客户端。
+## Everyday workflow
 
-## 开始使用
+1. Choose a library folder from **More > Choose library**. No hidden default library is created.
+2. Click **Collect**, select files or a folder, confirm the name and category. Dropping local files or folders is also supported. The first collection creates **rev1**.
+3. Search names, descriptions, tags retained from older libraries, or files. Category buttons narrow the results.
+4. Select a revision and click **Use**. In ZeroSlack, this becomes **Use in project**. Confirm the complete new destination path.
+5. Click **Update** and select the complete current source to create **rev2**, **rev3**, and so on. An optional note describes the change.
 
-首次启动时选择一个资产库文件夹。该文件夹可以位于坚果云同步目录中；xIPs 不会自行创建隐藏的默认库。
+Updating captures a complete snapshot, not an incremental patch. Identical content creates no revision.
+Editing a name, category, or description creates no revision. There are no branches, merges, working copies, dependency resolution, or automatic project updates.
 
-主界面只保留三个高频入口：
+**More** contains metadata editing, refresh, deletion, and reported issues.
+Deleting a revision moves it to the Recycle Bin; the last revision can only be removed with the whole asset.
+Deletion never renumbers subsequent revisions. Existing project copies stay unchanged.
 
-- **Add**：选择多个文件、选择一个文件夹，或把多个文件和文件夹直接拖入窗口。导入会复制内容，原文件不变；名称和内部 ID 自动推断，重名时自动生成不冲突的名称。左侧当前分组只用于筛选，不会被静默写入新资产；新资产默认未分组并显示在 All assets，只有显式分组操作才会写入分组。导入完成后可直接 **Undo**，只移除刚加入资产，不修改来源。
-- **Search**：按资产名称、说明、分组、版本、实际文件名或相对路径查找。开始新搜索时自动回到全部资产；主动选择分组后，界面会明确显示当前范围。文件名命中直接显示在资产行内，详情文件列表自动定位，并提供 **Open matched file** 一键打开。
-- **Copy working copy...**：在对话框中明确选择工作副本或保存版本、目标文件夹和最终名称，并在执行前显示完整目标路径。内部 `.xips.json` 和版本元数据不会带入工程，也不会覆盖已有目标。
+## Files and revisions
 
-选中资产后，详情区提供 **Open file/Open folder**、**Edit details** 和 **Save version**。版本号默认建议下一个补丁版本，例如 `1.2.9` 后建议 `1.2.10`。低频的 **Update selected asset from...** 和 **Delete selected asset...** 位于 **More**。
-
-## 更新与删除
-
-**Update selected asset from...** 用一个文件或目录替换当前工作副本。执行前会列出新增、替换、移除和未变化的文件数量，并明确显示将从工作副本移除的文件；资产名称、分组、说明、内部 ID 和保存版本保持不变。更新完成后，提示条提供一次 **Undo**，可直接恢复更新前的工作副本，不会创建第二条版本历史。若工作文件已被再次编辑，或临时恢复副本发生变化，Undo 会拒绝覆盖并保留可检查的位置。选择 **Discard Undo**、开始下一项会修改资产的操作或退出应用时，该次 Undo 被终止；只读的查找、打开和复制不会终止它。无法自动清理的路径会保留在 **More > Problems**。
-
-**Delete selected asset...** 会在确认框中显示工作文件数和保存版本数，然后把整个资产移入系统回收站。它不会删除最初导入的来源文件。删除单个保存版本仍只影响该版本，不影响工作副本。
-
-## 资产与分组
-
-每个资产在资产库中使用一个独立目录，最少包含 `.xips.json` 和实际载荷文件：
+Each asset has a stable ID and a small JSON manifest. Payload exists only under its revisions:
 
 ```text
-xIPs Library/
-  reset_gen/
+Library/
+  uart/
     .xips.json
-    rtl/reset_gen.sv
-    constraints/reset_gen.xdc
-  uart_rx_sv/
-    .xips.json
-    uart_rx.sv
+    .xips/revisions/
+      1/uart.sv
+      2/uart.sv
 ```
 
-左侧 Groups 来自各资产 manifest 的 `tags`，并提供 **Ungrouped** 入口直接查看未分组资产；`All assets` 和 `Ungrouped` 是保留的自动筛选名称，不能用作自定义分组。一个资产可以属于多个分组。编辑资产时直接勾选已有分组，或在单独输入框中创建一个新分组，不需要记忆逗号格式。表格支持多选，**Manage groups** 可以把所选资产加入分组、仅从当前所选资产移除当前分组、重命名当前分组，或从所有资产中移除当前分组；这些操作不会移动或删除资产文件。
+The highest retained revision is the default selection. There is no duplicate mutable "latest" payload.
+Every use verifies the recorded file list and SHA-256 digest before publishing a copy.
+Source files remain untouched. Existing destination files are never overwritten.
 
-## 版本
+Module and IP collections omit common generated folders, including build and ip_user_files.
+Artifact collections retain generated output folders. All categories exclude .git, .xips and xIPs metadata.
+The collection dialog identifies this policy before copying.
 
-**Save version** 保存完整、不可变的文件快照，位置为 `.xips/versions/<version>`。详情区只在选中资产时异步检查当前内容，并显示：
+A single-file asset is exported to the specified **file path**. A multi-file asset is exported to the specified **new directory**.
+Only payload is exported; internal manifests and revisions are not copied to the project.
 
-- 尚未保存版本；
-- 与最近版本一致；
-- 自最近版本后已修改。
+## Existing libraries
 
-内容没有变化时不会创建重复版本。表格中的 **Latest saved** 只表示最近成功保存的版本；详情区另行说明工作副本是否仍与它一致。Versions 页只列出实际保存版本，不再把工作副本伪装成一个版本。双击保存版本或按 Enter 会打开经校验的临时预览副本：单文件资产打开临时文件，多文件资产打开临时目录；即使外部编辑器修改预览，也不会改动工作副本或不可变快照。若某一个历史快照损坏，其他健康版本仍保持可见，异常项进入 **Problems**。选中版本后可用 **Restore to working copy...** 恢复工作副本；完成后可从提示条一次撤销，所有保存版本始终保持不变。复制对话框始终明确列出工作副本和保存版本；保存版本也可以移入系统回收站，工作副本不会被删除。
+Schema 1 assets remain visible and can be used without conversion.
+**Convert legacy asset** imports their healthy saved versions, followed by a distinct working copy, into the linear revision model.
+Original version labels are retained in revision notes. Saved timestamps are preserved.
+The entire original asset is retained in a sibling **.xips-legacy-...** backup directory; its path remains listed in Issues.
+Conversion is explicit, and refuses unhealthy legacy version records.
 
-显示、复制、恢复或删除保存版本前，xIPs 都会重新核对文件清单和内容。若坚果云或另一实例在操作期间改动了工作副本、保存版本或临时目录，xIPs 会停止覆盖或删除，并把保留路径列入 **More > Problems**，供用户确认后手动处理。
+Unrecognized staging directories, retained deletions, and orphaned revision payloads are reported by path.
+They are preserved for inspection. There is no background cleanup or cloud synchronization service.
+Use Refresh after external or synchronized-folder changes.
 
-版本不是 Git 提交。它是代码文件的完整副本，适合个人资产量和“保留少量有效版本、删除过时版本”的使用方式。
+## ZeroSlack
 
-## 坚果云同步
+The standalone app and ZeroSlack load the same **BrowserPanel** through **xips-browser.dll**.
+There is no embedded process, database, or local HTTP service.
 
-xIPs 只读写普通文件和目录，因此可把整个资产库放在坚果云同步位置。应用启动和重新获得焦点时会防抖刷新，仍可从 **More > Refresh now** 手动刷新。无法读取的 manifest、重复 ID、部分导入失败或恢复副本会通过非模态提示条显示，并保留在 **More > Problems**，直到用户查看。若 manifest 写入在进程异常退出时中断，重新打开、重新聚焦或手动刷新资产库时，会依据已落盘的事务记录和内容摘要恢复经验证的原 manifest，或保留已经完整发布的新 manifest；无法确认、被同步端再次修改或缺少有效事务记录的遗留目录不会被自动覆盖或删除，而会在 **Problems** 中列出确切路径。
+- The host manages docking, floating windows, and panel state.
+- **Collect > Current file** asks ZeroSlack to save the current document before collection.
+- **Use in project** requires a new path in the active workspace.
+- ZeroSlack records the asset ID, exact revision, digest, and relative destination in **.zeroslack/xips-references.json**.
+- The resulting project files are ordinary editable copies. Updating the library never changes them.
+- If provenance cannot be saved, the panel reports the failure and the exported location.
 
-xIPs 不自动合并两台设备对代码文件的并发修改。名称、说明和分组写入会在提交前重新核对 manifest：不同字段的并发变化会保留，同一字段出现分歧时停止覆盖并刷新；批量分组只保留已安全提交的项目，不会用旧 manifest 回滚。代码文件发生云盘冲突时，应先在文件系统中确认需要保留的副本，再回到 xIPs 刷新。
+Launch the new standalone xIPs once to register its component location, then open or reload the xIPs panel in ZeroSlack.
+Alternatively, deploy xips-browser.dll next to ZeroSlack, or set XIPS_BROWSER_LIBRARY to its full path.
+Both applications must use matching Qt, compiler, architecture, and Ela builds.
+An incompatible component leaves a small fallback panel with **Open xIPs** and **Reload xIPs**.
 
-## Manifest
+## AppSuite
 
-```json
-{
-  "schemaVersion": 1,
-  "id": "reset_gen",
-  "name": "Reset Generator",
-  "description": "Synchronizes reset into a target clock domain.",
-  "version": "1.2.0",
-  "tags": ["cdc", "reset"]
-}
-```
+xIPs is an independent AppSuite application with a coral X and stacked-asset icon.
+Its Windows icon, window title, library header, and ZeroSlack panel use the same mark.
+The portable component lives at **AppSuite/Apps/xIPs/** and uses the shared
+**Apps/Runtime/suite-runtime.exe** for optional discovery and routing.
 
-详细规则见 [Manifest 格式](docs/manifest-format.md)。
+When built with the SuiteApp SDK, startup registers **xips** as a provider for
+**xips://show** and **xips://asset/<id>?revision=<n>**. Suite actions open the
+library or select an asset; **xips.library** declares the native panel and an
+external fallback. Resource resolution returns cached metadata only, without
+exposing private file paths or verifying payloads. File copying remains an explicit
+**Use** operation. The library remains usable when the shared runtime is absent.
 
-## 构建与测试
+## Build
 
-要求 Qt 6.5 或更新版本（Core、Concurrent、Widgets、Test）、CMake 3.25、Ninja 和 C++20 编译器。
+Use Qt **6.10.2**, its private Widgets headers, CMake 3.25 or newer, and C++20.
+The Windows embedding build is tested with MinGW **13.1**.
+Ela is vendored from the ZeroSlack fork; its license and bundled font license are included.
+AppSuite integration defaults to enabled when the installed SuiteApp SDK is found.
+Pass **-DSuiteApp_DIR=E:/SuiteRuntime/install-release/lib/cmake/SuiteApp** to
+build the AppSuite package, or **-DXIPS_ENABLE_SUITEAPP=OFF** for a standalone-only build.
 
 ```powershell
-$env:PATH = "E:\QT6\Tools\mingw1310_64\bin;E:\QT6\6.10.2\mingw_64\bin;$env:PATH"
-E:\QT6\Tools\CMake_64\bin\cmake.exe -S . -B build -G Ninja `
-  -DCMAKE_BUILD_TYPE=Debug `
-  -DBUILD_TESTING=ON `
-  -DCMAKE_PREFIX_PATH=E:\QT6\6.10.2\mingw_64 `
-  -DCMAKE_MAKE_PROGRAM=E:\QT6\Tools\Ninja\ninja.exe `
-  -DCMAKE_CXX_COMPILER=E:\QT6\Tools\mingw1310_64\bin\g++.exe
-E:\QT6\Tools\CMake_64\bin\cmake.exe --build build
-E:\QT6\Tools\CMake_64\bin\ctest.exe --test-dir build --output-on-failure
+cmake -S . -B build/ela -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=E:/QT6/6.10.2/mingw_64 -DBUILD_TESTING=ON
+cmake --build build/ela --parallel 6
+ctest --test-dir build/ela --output-on-failure
 ```
 
-`core` 验证导入、更新、完整资产删除、版本和精确目标复制的边界；`gui_smoke` 在 Qt offscreen 平台验证主界面；`user_journey` 在临时坚果云目录中完成“导入—查找—保存版本—更新工作副本—复制指定版本—分组—撤销导入—同步刷新—删除资产”的完整任务。测试不会操作可见桌面，也不会向系统回收站写入测试数据。
+Executables and the native component are written to **build/ela/bin**.
+Qt and compiler runtime directories must be on PATH when running the build directly.
 
-Qt Creator 配置见 [Qt Creator 构建与调试](docs/qt-creator.md)。只读 CLI 和未来全局唤起边界见 [CLI 与唤起协议](docs/cli-and-integration.md)。
+## Formal package
+
+Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
+and the SuiteApp SDK enabled. The release tag **v2.1.0** must identify HEAD.
+Then create a new portable directory:
+
+```powershell
+pwsh -File scripts/package-release.ps1 -BuildDirectory build/release -OutputDirectory build/packages/xIPs -Formal
+```
+
+The script includes Qt/Ela dependencies, the icon, notices, **build-info.json**,
+and **SHA256SUMS.txt**. The package records its exact clean source commit.
+The AppSuite component belongs at **Apps/xIPs/**; it does not include or modify
+the user's library. See [release notes](CHANGELOG.md).
+
+See [Qt Creator](docs/qt-creator.md), [manifest format](docs/manifest-format.md), and [integration contract](docs/cli-and-integration.md).

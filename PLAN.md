@@ -1,36 +1,28 @@
-# xIPs 1.4.0 implementation status
+# xIPs 2.1 implementation
 
-## User workflow
+## Delivered scope
 
-Status: complete.
+- English Ela browser with search, category filters, asset details, revision selection, Collect, Use, and Update.
+- Responsive side-by-side layout in a standalone window and vertical layout in a narrow host panel.
+- Immutable full snapshots, content deduplication on update, metadata-only editing, and bounded deletion.
+- Schema 1 read compatibility and explicit conversion with preserved originals.
+- Metadata queries and explicit payload materialization through the existing JSON CLI envelope.
+- Public native browser API and ZeroSlack context provider.
+- Saved-current-file collection, workspace destination validation, and pinned project provenance.
+- AppSuite provider, native surface descriptor, and application icon.
+- Reproducible formal packaging with clean-source and release-tag checks.
 
-1. Explicitly choose an asset library on first launch.
-2. Import files or folders by selection or mixed drag-and-drop; infer metadata, recover name collisions automatically, keep the current group filter view-only, create imports ungrouped, and offer one-step undo.
-3. Start searches across all assets, show any intentional group scope, display the matched file path directly, select it in details, and expose a contextual one-click open action.
-4. Open a single-file asset directly or open a directory asset in the file manager.
-5. Replace an existing working copy from a file or directory only after previewing additions, replacements, and removals; preserve identity, metadata, and saved versions; offer one bounded Undo that refuses to overwrite newer edits.
-6. Save immutable versions only after content changes; show selected-asset change state and suggest the next patch version.
-7. Restore a selected saved version to the working copy only after previewing file differences; retain every saved version and offer the same bounded one-step Undo.
-8. Copy payload from an explicitly named source version to an explicitly previewed final path without overwriting a destination or discarding a pending working-copy Undo.
-9. Assign, rename, and remove user groups; edit an asset by checking existing groups or entering one new group.
-10. Delete a saved version without touching the working copy, or delete the complete selected asset after a bounded confirmation without touching import sources.
-11. Refresh on startup and window activation for a Jianguoyun-backed library; surface retained problems in a non-modal action banner.
-12. Refuse to publish or delete when a working copy, saved snapshot, manifest, or operation staging changes after verification; preserve every unrecognized path for explicit review.
+## Validation
 
-## Interface boundary
+- Existing legacy core and CLI regression tests remain.
+- Snapshot tests cover version creation, unchanged updates, metadata changes, pinned copies, artifact outputs, tampering, conflicts, deletion numbering, and migration.
+- GUI and journey tests cover filtering, revision selection, unavailable paths, collection and project use.
+- A native DLL test loads the exported ABI and invokes the public Qt surface.
+- ZeroSlack integration tests cover workspace boundaries, preservation of invalid provenance data, and native collection/use when XIPS_BROWSER_LIBRARY is supplied.
+- Visual checks use offscreen Qt renders at wide and narrow panel sizes.
 
-Status: complete.
+## Explicit limits
 
-- Primary toolbar: Add, explicit Copy working copy/version, Search, visible search scope.
-- Asset-specific actions: Open file/folder, Edit details, Save version.
-- Secondary actions: choose library, refresh, update working copy, restore or delete a saved version, complete-asset deletion, problems, group management.
-- Inventory: Groups, three-column asset list (Asset, Groups, Version), concise details, files, saved versions.
-- Internal ID and filesystem path are not normal-workflow fields.
-
-## Excluded scope
-
-HDL parsing, source preview, dependency analysis, Git integration, simulation, synthesis, cloud accounts, installers, Windows URI registration, single-instance IPC, and ZeroSlack embedding are outside 1.4.
-
-## Acceptance
-
-Status: complete when the strict-warning Debug build, `core`, offscreen `gui_smoke`, and an independently executed offscreen `user_journey` all pass from a disposable build directory; source checks pass; build products are removed; and the reviewed changes are committed and pushed.
+There are no branches, automatic updates, background synchronization, previews that expose library payloads to editors, or automated recovery cleanup.
+Large revisions are full snapshots and may consume significant disk space.
+Native embedding requires coordinated Qt/compiler/Ela builds. Standalone use remains available if that requirement is not met.

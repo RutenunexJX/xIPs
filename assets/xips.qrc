@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/xips/icons">
+    <file alias="xips.ico">icons/xips.ico</file>
+    <file alias="xips.png">icons/xips-256.png</file>
+  </qresource>
+</RCC>

@@ -76,8 +76,11 @@ bool isWithin(const QString &path, const QString &root)
     const QString candidate = QDir::fromNativeSeparators(normalizedAbsolute(path));
     const QString boundary = QDir::fromNativeSeparators(normalizedAbsolute(root));
     const Qt::CaseSensitivity sensitivity = pathCaseSensitivity();
+    const QString descendantPrefix = boundary.endsWith(u'/')
+                                         ? boundary
+                                         : boundary + u'/';
     return candidate.compare(boundary, sensitivity) == 0
-           || candidate.startsWith(boundary + u'/', sensitivity);
+           || candidate.startsWith(descendantPrefix, sensitivity);
 }
 
 bool isIgnoredDirectory(const QString &name)

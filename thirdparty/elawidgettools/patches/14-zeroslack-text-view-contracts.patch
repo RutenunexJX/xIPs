@@ -1,0 +1,276 @@
+diff --git a/Development/ElaPlainTextEditStyle.cpp b/Development/ElaPlainTextEditStyle.cpp
+index 1a6b8c1..0d4ee20 100644
+--- a/Development/ElaPlainTextEditStyle.cpp
++++ b/Development/ElaPlainTextEditStyle.cpp
+@@ -5,7 +5,8 @@
+ #include <QStyleOption>
+ #include <QtMath>
+ 
+-#include "ElaTheme.h"
++#include "ElaTheme.h"
++#include "ElaPlainTextEdit.h"
+ ElaPlainTextEditStyle::ElaPlainTextEditStyle(QStyle* style)
+ {
+     _pExpandMarkWidth = 0;
+@@ -25,8 +26,12 @@ void ElaPlainTextEditStyle::drawControl(ControlElement element, const QStyleOpti
+     {
+     case QStyle::CE_ShapedFrame:
+     {
+-        if (const QStyleOptionFrame* fopt = qstyleoption_cast<const QStyleOptionFrame*>(option))
+-        {
++        if (const QStyleOptionFrame* fopt = qstyleoption_cast<const QStyleOptionFrame*>(option))
++        {
++            if (fopt->frameShape == QFrame::NoFrame)
++                return;
++            const auto* edit = qobject_cast<const ElaPlainTextEdit*>(widget);
++            const bool native = edit && edit->nativeTextBehavior();
+             //背景绘制
+             QRect editRect = option->rect;
+             painter->save();
+@@ -38,7 +43,8 @@ void ElaPlainTextEditStyle::drawControl(ControlElement element, const QStyleOpti
+             painter->setPen(Qt::NoPen);
+ 
+             // 背景绘制
+-            painter->setBrush(ElaThemeColor(_themeMode, BasicBaseAlpha));
++            painter->setBrush(native ? option->palette.brush(QPalette::Base)
++                                    : QBrush(ElaThemeColor(_themeMode, BasicBaseAlpha)));
+             painter->drawRoundedRect(QRectF(editRect.x() + 1.5, editRect.y() + 1.5, editRect.width() - 3, editRect.height() - 3), 6, 6);
+ 
+             // 底边线绘制
+@@ -54,7 +60,8 @@ void ElaPlainTextEditStyle::drawControl(ControlElement element, const QStyleOpti
+ 
+             //焦点指示器
+             painter->setPen(Qt::NoPen);
+-            painter->setBrush(ElaThemeColor(_themeMode, PrimaryNormal));
++            painter->setBrush(native ? option->palette.brush(QPalette::Highlight)
++                                    : QBrush(ElaThemeColor(_themeMode, PrimaryNormal)));
+             painter->drawRoundedRect(QRectF(editRect.width() / 2 - _pExpandMarkWidth, editRect.height() - 2.5, _pExpandMarkWidth * 2, 2.5), 2, 2);
+ 
+             painter->restore();
+diff --git a/ElaPlainTextEdit.cpp b/ElaPlainTextEdit.cpp
+index 3113f26..a80f99a 100644
+--- a/ElaPlainTextEdit.cpp
++++ b/ElaPlainTextEdit.cpp
+@@ -1,6 +1,7 @@
+ #include "ElaPlainTextEdit.h"
+ 
+-#include <QClipboard>
++#include <QClipboard>
++#include <QApplication>
+ #include <QGuiApplication>
+ #include <QMimeData>
+ #include <QPainter>
+@@ -26,8 +27,14 @@ ElaPlainTextEdit::ElaPlainTextEdit(QWidget* parent)
+     d->_focusEvent = new ElaEvent("WMWindowClicked", "onWMWindowClickedEvent", d);
+     d->_focusEvent->registerAndInit();
+ 
+-    d->_style = new ElaPlainTextEditStyle(style());
+-    setStyle(d->_style);
++    d->_style = new ElaPlainTextEditStyle(style());
++    d->_style->setParent(qApp);
++    connect(this, &QObject::destroyed, d->_style, &QObject::deleteLater);
++    setStyle(d->_style);
++    d->_markAnimation = new QPropertyAnimation(d->_style, "pExpandMarkWidth", this);
++    d->_markAnimation->setDuration(160);
++    d->_markAnimation->setEasingCurve(QEasingCurve::InOutSine);
++    connect(d->_markAnimation, &QPropertyAnimation::valueChanged, this, [this] { update(); });
+     d->onThemeChanged(eTheme->getThemeMode());
+     connect(eTheme, &ElaTheme::themeModeChanged, d, &ElaPlainTextEditPrivate::onThemeChanged);
+ }
+@@ -38,26 +45,49 @@ ElaPlainTextEdit::ElaPlainTextEdit(const QString& text, QWidget* parent)
+     setPlainText(text);
+ }
+ 
+-ElaPlainTextEdit::~ElaPlainTextEdit()
+-{
+-    Q_D(ElaPlainTextEdit);
+-    delete d->_style;
+-}
++ElaPlainTextEdit::~ElaPlainTextEdit()
++{
++    Q_D(ElaPlainTextEdit);
++    d->_markAnimation->stop();
++    // The viewport still uses this style during QPlainTextEdit teardown.
++    // QObject::destroyed releases it after all widget children are gone.
++}
++
++void ElaPlainTextEdit::setNativeTextBehavior(bool enabled)
++{
++    Q_D(ElaPlainTextEdit);
++    if (d->_nativeTextBehavior == enabled)
++        return;
++    d->_nativeTextBehavior = enabled;
++    if (enabled)
++    {
++        delete d->_focusEvent;
++        d->_focusEvent = nullptr;
++    }
++    else
++    {
++        d->_focusEvent = new ElaEvent("WMWindowClicked", "onWMWindowClickedEvent", d);
++        d->_focusEvent->registerAndInit();
++        d->onThemeChanged(eTheme->getThemeMode());
++    }
++    update();
++}
++
++bool ElaPlainTextEdit::nativeTextBehavior() const
++{
++    Q_D(const ElaPlainTextEdit);
++    return d->_nativeTextBehavior;
++}
+ 
+ void ElaPlainTextEdit::focusInEvent(QFocusEvent* event)
+ {
+     Q_D(ElaPlainTextEdit);
+-    if (event->reason() == Qt::MouseFocusReason)
+-    {
+-        QPropertyAnimation* markAnimation = new QPropertyAnimation(d->_style, "pExpandMarkWidth");
+-        connect(markAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-            update();
+-        });
+-        markAnimation->setDuration(300);
+-        markAnimation->setEasingCurve(QEasingCurve::InOutSine);
+-        markAnimation->setStartValue(d->_style->getExpandMarkWidth());
+-        markAnimation->setEndValue(width() / 2 - 3);
+-        markAnimation->start(QAbstractAnimation::DeleteWhenStopped);
++    if (d->_nativeTextBehavior || event->reason() == Qt::MouseFocusReason)
++    {
++        d->_markAnimation->stop();
++        d->_markAnimation->setStartValue(d->_style->getExpandMarkWidth());
++        d->_markAnimation->setEndValue(qMax(0, width() / 2 - 3));
++        d->_markAnimation->start();
+     }
+     QPlainTextEdit::focusInEvent(event);
+ }
+@@ -67,21 +97,21 @@ void ElaPlainTextEdit::focusOutEvent(QFocusEvent* event)
+     Q_D(ElaPlainTextEdit);
+     if (event->reason() != Qt::PopupFocusReason)
+     {
+-        QPropertyAnimation* markAnimation = new QPropertyAnimation(d->_style, "pExpandMarkWidth");
+-        connect(markAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-            update();
+-        });
+-        markAnimation->setDuration(300);
+-        markAnimation->setEasingCurve(QEasingCurve::InOutSine);
+-        markAnimation->setStartValue(d->_style->getExpandMarkWidth());
+-        markAnimation->setEndValue(0);
+-        markAnimation->start(QAbstractAnimation::DeleteWhenStopped);
++        d->_markAnimation->stop();
++        d->_markAnimation->setStartValue(d->_style->getExpandMarkWidth());
++        d->_markAnimation->setEndValue(0);
++        d->_markAnimation->start();
+     }
+     QPlainTextEdit::focusOutEvent(event);
+ }
+ 
+-void ElaPlainTextEdit::contextMenuEvent(QContextMenuEvent* event)
+-{
++void ElaPlainTextEdit::contextMenuEvent(QContextMenuEvent* event)
++{
++    if (nativeTextBehavior())
++    {
++        QPlainTextEdit::contextMenuEvent(event);
++        return;
++    }
+     ElaMenu* menu = new ElaMenu(this);
+     menu->setMenuItemHeight(27);
+     menu->setAttribute(Qt::WA_DeleteOnClose);
+@@ -142,7 +172,7 @@ void ElaPlainTextEdit::contextMenuEvent(QContextMenuEvent* event)
+ void ElaPlainTextEdit::paintEvent(QPaintEvent* event)
+ {
+     Q_D(ElaPlainTextEdit);
+-    if (palette().color(QPalette::Text) != ElaThemeColor(d->_themeMode, BasicText))
++    if (!d->_nativeTextBehavior && palette().color(QPalette::Text) != ElaThemeColor(d->_themeMode, BasicText))
+     {
+         d->onThemeChanged(d->_themeMode);
+     }
+diff --git a/ElaPlainTextEdit.h b/ElaPlainTextEdit.h
+index c8f697f..5e35b42 100644
+--- a/ElaPlainTextEdit.h
++++ b/ElaPlainTextEdit.h
+@@ -14,7 +14,11 @@ class ELA_EXPORT ElaPlainTextEdit : public QPlainTextEdit
+ public:
+     explicit ElaPlainTextEdit(QWidget* parent = nullptr);
+     explicit ElaPlainTextEdit(const QString& text, QWidget* parent = nullptr);
+-    ~ElaPlainTextEdit() override;
++    ~ElaPlainTextEdit() override;
++
++    // The host owns the text palette and Qt focus policy in this mode.
++    void setNativeTextBehavior(bool enabled);
++    bool nativeTextBehavior() const;
+ 
+ protected:
+     virtual void focusInEvent(QFocusEvent* event) override;
+diff --git a/private/ElaPlainTextEditPrivate.cpp b/private/ElaPlainTextEditPrivate.cpp
+index 3433457..56b4f4f 100644
+--- a/private/ElaPlainTextEditPrivate.cpp
++++ b/private/ElaPlainTextEditPrivate.cpp
+@@ -11,8 +11,10 @@ ElaPlainTextEditPrivate::~ElaPlainTextEditPrivate()
+ {
+ }
+ 
+-void ElaPlainTextEditPrivate::onWMWindowClickedEvent(const QVariantMap& data)
+-{
++void ElaPlainTextEditPrivate::onWMWindowClickedEvent(const QVariantMap& data)
++{
++    if (_nativeTextBehavior)
++        return;
+     Q_Q(ElaPlainTextEdit);
+     ElaAppBarType::WMMouseActionType actionType = data.value("WMClickType").value<ElaAppBarType::WMMouseActionType>();
+     if (actionType == ElaAppBarType::WMLBUTTONDOWN)
+@@ -38,7 +40,9 @@ void ElaPlainTextEditPrivate::onWMWindowClickedEvent(const QVariantMap& data)
+ void ElaPlainTextEditPrivate::onThemeChanged(ElaThemeType::ThemeMode themeMode)
+ {
+     Q_Q(ElaPlainTextEdit);
+-    _themeMode = themeMode;
++    _themeMode = themeMode;
++    if (_nativeTextBehavior)
++        return;
+     QPalette palette = q->palette();
+     palette.setColor(QPalette::Text, ElaThemeColor(_themeMode, BasicText));
+     palette.setColor(QPalette::PlaceholderText, _themeMode == ElaThemeType::Light ? QColor(0x00, 0x00, 0x00, 128) : QColor(0xBA, 0xBA, 0xBA));
+diff --git a/private/ElaPlainTextEditPrivate.h b/private/ElaPlainTextEditPrivate.h
+index 485f326..0607337 100644
+--- a/private/ElaPlainTextEditPrivate.h
++++ b/private/ElaPlainTextEditPrivate.h
+@@ -6,7 +6,8 @@
+ #include <QVariantMap>
+ class ElaEvent;
+ class ElaPlainTextEdit;
+-class ElaPlainTextEditStyle;
++class ElaPlainTextEditStyle;
++class QPropertyAnimation;
+ class ElaPlainTextEditPrivate : public QObject
+ {
+     Q_OBJECT
+@@ -21,7 +22,9 @@ public:
+ private:
+     ElaThemeType::ThemeMode _themeMode;
+     ElaPlainTextEditStyle* _style{nullptr};
+-    ElaEvent* _focusEvent{nullptr};
++    ElaEvent* _focusEvent{nullptr};
++    QPropertyAnimation* _markAnimation{nullptr};
++    bool _nativeTextBehavior{false};
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELAPLAINTEXTEDITPRIVATE_H_
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index 76e1fd3..ee910a3 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -85,6 +85,14 @@ path label does not collapse to zero width. The application adapter is
+ `src/ui/uiwindowchrome.cpp`; ElaWindow
+ and its navigation/page controllers are not used.
+ 
++Apply `patches/14-zeroslack-text-view-contracts.patch` after patch 13. ElaPlainTextEdit
++adds an opt-in native text mode that leaves palettes and focus policy to the host.
++The product adapter uses Qt-generated context actions in an ElaMenu. A single owned
++focus animation can reverse immediately, and the style is application-owned until
++widget and viewport teardown completes. NoFrame is respected; the native mode uses
++the host's Base and Highlight palette roles. ElaScrollArea needs no upstream patch:
++the adapter restores as-needed scrollbars without enabling drag-scroll gestures.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids

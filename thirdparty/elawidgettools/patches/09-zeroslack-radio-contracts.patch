@@ -1,0 +1,130 @@
+diff --git a/ElaRadioButton.cpp b/ElaRadioButton.cpp
+index 46dfeb1..66f40c1 100644
+--- a/ElaRadioButton.cpp
++++ b/ElaRadioButton.cpp
+@@ -13,7 +13,9 @@ ElaRadioButton::ElaRadioButton(QWidget* parent)
+     QFont font = this->font();
+     font.setPixelSize(eApp->getFontPixelSize() + 2);
+     setFont(font);
+-    setStyle(new ElaRadioButtonStyle(style()));
++    auto* radioStyle = new ElaRadioButtonStyle(style());
++    radioStyle->setParent(this);
++    setStyle(radioStyle);
+     d->onThemeChanged(eTheme->getThemeMode());
+     connect(eTheme, &ElaTheme::themeModeChanged, d, &ElaRadioButtonPrivate::onThemeChanged);
+ }
+@@ -26,13 +28,13 @@ ElaRadioButton::ElaRadioButton(const QString& text, QWidget* parent)
+ 
+ ElaRadioButton::~ElaRadioButton()
+ {
+-    delete this->style();
++    setStyle(nullptr);
+ }
+ 
+ void ElaRadioButton::paintEvent(QPaintEvent* event)
+ {
+     Q_D(ElaRadioButton);
+-    if (palette().color(QPalette::WindowText) != ElaThemeColor(d->_themeMode, BasicText))
++    if (palette().color(QPalette::Active, QPalette::WindowText) != ElaThemeColor(d->_themeMode, BasicText))
+     {
+         d->onThemeChanged(d->_themeMode);
+     }
+diff --git a/Development/ElaRadioButtonStyle.cpp b/Development/ElaRadioButtonStyle.cpp
+index 1ed2855..920b1a5 100644
+--- a/Development/ElaRadioButtonStyle.cpp
++++ b/Development/ElaRadioButtonStyle.cpp
+@@ -26,21 +26,25 @@ void ElaRadioButtonStyle::drawPrimitive(PrimitiveElement element, const QStyleOp
+         {
+             break;
+         }
+-        QRect buttonRect = bopt->rect;
+-        buttonRect.adjust(1, 1, -1, -1);
++        QRect buttonRect = bopt->rect;
++        buttonRect.adjust(1, 1, -1, -1);
++        const bool enabled = bopt->state.testFlag(QStyle::State_Enabled);
++        const bool hovered = enabled && bopt->state.testFlag(QStyle::State_MouseOver);
+         painter->save();
+         painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+ 
+         if (bopt->state & QStyle::State_Off)
+         {
+-            painter->setPen(QPen(ElaThemeColor(_themeMode, BasicBorder), 1.5));
+-            if (bopt->state & QStyle::State_MouseOver)
++            painter->setPen(QPen(enabled ? ElaThemeColor(_themeMode, BasicBorder)
++                                        : ElaThemeColor(_themeMode, BasicTextDisable), 1.5));
++            if (hovered)
+             {
+                 painter->setBrush(ElaThemeColor(_themeMode, BasicHover));
+             }
+             else
+             {
+-                painter->setBrush(ElaThemeColor(_themeMode, BasicBase));
++                painter->setBrush(enabled ? ElaThemeColor(_themeMode, BasicBase)
++                                          : ElaThemeColor(_themeMode, BasicDisable));
+             }
+             painter->drawEllipse(QPointF(buttonRect.center().x() + 1, buttonRect.center().y() + 1), 8.5, 8.5);
+         }
+@@ -48,20 +52,22 @@ void ElaRadioButtonStyle::drawPrimitive(PrimitiveElement element, const QStyleOp
+         {
+             painter->setPen(Qt::NoPen);
+             // 外圆形
+-            painter->setBrush(ElaThemeColor(_themeMode, PrimaryNormal));
++            painter->setBrush(enabled ? ElaThemeColor(_themeMode, PrimaryNormal)
++                                      : ElaThemeColor(_themeMode, BasicTextDisable));
+             painter->drawEllipse(QPointF(buttonRect.center().x() + 1, buttonRect.center().y() + 1), buttonRect.width() / 2, buttonRect.width() / 2);
+             // 内圆形
+-            painter->setBrush(ElaThemeColor(_themeMode, BasicTextInvert));
++            painter->setBrush(enabled ? ElaThemeColor(_themeMode, BasicTextInvert)
++                                      : ElaThemeColor(_themeMode, BasicDisable));
+             if (bopt->state & QStyle::State_Sunken)
+             {
+-                if (bopt->state & QStyle::State_MouseOver)
++                if (hovered)
+                 {
+                     painter->drawEllipse(QPointF(buttonRect.center().x() + 1, buttonRect.center().y() + 1), buttonRect.width() / 4.5, buttonRect.width() / 4.5);
+                 }
+             }
+             else
+             {
+-                if (bopt->state & QStyle::State_MouseOver)
++                if (hovered)
+                 {
+                     painter->drawEllipse(QPointF(buttonRect.center().x() + 1, buttonRect.center().y() + 1), buttonRect.width() / 3.5, buttonRect.width() / 3.5);
+                 }
+diff --git a/private/ElaRadioButtonPrivate.cpp b/private/ElaRadioButtonPrivate.cpp
+index 94bb548..f1970a3 100644
+--- a/private/ElaRadioButtonPrivate.cpp
++++ b/private/ElaRadioButtonPrivate.cpp
+@@ -17,6 +17,8 @@ void ElaRadioButtonPrivate::onThemeChanged(ElaThemeType::ThemeMode themeMode)
+     _themeMode = themeMode;
+     QPalette palette = q->palette();
+     palette.setColor(QPalette::Text, ElaThemeColor(_themeMode, BasicText));
+-    palette.setColor(QPalette::WindowText, ElaThemeColor(themeMode, BasicText));
++    palette.setColor(QPalette::WindowText, ElaThemeColor(themeMode, BasicText));
++    palette.setColor(QPalette::Disabled, QPalette::Text, ElaThemeColor(themeMode, BasicTextDisable));
++    palette.setColor(QPalette::Disabled, QPalette::WindowText, ElaThemeColor(themeMode, BasicTextDisable));
+     q->setPalette(palette);
+ }
+diff --git a/UPSTREAM-REVISION.md b/UPSTREAM-REVISION.md
+index c9ec876..6f5d77f 100644
+--- a/UPSTREAM-REVISION.md
++++ b/UPSTREAM-REVISION.md
+@@ -41,11 +41,18 @@ automatic column sizing does not elide otherwise fitting labels. Tree/tab/scroll
+ are QObject-owned and detached before widget teardown. Disabling scroll-bar
+ animation also restores immediate native wheel handling.
+ 
++Apply `patches/09-zeroslack-radio-contracts.patch` after patch 08. Radio-button
++styles are QObject-owned and detached before widget teardown. Disabled radio
++labels and indicators use the disabled theme colors and ignore hover feedback.
++
+ The product adapter in `src/ui/uicontrols.cpp` releases fixed dimensions, restores
+ ZeroSlack typography, updates per-button theme colors, supplies focus outlines,
+ and uses Qt's immediate combo popup lifecycle with Ela's style. This avoids
+ upstream's non-interruptible popup animation. No recursive application event
+ filter or protected-surface traversal is installed for Ela.
++The numeric-control adapter sizes the inline step buttons and input area together,
++including prefixes, suffixes and input padding; it does not assume Qt's narrower
++native step-button geometry.
+ 
+ This integration is pinned to Qt 6.10.2 because ElaTabBar includes Qt private
+ headers. Rebuild both DLLs and rerun validation before changing the Qt version.
