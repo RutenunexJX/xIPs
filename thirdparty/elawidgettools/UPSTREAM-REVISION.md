@@ -321,5 +321,12 @@ queued value/geometry callbacks guard expired objects. This private implementati
 fix preserves the p27 public capability ABI. The application keeps QPlainTextEdit
 pixel gestures in Qt's native text units while angle-only input uses Ela motion.
 
+Apply `patches/30-regmap-combo-popup-padding.patch` after patch 29.
+The shared RegMap/ZeroSlack fix adds Ela's layout padding to each new Qt popup
+height and keeps it within the available screen. A repeated show request settles
+the visible popup without adding padding again. The patch SHA-256 is
+`e69b815ba035831e2a84484acb0c46f957c83f346fff230a8c2b3034d4a44046`.
+Only ElaComboBox.cpp changes; the p27 public ABI, MIT and font OFL text are unchanged.
+
 Both `LICENSE` (ElaWidgetTools) and `Font/FontAwesome-LICENSE.txt` must
 accompany redistributed binaries.

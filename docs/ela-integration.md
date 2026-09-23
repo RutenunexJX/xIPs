@@ -61,6 +61,12 @@ references and callback cancellation. Its three additional files match the share
 validated patch. It is recorded as implementation patch level 29 without changing
 the public p27 capability ABI.
 
+Version 2.2.1 adds shared patch 30, `30-regmap-combo-popup-padding.patch`, to this
+baseline. It accounts for Ela's popup layout padding, clamps to the available
+screen, and settles repeated visible show requests without growing the popup.
+The implementation patch level is 30; the patch and upstream license records
+remain in the formal package.
+
 The ABI remains native surface v1 with `;ela=454cac2d-p27`. This names the required
 API level; the source digest identifies additional compatible lifetime fixes.
 The DLL directly references new combo/menu lifecycle exports. Capabilities JSON
@@ -69,11 +75,19 @@ also records the actual Ela DLL hash and carries the complete patch chain.
 
 ## Validation
 
-All eight CTest groups pass at both scales. The interaction executable includes
-eleven scenarios plus setup/cleanup, with no skipped cases. An early integration run
-also loaded this component with ZeroSlack 0.31.11's clean formal core/Ela DLLs:
-four checks passed, including collection, pinned Use, provenance hash and workspace
-closure. The coordinating task rechecks the final packaged DLL before deployment.
+The 2.2.0 baseline passed all eight CTest groups at both scales. Its interaction
+executable included eleven scenarios plus setup/cleanup, with no skipped cases.
+The final packaged component was also loaded with ZeroSlack 0.31.11's clean formal
+core/Ela DLLs: four checks passed at each scale, including collection, pinned Use,
+provenance hash and workspace closure. Host font and palette remained unchanged.
+The coordinating task repeats this short host check after shared Ela fixes.
+
+For the 2.2.1 popup fix, the five relevant groups (native, GUI smoke, user journey,
+interactions and SuiteApp) pass again at 100% and 200% scaling, in 4.02 s and
+4.01 s respectively. The added popup regression reproduces clipping before patch
+30 and passes afterward. It checks complete first/last row visibility for 1, 3 and
+5 items, changes selection over ten open/close cycles, and checks three repeated
+visible show requests per cycle for stable height.
 
 Build: Qt 6.10.2 exact / WidgetsPrivate, MinGW 13.1, C++20, Release optimization,
 strict xIPs warnings treated as errors. Separate production builds disable tests

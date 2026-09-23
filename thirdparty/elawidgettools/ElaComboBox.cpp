@@ -14,6 +14,7 @@
 #include <QParallelAnimationGroup>
 #include <QHideEvent>
 #include <QResizeEvent>
+#include <QScreen>
 Q_PROPERTY_CREATE_Q_CPP(ElaComboBox, int, BorderRadius)
 ElaComboBox::ElaComboBox(QWidget* parent)
     : QComboBox(parent), d_ptr(new ElaComboBoxPrivate())
@@ -137,6 +138,8 @@ void ElaComboBox::showPopup()
 {
     Q_D(ElaComboBox);
     finishPopupAnimation();
+    // Repeated show requests settle the existing popup without adding padding again.
+    if (view()->isVisible()) return;
     QPointer<ElaComboBox> alive(this);
     const bool oldEffects = qApp->isEffectEnabled(Qt::UI_AnimateCombo);
     qApp->setEffectEnabled(Qt::UI_AnimateCombo, false);
@@ -144,10 +147,24 @@ void ElaComboBox::showPopup()
     qApp->setEffectEnabled(Qt::UI_AnimateCombo, oldEffects);
     if (!alive || count() == 0 || !view()->isVisible()) return;
     d->_popup = view()->window();
-    d->_popupHeight = d->_popup->height();
-    d->_viewPosition = view()->pos();
     auto* layout = d->_popup->layout();
     if (!layout) return;
+    // Qt sizes for its native frame, not the extra Ela content padding.
+    const int qtPopupHeight = d->_popup->height();
+    const int padding = layout->contentsMargins().top() + layout->contentsMargins().bottom();
+    if (padding > 0) {
+        QRect geometry = d->_popup->geometry();
+        const bool above = geometry.bottom() < mapToGlobal(QPoint(0, 0)).y();
+        const QRect available = d->_popup->screen()->availableGeometry();
+        geometry.setHeight(qMin(qtPopupHeight + padding, available.height()));
+        if (above) geometry.translate(0, -padding);
+        if (geometry.bottom() > available.bottom()) geometry.moveBottom(available.bottom());
+        if (geometry.top() < available.top()) geometry.moveTop(available.top());
+        d->_popup->setGeometry(geometry);
+        layout->activate();
+    }
+    d->_popupHeight = d->_popup->height();
+    d->_viewPosition = view()->pos();
     layout->removeWidget(view());
     d->_popupAnimation->clear();
     auto* height = new QPropertyAnimation(d->_popup, "maximumHeight", d->_popupAnimation);

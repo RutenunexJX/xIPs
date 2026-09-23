@@ -122,6 +122,46 @@ class Interactions final : public QObject
         delete combo;
         QTest::qWait(220);
     }
+    void comboItemsFitAfterRepeatedOpening()
+    {
+        QWidget window;
+        window.resize(450, 350);
+        auto *combo = new ElaComboBox(&window);
+        combo->setGeometry(20, 20, 200, 35);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        for (const int count : {1, 3, 5})
+        {
+            combo->clear();
+            for (int row = 0; row < count; ++row)
+                combo->addItem(QString("Revision %1").arg(row + 1));
+            int popupHeight = 0;
+            for (int opening = 0; opening < 10; ++opening)
+            {
+                combo->setCurrentIndex(opening % count);
+                static_cast<QComboBox *>(combo)->showPopup();
+                combo->finishPopupAnimation();
+                QCoreApplication::processEvents();
+                const auto *view = combo->view();
+                const auto viewportRect = view->viewport()->rect();
+                const auto first = view->visualRect(combo->model()->index(0, 0));
+                const auto last = view->visualRect(combo->model()->index(count - 1, 0));
+                QVERIFY2(viewportRect.contains(first), "The first revision is clipped");
+                QVERIFY2(viewportRect.contains(last), "The last revision is clipped");
+                if (opening == 0)
+                    popupHeight = view->window()->height();
+                else
+                    QCOMPARE(view->window()->height(), popupHeight);
+                for (int repeat = 0; repeat < 3; ++repeat)
+                {
+                    static_cast<QComboBox *>(combo)->showPopup();
+                    QVERIFY(!combo->isPopupAnimating());
+                    QCOMPARE(view->window()->height(), popupHeight);
+                }
+                static_cast<QComboBox *>(combo)->hidePopup();
+            }
+        }
+    }
     void precisionWheelAndInputCancel()
     {
         ElaListView list;

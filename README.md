@@ -107,7 +107,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 ## Formal package
 
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
-and the SuiteApp SDK enabled. The release tag **v2.2.0** must identify HEAD.
+and the SuiteApp SDK enabled. The release tag **v2.2.1** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell

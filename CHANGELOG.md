@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.1 — 2026-09-24
+
+- Include Ela popup padding in combo height so the first and last revision rows
+  remain fully visible. Repeated show requests keep the existing popup size.
+- Import shared implementation patch 30 while retaining the p27 public ABI.
+- Add regression coverage for 1, 3 and 5 rows, selection changes and repeated opening.
+
 ## 2.2.0 — 2026-09-24
 
 - Use interruptible Ela combo and menu reveals, smooth ordinary list scrolling,
