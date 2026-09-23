@@ -108,7 +108,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
 and the SuiteApp SDK enabled. The release tag **v2.1.0** must identify HEAD.
-Then create a new portable directory:
+Then create a new staging directory:
 
 ```powershell
 pwsh -File scripts/package-release.ps1 -BuildDirectory build/release -OutputDirectory build/packages/xIPs -Formal
@@ -116,7 +116,12 @@ pwsh -File scripts/package-release.ps1 -BuildDirectory build/release -OutputDire
 
 The script includes Qt/Ela dependencies, the icon, notices, **build-info.json**,
 and **SHA256SUMS.txt**. The package records its exact clean source commit.
-The AppSuite component belongs at **Apps/xIPs/**; it does not include or modify
-the user's library. See [release notes](CHANGELOG.md).
+The formal delivery is the runnable directory
+**E:/PinloomRoot/AppPackage/AppSuite/Apps/xIPs/**. Each application has its own
+directory under **Apps/**. Deploy the prepared directory there, preserve the other
+applications, and update the suite manifest and checksum inventory.
+Do not create ZIP archives for formal delivery. **build/packages/xIPs** is only
+the staging location. The package does not include or modify the user's library.
+See [release notes](CHANGELOG.md).
 
 See [Qt Creator](docs/qt-creator.md), [manifest format](docs/manifest-format.md), and [integration contract](docs/cli-and-integration.md).
