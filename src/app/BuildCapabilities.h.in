@@ -1,0 +1,4 @@
+#pragma once
+namespace xips {
+inline constexpr char buildCapabilities[] = R"xips(@XIPS_CAPABILITIES_JSON@)xips";
+}

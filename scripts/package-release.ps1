@@ -70,6 +70,9 @@ foreach ($name in @('xips.ico', 'xips-256.png', 'DESIGN.md')) {
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/LICENSE') -Destination (Join-Path $licenses 'ElaWidgetTools-MIT.txt')
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/Font/FontAwesome-LICENSE.txt') -Destination (Join-Path $licenses 'FontAwesome.txt')
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/UPSTREAM-REVISION.md') -Destination (Join-Path $licenses 'ElaWidgetTools-provenance.md')
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/patches') -Destination (Join-Path $licenses 'ElaWidgetTools-patches') -Recurse
+$capabilities = Get-Content -Raw -LiteralPath (Join-Path $buildRoot 'xips-capabilities.json') | ConvertFrom-Json
+Copy-Item -LiteralPath (Join-Path $buildRoot 'xips-capabilities.json') -Destination $outputRoot
 Copy-Item -LiteralPath (Join-Path $CompilerDirectory 'licenses/gcc/COPYING3.LIB') -Destination (Join-Path $licenses 'Qt-LGPLv3.txt')
 foreach ($name in @('COPYING3', 'COPYING3.LIB', 'COPYING.RUNTIME')) {
     Copy-Item -LiteralPath (Join-Path $CompilerDirectory "licenses/gcc/$name") -Destination (Join-Path $licenses "GCC-$name.txt")
@@ -79,12 +82,15 @@ Copy-Item -LiteralPath (Join-Path $CompilerDirectory 'licenses/mingw-w64/COPYING
 foreach ($name in @('README.md', 'CHANGELOG.md', 'THIRD-PARTY-NOTICES.md')) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $name) -Destination $outputRoot
 }
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs') -Destination (Join-Path $outputRoot 'docs') -Recurse
 [ordered]@{
     application = 'xips'; version = $version; revision = $revision; dirty = $dirty
     channel = $(if ($Formal) { 'formal' } else { 'preview' })
     releaseTag = $(if ($Formal) { $tag } else { $null })
     backend = 'ela'; qt = '6.10.2'; compiler = 'MinGW 13.1'; nativeSurfaceAbi = 1
     suiteProtocol = 'suite-app/v1'; suiteSdk = $suiteVersionMatch.Groups[1].Value
+    elaBaseline = $capabilities.elaBaseline; elaSourceSha256 = $capabilities.elaSourceSha256
+    elaDllSha256 = (Get-FileHash -LiteralPath (Join-Path $outputRoot 'ElaWidgetTools.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
     builtAtUtc = [DateTime]::UtcNow.ToString('o')
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputRoot 'build-info.json') -Encoding utf8
 $hashLines = Get-ChildItem -LiteralPath $outputRoot -Recurse -File | Sort-Object FullName | ForEach-Object {

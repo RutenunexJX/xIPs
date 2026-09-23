@@ -4,6 +4,8 @@
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLibrary>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -34,6 +36,11 @@ class NativeTest final : public QObject
         QVERIFY(abi);
         QVERIFY(create);
         QCOMPARE(QByteArray(abi()), xipsExpectedBrowserAbi());
+        const auto capabilities = reinterpret_cast<XipsBrowserCapabilitiesV1>(library.resolve("xips_browser_capabilities_v1"));
+        QVERIFY(capabilities);
+        const auto description = QJsonDocument::fromJson(capabilities()).object();
+        QCOMPARE(description["elaBaseline"].toString(), QString("454cac2d-p27"));
+        QCOMPARE(description["elaSourceSha256"].toString().size(), 64);
         std::unique_ptr<QWidget> panel(create(nullptr, nullptr));
         QVERIFY(panel);
         QVERIFY(QMetaObject::invokeMethod(panel.get(), "setContext", Q_ARG(QString, root),

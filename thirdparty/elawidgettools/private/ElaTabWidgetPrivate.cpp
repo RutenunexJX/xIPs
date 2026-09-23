@@ -3,6 +3,7 @@
 #include "ElaCustomTabWidget.h"
 #include "ElaTabBar.h"
 #include "ElaTabWidget.h"
+#include "ElaTabWidgetHost.h"
 #include <QApplication>
 #include <QDebug>
 #include <QMimeData>
@@ -31,6 +32,10 @@ ElaTabWidgetPrivate::~ElaTabWidgetPrivate()
 void ElaTabWidgetPrivate::onTabDragCreate(QMimeData* mimeData)
 {
     Q_Q(ElaTabWidget);
+    if (q->_host) {
+        q->_host->startDrag(mimeData);
+        return;
+    }
     if (ElaDragMonitor::getInstance()->getIsInDrag())
     {
         return;
@@ -162,6 +167,10 @@ void ElaTabWidgetPrivate::onTabDragCreate(QMimeData* mimeData)
 void ElaTabWidgetPrivate::onTabDragEnter(QMimeData* mimeData)
 {
     Q_Q(ElaTabWidget);
+    if (q->_host) {
+        q->_host->enterDrag(mimeData);
+        return;
+    }
     mimeData->setProperty("ElaTabBarObject", QVariant::fromValue<ElaTabBar*>(dynamic_cast<ElaTabBar*>(q->tabBar())));
     onTabDragDrop(mimeData);
 }
@@ -169,6 +178,10 @@ void ElaTabWidgetPrivate::onTabDragEnter(QMimeData* mimeData)
 void ElaTabWidgetPrivate::onTabDragLeave(QMimeData* mimeData)
 {
     Q_Q(ElaTabWidget);
+    if (q->_host) {
+        q->_host->leaveDrag(mimeData);
+        return;
+    }
     QWidget* dragWidget = mimeData->property("DragWidget").value<QWidget*>();
     int index = q->indexOf(dragWidget);
     mimeData->setProperty("ElaTabWidgetObject", QVariant::fromValue(q));
@@ -225,6 +238,10 @@ void ElaTabWidgetPrivate::onTabDragLeave(QMimeData* mimeData)
 void ElaTabWidgetPrivate::onTabDragDrop(QMimeData* mimeData)
 {
     Q_Q(ElaTabWidget);
+    if (q->_host) {
+        q->_host->dropDrag(mimeData);
+        return;
+    }
     QWidget* dragWidget = mimeData->property("DragWidget").value<QWidget*>();
     QString tabText = dragWidget->property("TabText").toString();
     QIcon tabIcon = dragWidget->property("TabIcon").value<QIcon>();
@@ -251,6 +268,8 @@ void ElaTabWidgetPrivate::onTabDragDrop(QMimeData* mimeData)
 void ElaTabWidgetPrivate::onTabCloseRequested(int index)
 {
     Q_Q(ElaTabWidget);
+    if (q->_host)
+        return; // QTabWidget::tabCloseRequested reaches the document controller.
     QWidget* closeWidget = q->widget(index);
     ElaTabWidget* originTabWidget = closeWidget->property("ElaOriginTabWidget").value<ElaTabWidget*>();
     if (originTabWidget && originTabWidget != q)

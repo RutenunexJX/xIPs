@@ -2,7 +2,6 @@
 #define ELAWORKSPACE_ELAWIDGETTOOLS_ELANAVIGATIONBAR_H_
 
 #include <QWidget>
-#include <functional>
 
 #include "ElaWidgetToolsDef.h"
 #include "ElaWidgetToolsExport.h"
@@ -58,10 +57,11 @@ public:
     QWidget* customHeader() const;
     void setCustomContentWidthRange(int minimum, int maximum);
     bool isDisplayModeAnimating() const;
-    // A host may composite the transition without resizing its live document.
-    // Return true when accepted, then finish with the supplied generation.
-    void setDisplayModeTransitionHandler(std::function<bool(int, int, quint64)> handler);
-    void finishDisplayModeTransition(quint64 generation);
+    // Shared with ElaWindow's Minimal-mode navigation overlay. The caller
+    // supplies an uncluttered parent viewport and handles its dock placement.
+    void setOverlayExpanded(bool expanded, const QRect& area, bool animate = true);
+    bool isOverlayExpanded() const;
+    bool isOverlayAnimating() const;
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
 
@@ -72,6 +72,7 @@ public:
 Q_SIGNALS:
     Q_SIGNAL void displayModeChanged(ElaNavigationType::NavigationDisplayMode displayMode);
     Q_SIGNAL void displayModeTransitionFinished(ElaNavigationType::NavigationDisplayMode displayMode);
+    Q_SIGNAL void overlayTransitionFinished(bool expanded);
     Q_SIGNAL void pageOpenInNewWindow(QString nodeKey);
     Q_SIGNAL void userInfoCardClicked();
     Q_SIGNAL void navigationNodeClicked(ElaNavigationType::NavigationNodeType nodeType, QString nodeKey, bool isRouteBack);

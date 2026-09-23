@@ -1,4 +1,14 @@
 #include "ElaTreeView.h"
+#include <QtWidgets/private/qtreeview_p.h>
+
+void ElaTreeView::finishExpansion(QTreeView* view)
+{
+    if (!view) return;
+    auto* state = static_cast<QTreeViewPrivate*>(QObjectPrivate::get(view));
+    auto& animation = state->animatedOperation;
+    if (animation.state() == QAbstractAnimation::Running)
+        animation.setCurrentTime(animation.duration());
+}
 
 #include "ElaScrollBar.h"
 #include "ElaTreeViewPrivate.h"

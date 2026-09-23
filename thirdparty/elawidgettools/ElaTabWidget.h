@@ -54,6 +54,7 @@ protected:
 private:
     friend class ElaCustomTabWidget;
     friend class ElaTabWidgetHost;
+    friend class ElaTabWidgetPrivate;
     friend class ElaHostedTabWindow;
     ElaTabWidgetHost* _host{nullptr};
 };

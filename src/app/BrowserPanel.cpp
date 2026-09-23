@@ -1,5 +1,7 @@
 #include "BrowserPanel.h"
 #include "Branding.h"
+#include "CatalogModel.h"
+#include "UiSupport.h"
 #include "ElaApplication.h"
 #include "ElaComboBox.h"
 #include "ElaContentDialog.h"
@@ -7,6 +9,7 @@
 #include "ElaListView.h"
 #include "ElaMenu.h"
 #include "ElaPlainTextEdit.h"
+#include "ElaProgressRing.h"
 #include "ElaPushButton.h"
 #include "ElaText.h"
 #include "ElaTheme.h"
@@ -21,11 +24,13 @@
 #include <QFileDialog>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
+#include <QHideEvent>
 #include <QMimeData>
 #include <QResizeEvent>
 #include <QSettings>
 #include <QSplitter>
-#include <QStandardItemModel>
+#include <QShowEvent>
+#include <QStringListModel>
 #include <QTextDocument>
 #include <QTimer>
 #include <QtConcurrent>
@@ -38,8 +43,10 @@ namespace
 {
 template <class Editor> void editingMenu(Editor *editor, const QPoint &position)
 {
-    ElaMenu menu(editor);
-    menu.setObjectName("xipsEditMenu");
+    auto *menu = new ElaMenu(editor);
+    menu->setObjectName("xipsEditMenu");
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    prepareMenu(menu, editor);
     bool selection, undo, redo, empty;
     if constexpr (std::is_base_of_v<QLineEdit, Editor>)
     {
@@ -59,14 +66,14 @@ template <class Editor> void editingMenu(Editor *editor, const QPoint &position)
     const auto add =
         [&](const QString &text, const QKeySequence &shortcut, auto operation, bool enabled)
     {
-        auto *action = menu.addAction(text);
+        auto *action = menu->addAction(text);
         action->setShortcut(shortcut);
         action->setEnabled(enabled);
         QObject::connect(action, &QAction::triggered, editor, operation);
     };
     add(QStringLiteral("Undo"), QKeySequence::Undo, [editor] { editor->undo(); }, writable && undo);
     add(QStringLiteral("Redo"), QKeySequence::Redo, [editor] { editor->redo(); }, writable && redo);
-    menu.addSeparator();
+    menu->addSeparator();
     add(
         QStringLiteral("Cut"), QKeySequence::Cut, [editor] { editor->cut(); },
         writable && selection);
@@ -87,11 +94,11 @@ template <class Editor> void editingMenu(Editor *editor, const QPoint &position)
             }
         },
         writable && selection);
-    menu.addSeparator();
+    menu->addSeparator();
     add(
         QStringLiteral("Select all"), QKeySequence::SelectAll, [editor] { editor->selectAll(); },
         !empty);
-    menu.exec(position);
+    menu->popup(position);
 }
 class EnglishLineEdit final : public ElaLineEdit
 {
@@ -107,7 +114,10 @@ class EnglishLineEdit final : public ElaLineEdit
 class EnglishPlainTextEdit final : public ElaPlainTextEdit
 {
   public:
-    using ElaPlainTextEdit::ElaPlainTextEdit;
+    explicit EnglishPlainTextEdit(QWidget *parent = nullptr) : ElaPlainTextEdit(parent)
+    {
+        enableSmoothScrolling(this);
+    }
 
   protected:
     void contextMenuEvent(QContextMenuEvent *event) override
@@ -124,6 +134,10 @@ class Form final : public ElaContentDialog
         : ElaContentDialog(parent->window())
     {
         setObjectName("xipsForm");
+        const auto detach = [this] { reject(); setParent(nullptr); };
+        connect(parent, &QObject::destroyed, this, detach);
+        if (parent != parent->window())
+            connect(parent->window(), &QObject::destroyed, this, detach);
         setWindowTitle(title);
         setStandardButtonsVisible(false);
         auto *content = new QWidget(this);
@@ -227,12 +241,15 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     menu->setToolTip(QStringLiteral("Library and asset actions"));
     menu->setObjectName("moreButton");
     menu->setFixedSize(32, 32);
+    menu->setAccessibleName(QStringLiteral("More actions"));
+    enableToolTip(menu);
     header->addWidget(menu);
     layout->addLayout(header);
     m_search = new EnglishLineEdit(this);
     m_search->setObjectName("assetSearch");
     m_search->setPlaceholderText(QStringLiteral("Search names, descriptions or files…"));
     m_search->setClearButtonEnabled(true);
+    m_search->setAccessibleName(QStringLiteral("Search assets"));
     layout->addWidget(m_search);
     m_filters = new QWidget(this);
     auto *filters = new QHBoxLayout(m_filters);
@@ -261,6 +278,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     filters->addStretch();
     layout->addWidget(m_filters);
     m_splitter = new QSplitter(Qt::Horizontal, this);
+    m_splitter->setObjectName("assetSplitter");
     m_splitter->setChildrenCollapsible(false);
     m_splitter->setHandleWidth(5);
     m_list = new ElaListView(m_splitter);
@@ -268,7 +286,13 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_list->setItemHeight(54);
     m_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_model = new QStandardItemModel(this);
+    m_list->setUniformItemSizes(true);
+    m_list->setIsTransparent(true);
+    m_list->setFrameShape(QFrame::NoFrame);
+    m_list->setStyleSheet({});
+    enableSmoothScrolling(m_list);
+    enableToolTip(m_list);
+    m_model = new CatalogModel(this);
     m_list->setModel(m_model);
     m_details = new QWidget(m_splitter);
     m_details->setObjectName("assetDetails");
@@ -296,7 +320,13 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_files->setObjectName("fileList");
     m_files->setItemHeight(28);
     m_files->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_fileModel = new QStandardItemModel(this);
+    m_files->setUniformItemSizes(true);
+    m_files->setIsTransparent(true);
+    m_files->setFrameShape(QFrame::NoFrame);
+    m_files->setStyleSheet({});
+    enableSmoothScrolling(m_files);
+    enableToolTip(m_files);
+    m_fileModel = new QStringListModel(this);
     m_files->setModel(m_fileModel);
     details->addWidget(m_files, 1);
     auto *actions = new QHBoxLayout;
@@ -318,7 +348,19 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_status->setTextFormat(Qt::PlainText);
     m_status->setWordWrap(true);
     m_status->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(m_status);
+    m_status->setThemeColorEnabled(false);
+    enableToolTip(m_status);
+    auto *feedback = new QHBoxLayout;
+    m_activity = new ElaProgressRing(this);
+    m_activity->setObjectName("browserActivity");
+    m_activity->setFixedSize(20, 20);
+    m_activity->setBusyingWidth(2);
+    m_activity->setIsDisplayValue(false);
+    m_activity->setIsTransparent(true);
+    m_activity->setAccessibleName(QStringLiteral("Operation in progress"));
+    feedback->addWidget(m_activity);
+    feedback->addWidget(m_status, 1);
+    layout->addLayout(feedback);
     m_searchTimer = new QTimer(this);
     m_searchTimer->setSingleShot(true);
     m_searchTimer->setInterval(120);
@@ -331,6 +373,9 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     connect(m_take, &QPushButton::clicked, this, &BrowserPanel::exportAsset);
     connect(m_update, &QPushButton::clicked, this, &BrowserPanel::updateAsset);
     connect(menu, &QToolButton::clicked, this, &BrowserPanel::more);
+    connect(m_splitter, &QSplitter::splitterMoved, this, [this] {
+        (m_splitter->orientation() == Qt::Horizontal ? m_horizontalRatio : m_verticalRatio) = splitRatio();
+    });
     connect(eTheme, &ElaTheme::themeModeChanged, this, [this] { applyTheme(); });
     applyTheme();
     setBusy(false);
@@ -338,7 +383,13 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
 void BrowserPanel::applyTheme()
 {
     const auto mode = eTheme->getThemeMode();
-    const auto background = eTheme->getThemeColor(mode, ElaThemeType::WindowCentralStackBase);
+    auto background = eTheme->getThemeColor(mode, ElaThemeType::WindowCentralStackBase);
+    const auto base = eTheme->getThemeColor(mode, ElaThemeType::WindowBase);
+    const auto blend = [alpha = background.alphaF()](int foreground, int behind) {
+        return qRound(foreground * alpha + behind * (1.0 - alpha));
+    };
+    background = QColor(blend(background.red(), base.red()), blend(background.green(), base.green()),
+                        blend(background.blue(), base.blue()));
     const auto text = eTheme->getThemeColor(mode, ElaThemeType::BasicText);
     const auto border = eTheme->getThemeColor(mode, ElaThemeType::BasicBorder);
     auto p = palette();
@@ -348,11 +399,30 @@ void BrowserPanel::applyTheme()
     p.setColor(QPalette::WindowText, text);
     setPalette(p);
     setAutoFillBackground(true);
-    setStyleSheet(
-        QStringLiteral(
-            "QWidget#assetDetails { background: %1; } QSplitter::handle { background: %2; } "
-            "QListView { background: %1; color: %3; border: 0; selection-background-color: %2; }")
-            .arg(background.name(), border.name(), text.name()));
+    setStyleSheet(QStringLiteral("QWidget#assetDetails { background: %1; } "
+                                  "QSplitter#assetSplitter::handle { background: %2; }")
+                      .arg(background.name(), border.name()));
+    for (auto *view : {m_list, m_files})
+    {
+        view->setPalette(p);
+        view->viewport()->setPalette(p);
+        view->viewport()->setAutoFillBackground(true);
+    }
+    auto statusPalette = m_status->palette();
+    statusPalette.setColor(QPalette::WindowText, m_noticeError
+        ? QColor(mode == ElaThemeType::Dark ? "#ffaaa0" : "#a12828") : text);
+    m_status->setPalette(statusPalette);
+}
+double BrowserPanel::splitRatio() const
+{
+    const auto sizes = m_splitter->sizes();
+    const int total = sizes.value(0) + sizes.value(1);
+    return total > 0 ? qBound(0.1, double(sizes.value(0)) / total, 0.9) : 0.5;
+}
+void BrowserPanel::restoreSplit()
+{
+    const double ratio = m_splitter->orientation() == Qt::Horizontal ? m_horizontalRatio : m_verticalRatio;
+    m_splitter->setSizes({qRound(ratio * 10000), qRound((1.0 - ratio) * 10000)});
 }
 void BrowserPanel::resizeEvent(QResizeEvent *event)
 {
@@ -363,8 +433,21 @@ void BrowserPanel::resizeEvent(QResizeEvent *event)
         m_splitter->setOrientation(orientation);
         m_details->layout()->setContentsMargins(orientation == Qt::Horizontal ? 12 : 0,
                                                 orientation == Qt::Vertical ? 8 : 0, 0, 0);
-        m_splitter->setSizes({250, 300});
+        restoreSplit();
     }
+}
+void BrowserPanel::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    restoreSplit();
+    updateActivity();
+}
+void BrowserPanel::hideEvent(QHideEvent *event)
+{
+    QWidget::hideEvent(event);
+    m_versions->finishPopupAnimation();
+    static_cast<QComboBox *>(m_versions)->hidePopup();
+    updateActivity();
 }
 void BrowserPanel::dragEnterEvent(QDragEnterEvent *event)
 {
@@ -388,6 +471,11 @@ void BrowserPanel::dropEvent(QDropEvent *event)
 }
 void BrowserPanel::setContext(const QString &library, const QString &workspace)
 {
+    if (m_busy)
+    {
+        m_pendingContext = qMakePair(library, workspace);
+        return;
+    }
     m_workspace = workspace;
     m_take->setText(workspace.isEmpty() ? QStringLiteral("Use…")
                                         : QStringLiteral("Use in project…"));
@@ -399,10 +487,28 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
         if (path.isEmpty())
             path = settings.value("library/root").toString();
     }
-    if ((path == m_library && !m_assets.isEmpty()) || m_busy)
+    path = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+    if (path == m_library && !m_assets.isEmpty())
         return;
-    m_library = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+    m_library = path;
+    m_assets.clear();
+    m_model->setAssets({});
+    m_selected = {};
+    m_pendingDetail.reset();
+    m_loadingDetails = false;
+    ++m_generation;
+    filter();
     refresh();
+}
+bool BrowserPanel::applyPendingContext()
+{
+    if (!m_pendingContext || m_busy)
+        return false;
+    const auto context = *m_pendingContext;
+    m_pendingContext.reset();
+    const auto previousLibrary = m_library;
+    setContext(context.first, context.second);
+    return m_busy || previousLibrary != m_library;
 }
 void BrowserPanel::refresh()
 {
@@ -415,6 +521,9 @@ void BrowserPanel::refresh()
     }
     const QString library = m_library,
                   selectedId = m_pendingId.isEmpty() ? m_selected.id : m_pendingId;
+    ++m_generation;
+    m_pendingDetail.reset();
+    m_loadingDetails = false;
     setBusy(true, QStringLiteral("Loading library…"));
     auto *watcher = new QFutureWatcher<CatalogResult>(this);
     connect(watcher, &QFutureWatcher<CatalogResult>::finished, this,
@@ -423,9 +532,14 @@ void BrowserPanel::refresh()
                 const auto result = watcher->result();
                 watcher->deleteLater();
                 m_assets = result.assets;
+                m_model->setAssets(m_assets);
                 m_problems = result.problems;
-                m_pendingId = selectedId;
+                if (m_pendingId.isEmpty())
+                    m_pendingId = selectedId;
+                m_selected = {};
                 setBusy(false);
+                if (applyPendingContext())
+                    return;
                 filter();
                 m_title->setText(QStringLiteral("Library · %1").arg(m_assets.size()));
                 if (!m_problems.isEmpty())
@@ -445,37 +559,18 @@ void BrowserPanel::filter()
 {
     if (m_busy)
         return;
+    m_searchTimer->stop();
     const QString selectedId = m_pendingId.isEmpty() ? m_selected.id : m_pendingId;
     const auto terms = m_search->text().trimmed().toCaseFolded().split(' ', Qt::SkipEmptyParts);
-    m_model->clear();
-    int selectedRow = 0;
-    for (const auto &asset : m_assets)
-    {
-        if (!m_category.isEmpty() && asset.category != m_category)
-            continue;
-        QString haystack = asset.name + ' ' + asset.description + ' ' + asset.tags.join(' ');
-        if (!asset.snapshots.isEmpty())
-            haystack += ' ' + asset.snapshots.last().files.join(' ');
-        haystack = haystack.toCaseFolded();
-        if (!std::all_of(terms.begin(), terms.end(),
-                         [&](const QString &term) { return haystack.contains(term); }))
-            continue;
-        QString secondary = SnapshotLibrary::categoryLabel(asset.category);
-        secondary += asset.legacy ? QStringLiteral(" · Legacy")
-                                  : QStringLiteral(" · rev%1").arg(asset.snapshots.last().id);
-        if (!asset.description.isEmpty())
-            secondary += " · " + asset.description.simplified();
-        auto *item = new QStandardItem(asset.name + '\n' + secondary);
-        item->setData(asset.root, Qt::UserRole);
-        item->setToolTip(asset.name + '\n' + secondary);
-        item->setSizeHint(QSize(200, 54));
-        if (asset.id == selectedId)
-            selectedRow = m_model->rowCount();
-        m_model->appendRow(item);
-    }
+    const QSignalBlocker selectionSignals(m_list->selectionModel());
+    m_model->filter(m_category, terms);
+    const int selectedRow = m_model->rowForId(selectedId);
     m_pendingId.clear();
-    if (m_model->rowCount())
+    if (selectedRow >= 0)
+    {
         m_list->setCurrentIndex(m_model->index(selectedRow, 0));
+        selectCurrent();
+    }
     else
     {
         ++m_generation;
@@ -485,41 +580,77 @@ void BrowserPanel::filter()
         m_summary->clear();
         m_description->clear();
         m_versions->clear();
-        m_fileModel->clear();
+        m_fileModel->setStringList({});
+        m_pendingDetail.reset();
+        m_loadingDetails = false;
         setBusy(false);
     }
 }
 void BrowserPanel::selectCurrent()
 {
-    const QString root = m_list->currentIndex().data(Qt::UserRole).toString();
-    const auto found = std::find_if(m_assets.begin(), m_assets.end(),
-                                    [&](const auto &asset) { return asset.root == root; });
-    if (found == m_assets.end())
+    const int index = m_model->assetIndex(m_list->currentIndex().row());
+    if (index < 0 || index >= m_assets.size())
         return;
-    m_selected = *found;
+    if (m_selected.root == m_assets[index].root && !m_snapshot.id.isEmpty())
+    {
+        if (!m_pendingRevision.isEmpty())
+            showDetails(m_selected);
+        return;
+    }
+    m_selected = m_assets[index];
     const auto asset = m_selected;
-    const int generation = ++m_generation;
+    ++m_generation;
+    m_pendingDetail.reset();
+    if (!asset.legacy)
+    {
+        m_loadingDetails = false;
+        showDetails(asset);
+        updateActivity();
+        return;
+    }
     m_name->setText(asset.name);
     m_versions->clear();
-    m_fileModel->clear();
+    m_fileModel->setStringList({});
     m_snapshot = {};
     m_take->setEnabled(false);
     m_update->setEnabled(false);
     m_summary->setText(QStringLiteral("Loading revisions…"));
+    m_loadingDetails = true;
+    updateActivity();
+    readLegacyDetails(asset);
+}
+void BrowserPanel::readLegacyDetails(const CatalogAsset &asset)
+{
+    if (m_detailWatcher)
+    {
+        m_pendingDetail = asset;
+        return;
+    }
+    const int generation = m_generation;
     auto *watcher = new QFutureWatcher<SnapshotResult>(this);
+    m_detailWatcher = watcher;
     connect(watcher, &QFutureWatcher<SnapshotResult>::finished, this,
             [this, watcher, generation]
             {
                 const auto result = watcher->result();
                 watcher->deleteLater();
-                if (generation != m_generation)
-                    return;
-                if (!result.ok)
+                m_detailWatcher = nullptr;
+                if (generation == m_generation)
                 {
-                    notice(result.error, true);
-                    return;
+                    m_loadingDetails = false;
+                    if (!result.ok)
+                        notice(result.error, true);
+                    else
+                        showDetails(result.asset);
                 }
-                showDetails(result.asset);
+                if (m_pendingDetail)
+                {
+                    const auto pending = *m_pendingDetail;
+                    m_pendingDetail.reset();
+                    if (m_selected.root == pending.root)
+                        readLegacyDetails(pending);
+                }
+                updateActivity();
             });
     watcher->setFuture(QtConcurrent::run([asset] { return SnapshotLibrary::describe(asset); }));
 }
@@ -554,9 +685,7 @@ void BrowserPanel::selectVersion()
     for (const auto &snapshot : m_selected.snapshots)
         if (snapshot.id == m_versions->currentData().toString())
             m_snapshot = snapshot;
-    m_fileModel->clear();
-    for (const auto &file : m_snapshot.files)
-        m_fileModel->appendRow(new QStandardItem(file));
+    m_fileModel->setStringList(m_snapshot.files);
     m_summary->setText((m_snapshot.files.size() == 1 ? QStringLiteral("%1 · %2 file")
                                                      : QStringLiteral("%1 · %2 files"))
                            .arg(SnapshotLibrary::categoryLabel(m_selected.category))
@@ -567,6 +696,11 @@ void BrowserPanel::selectVersion()
 void BrowserPanel::setBusy(bool value, const QString &message)
 {
     m_busy = value;
+    if (value)
+    {
+        m_versions->finishPopupAnimation();
+        static_cast<QComboBox *>(m_versions)->hidePopup();
+    }
     m_add->setEnabled(!value);
     m_search->setEnabled(!value);
     m_filters->setEnabled(!value);
@@ -576,12 +710,23 @@ void BrowserPanel::setBusy(bool value, const QString &message)
     m_update->setEnabled(!value && !m_selected.id.isEmpty());
     if (!message.isEmpty())
         notice(message);
+    updateActivity();
+}
+void BrowserPanel::updateActivity()
+{
+    const bool active = m_busy || m_loadingDetails;
+    m_activity->setVisible(active);
+    const bool animate = active && isVisible();
+    if (m_activity->getIsBusying() != animate)
+        m_activity->setIsBusying(animate);
 }
 void BrowserPanel::notice(const QString &message, bool error)
 {
     m_status->setText(message);
     m_status->setToolTip(message);
     m_status->setProperty("error", error);
+    m_noticeError = error;
+    applyTheme();
 }
 void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> work,
                        std::function<void(const SnapshotResult &)> finished)
@@ -589,6 +734,8 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
     if (m_busy)
         return;
     ++m_generation;
+    m_pendingDetail.reset();
+    m_loadingDetails = false;
     setBusy(true, message);
     auto *watcher = new QFutureWatcher<SnapshotResult>(this);
     connect(watcher, &QFutureWatcher<SnapshotResult>::finished, this,
@@ -604,6 +751,7 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
                         message += QStringLiteral("\nRetained at: %1").arg(result.retainedPath);
                     m_problems.append(message);
                     notice(message, true);
+                    applyPendingContext();
                     return;
                 }
                 if (finished)
@@ -611,8 +759,11 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
                 else
                 {
                     m_pendingId = result.asset.id;
+                    if (applyPendingContext())
+                        return;
                     refresh();
                 }
+                applyPendingContext();
             });
     watcher->setFuture(QtConcurrent::run(std::move(work)));
 }
@@ -633,11 +784,11 @@ void BrowserPanel::chooseLibrary()
 }
 QStringList BrowserPanel::pickSources()
 {
-    ElaMenu menu(this);
+    ElaMenu menu;
     auto *current = m_host ? menu.addAction(QStringLiteral("Current file")) : nullptr;
     const auto *files = menu.addAction(QStringLiteral("Choose files…"));
     const auto *folder = menu.addAction(QStringLiteral("Choose folder…"));
-    const auto *chosen = menu.exec(QCursor::pos());
+    const auto *chosen = executeMenu(menu, this, m_add->mapToGlobal(QPoint(0, m_add->height())));
     if (chosen && chosen == current)
     {
         QStringList paths;
@@ -878,7 +1029,8 @@ void BrowserPanel::detailsDialog()
 }
 void BrowserPanel::more()
 {
-    ElaMenu menu(this);
+    ElaMenu menu;
+    menu.setObjectName("xipsMoreMenu");
     auto *choose = menu.addAction(QStringLiteral("Choose library…"));
     auto *refreshAction = menu.addAction(QStringLiteral("Refresh"));
     menu.addSeparator();
@@ -895,7 +1047,8 @@ void BrowserPanel::more()
     deleteVersion->setEnabled(!m_busy && !m_selected.legacy && m_selected.snapshots.size() > 1 &&
                               !m_snapshot.id.isEmpty());
     deleteAsset->setEnabled(!m_busy && !m_selected.id.isEmpty());
-    const auto *action = menu.exec(QCursor::pos());
+    const auto *anchor = findChild<ElaToolButton *>("moreButton");
+    const auto *action = executeMenu(menu, this, anchor->mapToGlobal(QPoint(0, anchor->height())));
     if (action == choose)
         chooseLibrary();
     else if (action == refreshAction)
@@ -911,8 +1064,14 @@ void BrowserPanel::more()
     else if (action == problems)
     {
         Form form(this, QStringLiteral("Library issues"), QStringLiteral("Done"));
-        form.message(m_problems.isEmpty() ? QStringLiteral("No issues found")
-                                          : m_problems.join("\n\n"));
+        auto *issues = new EnglishPlainTextEdit(&form);
+        issues->setObjectName("libraryIssues");
+        issues->setReadOnly(true);
+        issues->setPlainText(m_problems.isEmpty() ? QStringLiteral("No issues found")
+                                                : m_problems.join("\n\n"));
+        issues->setMinimumSize(360, 200);
+        enableSmoothScrolling(issues);
+        form.body->addWidget(issues);
         form.exec();
     }
     else if (action == deleteVersion || action == deleteAsset)
@@ -956,11 +1115,17 @@ QVariantMap BrowserPanel::saveState() const
     return {{"query", m_search->text()},
             {"category", m_category},
             {"assetId", m_selected.id},
-            {"revision", m_snapshot.id}};
+            {"revision", m_snapshot.id},
+            {"horizontalRatio", m_splitter->orientation() == Qt::Horizontal ? splitRatio() : m_horizontalRatio},
+            {"verticalRatio", m_splitter->orientation() == Qt::Vertical ? splitRatio() : m_verticalRatio}};
 }
 void BrowserPanel::restoreState(const QVariantMap &state)
 {
     m_search->setText(state.value("query").toString());
+    m_searchTimer->stop();
+    m_horizontalRatio = qBound(0.1, state.value("horizontalRatio", m_horizontalRatio).toDouble(), 0.9);
+    m_verticalRatio = qBound(0.1, state.value("verticalRatio", m_verticalRatio).toDouble(), 0.9);
+    restoreSplit();
     m_category = state.value("category").toString();
     if (auto *button = findChild<ElaToolButton *>("filter_" + m_category))
         button->setChecked(true);

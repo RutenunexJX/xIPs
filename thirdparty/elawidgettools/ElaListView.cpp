@@ -1,6 +1,7 @@
 #include "ElaListView.h"
 
 #include <QMouseEvent>
+#include <QApplication>
 
 #include "ElaListViewPrivate.h"
 #include "ElaListViewStyle.h"
@@ -13,6 +14,8 @@ ElaListView::ElaListView(QWidget* parent)
     setObjectName("ElaListView");
     setStyleSheet("#ElaListView{background-color:transparent;}");
     d->_listViewStyle = new ElaListViewStyle(style());
+    d->_listViewStyle->setParent(qApp);
+    connect(this, &QObject::destroyed, d->_listViewStyle, &QObject::deleteLater);
     setStyle(d->_listViewStyle);
     setMouseTracking(true);
     setVerticalScrollBar(new ElaScrollBar(this));
@@ -25,8 +28,6 @@ ElaListView::ElaListView(QWidget* parent)
 
 ElaListView::~ElaListView()
 {
-    Q_D(ElaListView);
-    delete d->_listViewStyle;
 }
 
 QStyle* ElaListView::createStyle(QObject* owner, int itemHeight)

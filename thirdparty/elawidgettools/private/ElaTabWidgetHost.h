@@ -15,7 +15,11 @@ public:
     bool transfer(QWidget* page, ElaTabWidget* target, int index);
     ElaTabWidget* detach(QWidget* page, const QPoint& globalPosition);
     void syncVisibility();
-    bool isDragging() const { return dragging; }
+    bool isDragging() const;
+    void startDrag(QMimeData* mime);
+    bool enterDrag(QMimeData* mime);
+    void leaveDrag(QMimeData* mime);
+    bool dropDrag(QMimeData* mime);
     QPointer<QWidget> floatingWindow;
 
 protected:
@@ -27,13 +31,11 @@ private:
     QPointer<QObject> scope;
     ElaTabWidget::SplitResolver split;
     ElaTabWidget::ReturnTarget returnTarget;
-    QPointer<QWidget> pressedPage;
-    QPoint pressPosition;
     QPointer<QWidget> indicator;
     bool dragging{false};
     bool cancelled{false};
 
-    void startDrag();
+    bool acceptsDrag(const QMimeData* mime) const;
     bool belongsToGroup(QObject* watched) const;
     ElaTabWidget::DropArea areaAt(const QPoint& position) const;
     void showIndicator(ElaTabWidget::DropArea area);

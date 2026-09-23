@@ -2,10 +2,12 @@
 #define ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACENTRALSTACKEDWIDGET_H_
 
 #include <QStackedWidget>
+#include <QPointer>
 
 #include "ElaWidgetToolsDef.h"
 #include <QVBoxLayout>
 class QGraphicsBlurEffect;
+class QAbstractAnimation;
 class ELA_EXPORT ElaCentralStackedWidget : public QWidget
 {
     Q_OBJECT
@@ -32,9 +34,14 @@ public:
     void setIsHasRadius(bool isHasRadius);
 
     void doWindowStackSwitch(ElaWindowType::StackSwitchMode stackSwitchMode, int nodeIndex, bool isRouteBack);
+    void finishStackSwitch();
+    bool isStackSwitching() const;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
 private:
     ElaWindowType::StackSwitchMode _stackSwitchMode{ElaWindowType::StackSwitchMode::Popup};
@@ -48,6 +55,8 @@ private:
     QStackedWidget* _containerStackedWidget{nullptr};
     bool _isHasRadius{true};
     bool _isDrawNewPix{false};
+    QPointer<QAbstractAnimation> _switchAnimation;
+    quint64 _switchGeneration{0};
     void _getTargetStackPix();
     void _getCurrentStackPix();
 };

@@ -15,7 +15,7 @@ public:
     ~ElaDrawerHeader() override;
 
     void setHeaderWidget(QWidget* widget);
-    void doExpandOrCollapseAnimation();
+    void doExpandOrCollapseAnimation(bool animate = true);
 Q_SIGNALS:
     Q_SIGNAL void drawerHeaderClicked(bool isExpand);
 
@@ -31,6 +31,7 @@ private:
     bool _isPressed{false};
     QWidget* _headerWidget{nullptr};
     QVBoxLayout* _mainLayout{nullptr};
+    class QPropertyAnimation* _rotation{nullptr};
 };
 
 #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELADRAWERHEADER_H_

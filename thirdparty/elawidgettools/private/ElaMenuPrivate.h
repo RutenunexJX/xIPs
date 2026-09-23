@@ -9,6 +9,7 @@
 #include "ElaPropertyMacro.h"
 class ElaMenu;
 class ElaMenuStyle;
+class QPropertyAnimation;
 class ElaMenuPrivate : public QObject
 {
     Q_OBJECT
@@ -20,6 +21,8 @@ public:
 
 private:
     QPixmap _animationPix;
+    QPropertyAnimation* _popupAnimation{nullptr};
+    bool _capturing{false};
     bool _isCloseAnimation{false};
     QPoint _mousePressPoint;
     ElaMenuStyle* _menuStyle{nullptr};

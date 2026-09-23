@@ -19,6 +19,10 @@ ElaDrawerHeader::ElaDrawerHeader(QWidget* parent)
     _mainLayout = new QVBoxLayout(this);
     _mainLayout->setContentsMargins(0, 0, 0, 0);
     setContentsMargins(0, 0, 30, 0);
+    _rotation = new QPropertyAnimation(this, "pExpandIconRotate", this);
+    _rotation->setDuration(300);
+    _rotation->setEasingCurve(QEasingCurve::InOutSine);
+    connect(_rotation, &QPropertyAnimation::valueChanged, this, [this] { update(); });
 
     _themeMode = eTheme->getThemeMode();
     connect(eTheme, &ElaTheme::themeModeChanged, this, [=](ElaThemeType::ThemeMode themeMode) {
@@ -45,17 +49,18 @@ void ElaDrawerHeader::setHeaderWidget(QWidget* widget)
     _headerWidget = widget;
 }
 
-void ElaDrawerHeader::doExpandOrCollapseAnimation()
+void ElaDrawerHeader::doExpandOrCollapseAnimation(bool animate)
 {
-    QPropertyAnimation* rotateAnimation = new QPropertyAnimation(this, "pExpandIconRotate");
-    connect(rotateAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+    _rotation->stop();
+    const qreal target = _pIsExpand ? -180 : 0;
+    if (!animate || !isVisible()) {
+        _pExpandIconRotate = target;
         update();
-    });
-    rotateAnimation->setDuration(300);
-    rotateAnimation->setEasingCurve(QEasingCurve::InOutSine);
-    rotateAnimation->setStartValue(_pExpandIconRotate);
-    rotateAnimation->setEndValue(_pIsExpand ? -180 : 0);
-    rotateAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+        return;
+    }
+    _rotation->setStartValue(_pExpandIconRotate);
+    _rotation->setEndValue(target);
+    _rotation->start();
 }
 
 bool ElaDrawerHeader::event(QEvent* event)

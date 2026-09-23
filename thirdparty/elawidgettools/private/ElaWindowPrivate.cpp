@@ -32,20 +32,10 @@ void ElaWindowPrivate::onNavigationButtonClicked()
     {
         _isNavigationDisplayModeChanged = false;
         _resetWindowLayout(true);
-        _navigationBar->setIsTransparent(false);
-        _navigationBar->setDisplayMode(ElaNavigationType::Maximal, false);
-        _navigationBar->move(-_navigationBar->width(), _navigationBar->pos().y());
-        _navigationBar->resize(_navigationBar->width(), _navigationCenterStackedWidget->height() + 1);
-        QPropertyAnimation* navigationMoveAnimation = new QPropertyAnimation(_navigationBar, "pos");
-        connect(navigationMoveAnimation, &QPropertyAnimation::finished, this, [=]() {
-            _isNavigationBarExpanded = true;
-        });
-        navigationMoveAnimation->setEasingCurve(QEasingCurve::OutCubic);
-        navigationMoveAnimation->setDuration(225);
-        navigationMoveAnimation->setStartValue(_navigationBar->pos());
-        navigationMoveAnimation->setEndValue(QPoint(0, 0));
-        navigationMoveAnimation->start(QAbstractAnimation::DeleteWhenStopped);
         _isNavigationBarFloat = true;
+        _isNavigationBarExpanded = true;
+        _navigationBar->setOverlayExpanded(true, QRect(0, 0,
+            _navigationBar->getNavigationBarWidth(), _navigationCenterStackedWidget->height() + 1));
     }
     else
     {
@@ -71,29 +61,9 @@ void ElaWindowPrivate::onWMWindowClickedEvent(const QVariantMap& data)
         }
         if (_isNavigationBarExpanded)
         {
-            QPropertyAnimation* navigationMoveAnimation = new QPropertyAnimation(_navigationBar, "pos");
-            connect(navigationMoveAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
-                if (_isNavigationDisplayModeChanged)
-                {
-                    _isNavigationBarFloat = false;
-                    _resetWindowLayout(false);
-                    navigationMoveAnimation->deleteLater();
-                }
-            });
-            connect(navigationMoveAnimation, &QPropertyAnimation::finished, this, [=]() {
-                if (!_isNavigationDisplayModeChanged)
-                {
-                    _navigationBar->setDisplayMode(ElaNavigationType::Minimal, false);
-                    _resetWindowLayout(false);
-                }
-                _isNavigationBarFloat = false;
-            });
-            navigationMoveAnimation->setEasingCurve(QEasingCurve::OutCubic);
-            navigationMoveAnimation->setDuration(225);
-            navigationMoveAnimation->setStartValue(_navigationBar->pos());
-            navigationMoveAnimation->setEndValue(QPoint(-_navigationBar->width(), 0));
-            navigationMoveAnimation->start(QAbstractAnimation::DeleteWhenStopped);
             _isNavigationBarExpanded = false;
+            _navigationBar->setOverlayExpanded(false, QRect(0, 0,
+                _navigationBar->getNavigationBarWidth(), _navigationCenterStackedWidget->height() + 1));
         }
     }
 }
@@ -284,10 +254,15 @@ void ElaWindowPrivate::_resetWindowLayout(bool isAnimation)
     {
         if (_centerLayout->count() == 0)
         {
+            _isNavigationBarFloat = false;
+            _isNavigationBarExpanded = false;
+            _navigationBar->setOverlayExpanded(false, QRect(0, 0,
+                _navigationBar->getNavigationBarWidth(), _navigationCenterStackedWidget->height() + 1), false);
             _navigationBar->setIsTransparent(true);
             _navigationBar->setDisplayMode(ElaNavigationType::Minimal, false);
             _centerLayout->addWidget(_navigationBar);
             _centerLayout->addWidget(_navigationCenterStackedWidget);
+            _navigationBar->show();
         }
     }
 }

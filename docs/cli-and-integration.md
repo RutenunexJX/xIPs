@@ -74,6 +74,21 @@ No host code reads xIPs private revision directories.
 
 ## AppSuite provider
 
+The native ABI string includes **;ela=454cac2d-p27** in addition to Qt 6.10.2,
+pointer size, and compiler. The host must match this string. The component directly
+imports p26 combo and p27 menu lifecycle APIs, so an older Ela DLL cannot satisfy
+its imports. `xips_browser_capabilities_v1` is an optional `const char *(*)()` export
+returning UTF-8 JSON with the capability list and normalized vendor source SHA-256.
+The same metadata is packaged as **xips-capabilities.json**. **build-info.json** also
+records the packaged Ela DLL SHA-256. Patch 28 changes style lifetime without an API
+or class-layout change; its source is identified by the fingerprint and patch record.
+
+State adds **horizontalRatio** and **verticalRatio** while retaining query,
+category, assetId and revision. Old saved states remain accepted. A context change
+during a background transaction is applied after completion. Modern revision
+metadata is cached until Refresh; Use reloads and verifies the selected immutable
+revision before materializing it. Legacy detail reads are serialized and coalesced.
+
 The optional SuiteApp SDK publishes the **xips** application descriptor using
 **suite-app/v1** and the shared per-user runtime. The standalone process owns
 the provider; loading the native panel does not create another provider or service.

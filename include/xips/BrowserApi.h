@@ -16,6 +16,8 @@ class QObject;
 // collectionSources()->QStringList (saved source files, empty on cancellation).
 using XipsCreateBrowserV1 = QWidget *(*)(QWidget *, QObject *);
 using XipsBrowserAbiV1 = const char *(*)();
+// Optional JSON capability/provenance export; no QWidget creation is required.
+using XipsBrowserCapabilitiesV1 = const char *(*)();
 
 inline QByteArray xipsExpectedBrowserAbi()
 {
@@ -28,5 +30,6 @@ inline QByteArray xipsExpectedBrowserAbi()
 #else
     result += ";compiler=unknown";
 #endif
+    result += ";ela=454cac2d-p27";
     return result;
 }

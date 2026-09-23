@@ -27,6 +27,10 @@ add_library(xips_app STATIC
     ${CMAKE_SOURCE_DIR}/assets/xips.qrc
     app/BrowserPanel.cpp
     app/BrowserPanel.h
+    app/CatalogModel.cpp
+    app/CatalogModel.h
+    app/UiSupport.cpp
+    app/UiSupport.h
 )
 target_include_directories(xips_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xips_app
@@ -65,7 +69,7 @@ target_link_libraries(xips-cli PRIVATE xips_core)
 set_target_properties(xips xips-cli PROPERTIES FOLDER "qtc_runnable")
 
 add_library(xips_browser SHARED app/BrowserApi.cpp)
-target_include_directories(xips_browser PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(xips_browser PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(xips_browser PRIVATE xips_app)
 set_target_properties(xips_browser PROPERTIES PREFIX "" OUTPUT_NAME "xips-browser")
 install(TARGETS xips_browser RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})

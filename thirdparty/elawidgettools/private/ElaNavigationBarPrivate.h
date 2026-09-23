@@ -6,13 +6,13 @@
 #include <QMap>
 #include <QObject>
 #include <QPointer>
-#include <functional>
 class QLayout;
 class ElaMenu;
 class QVBoxLayout;
 class QHBoxLayout;
 class QLinearGradient;
 class QVariantAnimation;
+class QPropertyAnimation;
 
 class ElaNavigationBar;
 class ElaNavigationNode;
@@ -73,9 +73,10 @@ private:
     int _customMinimumWidth{180};
     int _customMaximumWidth{QWIDGETSIZE_MAX};
     QVariantAnimation* _widthAnimation{nullptr};
+    QPropertyAnimation* _overlayAnimation{nullptr};
+    bool _overlayExpanded{false};
     bool _widthTransitioning{false};
     quint64 _widthTransitionSerial{0};
-    std::function<bool(int, int, quint64)> _widthTransitionHandler;
     ElaNavigationType::NavigationDisplayMode _widthTargetMode{ElaNavigationType::Maximal};
 
     void _setCustomWidget(QWidget* widget, bool header);

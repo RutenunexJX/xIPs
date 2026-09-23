@@ -69,7 +69,7 @@ void GuiSmokeTest::compactPanelFiltersAndSelectsVersions()
     QContextMenuEvent context(QContextMenuEvent::Mouse, QPoint(5, 5),
                               search->mapToGlobal(QPoint(5, 5)));
     QApplication::sendEvent(search, &context);
-    QCOMPARE(actions,
+    QTRY_COMPARE(actions,
              QStringList({"Undo", "Redo", "Cut", "Copy", "Paste", "Delete", "Select all"}));
     QTRY_COMPARE(versions->count(), 2);
     QCOMPARE(versions->currentData().toString(), QString("2"));

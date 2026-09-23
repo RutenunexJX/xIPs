@@ -20,6 +20,8 @@ public:
     // Hosts with their own document controller retain Qt layout and input semantics.
     void setNativeTabBehavior(bool enabled);
     bool nativeTabBehavior() const;
+    // Keep Qt's variable-width layout while using Ela's tear-out gestures.
+    void setHostedDragEnabled(bool enabled) { _hostedDragEnabled = enabled; }
     void setSmoothScrollEnabled(bool enabled);
     bool smoothScrollEnabled() const;
     void setTabText(int index, const QString& text);
@@ -49,6 +51,7 @@ protected:
 
 private:
     bool _nativeTabBehavior{false};
+    bool _hostedDragEnabled{false};
     bool _smoothScrollEnabled{false};
     int _lastScrollOffset{0};
     int smoothScrollMaximum() const;

@@ -11,6 +11,9 @@
 #include <QListView>
 #include <QMouseEvent>
 #include <QPropertyAnimation>
+#include <QParallelAnimationGroup>
+#include <QHideEvent>
+#include <QResizeEvent>
 Q_PROPERTY_CREATE_Q_CPP(ElaComboBox, int, BorderRadius)
 ElaComboBox::ElaComboBox(QWidget* parent)
     : QComboBox(parent), d_ptr(new ElaComboBoxPrivate())
@@ -24,6 +27,16 @@ ElaComboBox::ElaComboBox(QWidget* parent)
     d->_comboBoxStyle = new ElaComboBoxStyle(style());
     d->_comboBoxStyle->setParent(qApp);
     setStyle(d->_comboBoxStyle);
+    d->_popupAnimation = new QParallelAnimationGroup(this);
+    connect(d->_popupAnimation, &QParallelAnimationGroup::finished, this, &ElaComboBox::finishPopupAnimation);
+    d->_indicatorAnimation = new QParallelAnimationGroup(this);
+    d->_rotation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandIconRotate", d->_indicatorAnimation);
+    d->_mark = new QPropertyAnimation(d->_comboBoxStyle, "pExpandMarkWidth", d->_indicatorAnimation);
+    for (auto* animation : {d->_rotation, d->_mark}) {
+        animation->setDuration(150);
+        animation->setEasingCurve(QEasingCurve::InOutSine);
+    }
+    connect(d->_rotation, &QPropertyAnimation::valueChanged, this, [this] { update(); });
 
     //调用view 让container初始化
     setView(new QListView(this));
@@ -38,9 +51,12 @@ ElaComboBox::ElaComboBox(QWidget* parent)
     comboBoxView->setObjectName("ElaComboBoxView");
     comboBoxView->setStyleSheet("#ElaComboBoxView{background-color:transparent;}");
     comboBoxView->setStyle(d->_comboBoxStyle);
+    comboBoxView->installEventFilter(this);
+    comboBoxView->viewport()->installEventFilter(this);
     QWidget* container = this->findChild<QFrame*>();
     if (container)
     {
+        container->installEventFilter(this);
         container->setWindowFlags(Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
         container->setAttribute(Qt::WA_TranslucentBackground);
         container->setObjectName("ElaComboBoxContainer");
@@ -65,6 +81,8 @@ ElaComboBox::ElaComboBox(QWidget* parent)
 ElaComboBox::~ElaComboBox()
 {
     Q_D(ElaComboBox);
+    finishPopupAnimation();
+    d->_indicatorAnimation->stop();
     // Keep the shared style alive through QComboBox's popup/view destruction.
     // Resetting popup styles here repolishes its native children mid-teardown.
     // The application owns the fallback lifetime if its event loop has stopped.
@@ -82,133 +100,104 @@ void ElaComboBox::setEditable(bool editable)
     }
 }
 
+bool ElaComboBox::isPopupAnimating() const
+{
+    Q_D(const ElaComboBox);
+    return d->_popupAnimation->state() == QAbstractAnimation::Running;
+}
+
+void ElaComboBox::finishPopupAnimation()
+{
+    Q_D(ElaComboBox);
+    if (d->_settling || !d->_popup) return;
+    d->_settling = true;
+    d->_popupAnimation->stop();
+    auto* layout = d->_popup->layout();
+    d->_popup->setMinimumHeight(0);
+    d->_popup->setMaximumHeight(QWIDGETSIZE_MAX);
+    if (d->_popupHeight > 0) d->_popup->resize(d->_popup->width(), d->_popupHeight);
+    view()->move(d->_viewPosition);
+    if (layout->indexOf(view()) < 0) layout->addWidget(view());
+    layout->activate();
+    d->_settling = false;
+}
+
+void ElaComboBox::animateIndicator(bool expanded)
+{
+    Q_D(ElaComboBox);
+    d->_indicatorAnimation->stop();
+    d->_rotation->setStartValue(d->_comboBoxStyle->getExpandIconRotate());
+    d->_rotation->setEndValue(expanded ? -180 : 0);
+    d->_mark->setStartValue(d->_comboBoxStyle->getExpandMarkWidth());
+    d->_mark->setEndValue(expanded ? qMax(0, width() / 2 - d->_pBorderRadius - 6) : 0);
+    d->_indicatorAnimation->start();
+}
+
 void ElaComboBox::showPopup()
 {
     Q_D(ElaComboBox);
-    bool oldAnimationEffects = qApp->isEffectEnabled(Qt::UI_AnimateCombo);
+    finishPopupAnimation();
+    QPointer<ElaComboBox> alive(this);
+    const bool oldEffects = qApp->isEffectEnabled(Qt::UI_AnimateCombo);
     qApp->setEffectEnabled(Qt::UI_AnimateCombo, false);
     QComboBox::showPopup();
-    qApp->setEffectEnabled(Qt::UI_AnimateCombo, oldAnimationEffects);
-    if (count() > 0)
-    {
-        QWidget* container = this->findChild<QFrame*>();
-        if (container)
-        {
-            int containerHeight = 0;
-            if (count() >= maxVisibleItems())
-            {
-                containerHeight = maxVisibleItems() * 35 + 8;
-            }
-            else
-            {
-                containerHeight = count() * 35 + 8;
-            }
-            view()->resize(view()->width(), containerHeight - 8);
-            container->move(container->x(), container->y() + 3);
-            QLayout* layout = container->layout();
-            while (layout->count())
-            {
-                layout->takeAt(0);
-            }
-            QPropertyAnimation* fixedSizeAnimation = new QPropertyAnimation(container, "maximumHeight");
-            connect(fixedSizeAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
-                container->setFixedHeight(value.toUInt());
-            });
-            fixedSizeAnimation->setStartValue(1);
-            fixedSizeAnimation->setEndValue(containerHeight);
-            fixedSizeAnimation->setEasingCurve(QEasingCurve::OutCubic);
-            fixedSizeAnimation->setDuration(400);
-            fixedSizeAnimation->start(QAbstractAnimation::DeleteWhenStopped);
-
-            QPropertyAnimation* viewPosAnimation = new QPropertyAnimation(view(), "pos");
-            connect(viewPosAnimation, &QPropertyAnimation::finished, this, [=]() {
-                d->_isAllowHidePopup = true;
-                layout->addWidget(view());
-            });
-            QPoint viewPos = view()->pos();
-            viewPosAnimation->setStartValue(QPoint(viewPos.x(), viewPos.y() - view()->height()));
-            viewPosAnimation->setEndValue(viewPos);
-            viewPosAnimation->setEasingCurve(QEasingCurve::OutCubic);
-            viewPosAnimation->setDuration(400);
-            viewPosAnimation->start(QAbstractAnimation::DeleteWhenStopped);
-        }
-        //指示器动画
-        QPropertyAnimation* rotateAnimation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandIconRotate");
-        connect(rotateAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
-            update();
-        });
-        rotateAnimation->setDuration(300);
-        rotateAnimation->setEasingCurve(QEasingCurve::InOutSine);
-        rotateAnimation->setStartValue(d->_comboBoxStyle->getExpandIconRotate());
-        rotateAnimation->setEndValue(-180);
-        rotateAnimation->start(QAbstractAnimation::DeleteWhenStopped);
-        QPropertyAnimation* markAnimation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandMarkWidth");
-        markAnimation->setDuration(300);
-        markAnimation->setEasingCurve(QEasingCurve::InOutSine);
-        markAnimation->setStartValue(d->_comboBoxStyle->getExpandMarkWidth());
-        markAnimation->setEndValue(width() / 2 - d->_pBorderRadius - 6);
-        markAnimation->start(QAbstractAnimation::DeleteWhenStopped);
-    }
+    qApp->setEffectEnabled(Qt::UI_AnimateCombo, oldEffects);
+    if (!alive || count() == 0 || !view()->isVisible()) return;
+    d->_popup = view()->window();
+    d->_popupHeight = d->_popup->height();
+    d->_viewPosition = view()->pos();
+    auto* layout = d->_popup->layout();
+    if (!layout) return;
+    layout->removeWidget(view());
+    d->_popupAnimation->clear();
+    auto* height = new QPropertyAnimation(d->_popup, "maximumHeight", d->_popupAnimation);
+    connect(height, &QPropertyAnimation::valueChanged, this, [this](const QVariant& value) {
+        Q_D(ElaComboBox);
+        if (d->_popup) d->_popup->setFixedHeight(value.toInt());
+    });
+    height->setStartValue(1);
+    height->setEndValue(d->_popupHeight);
+    height->setDuration(180);
+    height->setEasingCurve(QEasingCurve::OutCubic);
+    auto* position = new QPropertyAnimation(view(), "pos", d->_popupAnimation);
+    position->setStartValue(d->_viewPosition - QPoint(0, view()->height()));
+    position->setEndValue(d->_viewPosition);
+    position->setDuration(180);
+    position->setEasingCurve(QEasingCurve::OutCubic);
+    d->_popupAnimation->start();
+    animateIndicator(true);
 }
 
 void ElaComboBox::hidePopup()
 {
-    Q_D(ElaComboBox);
-    if (d->_isAllowHidePopup)
-    {
-        QWidget* container = this->findChild<QFrame*>();
-        int containerHeight = container->height();
-        if (container)
-        {
-            QLayout* layout = container->layout();
-            while (layout->count())
-            {
-                layout->takeAt(0);
-            }
-            QPropertyAnimation* viewPosAnimation = new QPropertyAnimation(view(), "pos");
-            connect(viewPosAnimation, &QPropertyAnimation::finished, this, [=]() {
-                layout->addWidget(view());
-                QMouseEvent focusEvent(QEvent::MouseButtonPress, QPoint(-1, -1), QPoint(-1, -1), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
-                QApplication::sendEvent(parentWidget(), &focusEvent);
-                QComboBox::hidePopup();
-                container->setFixedHeight(containerHeight);
-            });
-            QPoint viewPos = view()->pos();
-            connect(viewPosAnimation, &QPropertyAnimation::finished, this, [=]() {
-                view()->move(viewPos);
-            });
-            viewPosAnimation->setStartValue(viewPos);
-            viewPosAnimation->setEndValue(QPoint(viewPos.x(), viewPos.y() - view()->height()));
-            viewPosAnimation->setEasingCurve(QEasingCurve::InCubic);
-            viewPosAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+    finishPopupAnimation();
+    QComboBox::hidePopup();
+    animateIndicator(false);
+}
 
-            QPropertyAnimation* fixedSizeAnimation = new QPropertyAnimation(container, "maximumHeight");
-            connect(fixedSizeAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
-                container->setFixedHeight(value.toUInt());
-            });
-            fixedSizeAnimation->setStartValue(container->height());
-            fixedSizeAnimation->setEndValue(1);
-            fixedSizeAnimation->setEasingCurve(QEasingCurve::InCubic);
-            fixedSizeAnimation->start(QAbstractAnimation::DeleteWhenStopped);
-            d->_isAllowHidePopup = false;
-        }
-        //指示器动画
-        QPropertyAnimation* rotateAnimation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandIconRotate");
-        connect(rotateAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
-            update();
-        });
-        rotateAnimation->setDuration(300);
-        rotateAnimation->setEasingCurve(QEasingCurve::InOutSine);
-        rotateAnimation->setStartValue(d->_comboBoxStyle->getExpandIconRotate());
-        rotateAnimation->setEndValue(0);
-        rotateAnimation->start(QAbstractAnimation::DeleteWhenStopped);
-        QPropertyAnimation* markAnimation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandMarkWidth");
-        markAnimation->setDuration(300);
-        markAnimation->setEasingCurve(QEasingCurve::InOutSine);
-        markAnimation->setStartValue(d->_comboBoxStyle->getExpandMarkWidth());
-        markAnimation->setEndValue(0);
-        markAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+bool ElaComboBox::eventFilter(QObject* watched, QEvent* event)
+{
+    Q_D(ElaComboBox);
+    if (watched == d->_popup && event->type() == QEvent::Hide) {
+        finishPopupAnimation();
+        animateIndicator(false);
+    } else if (isPopupAnimating() && (event->type() == QEvent::KeyPress
+        || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Wheel)) {
+        finishPopupAnimation();
     }
+    return QComboBox::eventFilter(watched, event);
+}
+
+void ElaComboBox::hideEvent(QHideEvent* event)
+{
+    hidePopup();
+    QComboBox::hideEvent(event);
+}
+
+void ElaComboBox::resizeEvent(QResizeEvent* event)
+{
+    if (isPopupAnimating()) finishPopupAnimation();
+    QComboBox::resizeEvent(event);
 }
 
 void ElaComboBox::paintEvent(QPaintEvent* event)

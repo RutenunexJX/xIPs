@@ -75,6 +75,10 @@ void ElaTabWidget::paintEvent(QPaintEvent* event)
 
 void ElaTabWidget::dragEnterEvent(QDragEnterEvent* event)
 {
+    if (event->mimeData()->property("ElaHostedTabDrag").toBool() && !_host) {
+        event->ignore();
+        return;
+    }
     if (event->mimeData()->property("DragType").toString() == "ElaTabBarDrag")
     {
         event->acceptProposedAction();
@@ -111,10 +115,10 @@ void ElaTabWidget::setHostedTabs(QObject* scope, SplitResolver split, ReturnTarg
     Q_D(ElaTabWidget);
     if (_host || !scope || count() != 0)
         return;
-    // The stock handlers own/delete pages; a hosted document must never enter them.
-    disconnect(d->_tabBar, nullptr, d, nullptr);
+    // Retain Ela's gesture controller; hosted callbacks only adapt page ownership.
     d->_allTabWidgetList.clear();
     d->_tabBar->setNativeTabBehavior(true);
+    d->_tabBar->setHostedDragEnabled(true);
     d->_tabBar->setSmoothScrollEnabled(true);
     _host = new ElaTabWidgetHost(this, scope, std::move(split), std::move(returnTarget));
 }
@@ -130,9 +134,14 @@ void ElaTabWidget::setHostedTabBar(ElaTabBar* bar)
         return;
     d->_tabBar = bar;
     bar->setNativeTabBehavior(true);
+    bar->setHostedDragEnabled(true);
     bar->setSmoothScrollEnabled(true);
     setTabBar(bar);
     bar->setAcceptDrops(true);
+    connect(bar, &ElaTabBar::tabDragCreate, d, &ElaTabWidgetPrivate::onTabDragCreate);
+    connect(bar, &ElaTabBar::tabDragEnter, d, &ElaTabWidgetPrivate::onTabDragEnter);
+    connect(bar, &ElaTabBar::tabDragLeave, d, &ElaTabWidgetPrivate::onTabDragLeave);
+    connect(bar, &ElaTabBar::tabDragDrop, d, &ElaTabWidgetPrivate::onTabDragDrop);
 }
 
 bool ElaTabWidget::transferHostedTab(QWidget* page, ElaTabWidget* target, int index)

@@ -12,6 +12,8 @@ ElaDrawerArea::ElaDrawerArea(QWidget* parent)
     d->_drawerHeader = new ElaDrawerHeader(this);
     d->_drawerContainer = new ElaDrawerContainer(this);
     connect(d->_drawerHeader, &ElaDrawerHeader::drawerHeaderClicked, d, &ElaDrawerAreaPrivate::onDrawerHeaderClicked);
+    connect(d->_drawerContainer, &ElaDrawerContainer::animationFinished,
+            this, &ElaDrawerArea::drawerAnimationFinished);
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
@@ -75,20 +77,65 @@ void ElaDrawerArea::removeDrawer(QWidget* widget)
 
 void ElaDrawerArea::expand()
 {
-    Q_D(ElaDrawerArea);
-    d->_drawerHeader->setIsExpand(true);
-    d->_drawerHeader->doExpandOrCollapseAnimation();
-    d->_drawerContainer->doDrawerAnimation(true);
-    Q_EMIT expandStateChanged(true);
+    setExpanded(true);
 }
 
 void ElaDrawerArea::collapse()
 {
+    setExpanded(false);
+}
+
+void ElaDrawerArea::setExpanded(bool expanded, bool animate)
+{
     Q_D(ElaDrawerArea);
-    d->_drawerHeader->setIsExpand(false);
-    d->_drawerHeader->doExpandOrCollapseAnimation();
-    d->_drawerContainer->doDrawerAnimation(false);
-    Q_EMIT expandStateChanged(false);
+    const bool changed = d->_drawerContainer->isExpanded() != expanded;
+    d->_drawerHeader->setIsExpand(expanded);
+    d->_drawerHeader->doExpandOrCollapseAnimation(animate && isVisible());
+    QPointer<ElaDrawerArea> guard(this);
+    d->_drawerContainer->doDrawerAnimation(expanded, animate);
+    if (guard && changed) Q_EMIT expandStateChanged(expanded);
+}
+
+void ElaDrawerArea::setDrawerHeaderVisible(bool visible)
+{
+    Q_D(ElaDrawerArea);
+    d->_drawerHeader->setVisible(visible);
+}
+
+void ElaDrawerArea::setDrawerEdge(Qt::Edge edge)
+{
+    Q_D(ElaDrawerArea);
+    d->_drawerContainer->setEdge(edge);
+}
+
+bool ElaDrawerArea::isDrawerAnimating() const
+{
+    Q_D(const ElaDrawerArea);
+    return d->_drawerContainer->isAnimating();
+}
+
+void ElaDrawerArea::finishDrawerAnimation()
+{
+    Q_D(ElaDrawerArea);
+    d->_drawerContainer->finishAnimation();
+}
+
+qint64 ElaDrawerArea::drawerSnapshotBytes() const
+{
+    Q_D(const ElaDrawerArea);
+    return d->_drawerContainer->snapshotBytes();
+}
+
+double ElaDrawerArea::drawerPreparationMs() const
+{
+    Q_D(const ElaDrawerArea);
+    return d->_drawerContainer->preparationMs();
+}
+
+qreal ElaDrawerArea::drawerProgress() const
+{
+    Q_D(const ElaDrawerArea);
+    return d->_drawerContainer->getOpacity();
 }
 
 bool ElaDrawerArea::getIsExpand() const

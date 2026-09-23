@@ -23,6 +23,8 @@ QJsonObject surface() {
                                 .filePath("xips-browser.dll")},
                    {"abi", 1},
                    {"abiTag", QString::fromLatin1(xipsExpectedBrowserAbi())},
+                   {"elaBaseline", "454cac2d-p27"},
+                   {"capabilityFactory", "xips_browser_capabilities_v1"},
                    {"factory", "xips_create_browser_v1"}}}};
 }
 } // namespace

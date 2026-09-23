@@ -1,0 +1,589 @@
+{
+  "baseline": "c5bdd8e",
+  "qt": "6.10.2",
+  "compiler": "MinGW 13.1",
+  "build": "Release -O3",
+  "measurements": [
+    {
+      "scale": 1,
+      "before": {
+        "assets": 2000,
+        "devicePixelRatio": 1,
+        "filesPerRevision": 64,
+        "height": 700,
+        "medianDispatchMs": 18.2163,
+        "p95DispatchMs": 26.0778,
+        "platform": "offscreen",
+        "runs": [
+          {
+            "dispatchMs": 19.319,
+            "layoutRequests": 15,
+            "paintEvents": 81,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 18.2101,
+            "layoutRequests": 16,
+            "paintEvents": 61,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 16.1721,
+            "layoutRequests": 8,
+            "paintEvents": 22,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 17.6024,
+            "layoutRequests": 16,
+            "paintEvents": 60,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 19.5552,
+            "layoutRequests": 18,
+            "paintEvents": 74,
+            "query": ""
+          },
+          {
+            "dispatchMs": 19.3843,
+            "layoutRequests": 18,
+            "paintEvents": 75,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 17.2147,
+            "layoutRequests": 16,
+            "paintEvents": 61,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 16.0436,
+            "layoutRequests": 8,
+            "paintEvents": 22,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 26.0778,
+            "layoutRequests": 16,
+            "paintEvents": 55,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 20.0014,
+            "layoutRequests": 18,
+            "paintEvents": 83,
+            "query": ""
+          },
+          {
+            "dispatchMs": 19.1803,
+            "layoutRequests": 18,
+            "paintEvents": 84,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 18.1739,
+            "layoutRequests": 16,
+            "paintEvents": 61,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 16.7947,
+            "layoutRequests": 8,
+            "paintEvents": 22,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 18.1276,
+            "layoutRequests": 16,
+            "paintEvents": 60,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 18.465,
+            "layoutRequests": 18,
+            "paintEvents": 80,
+            "query": ""
+          },
+          {
+            "dispatchMs": 18.4419,
+            "layoutRequests": 18,
+            "paintEvents": 78,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 17.5451,
+            "layoutRequests": 16,
+            "paintEvents": 61,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 16.4248,
+            "layoutRequests": 8,
+            "paintEvents": 22,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 18.2163,
+            "layoutRequests": 16,
+            "paintEvents": 60,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 18.2831,
+            "layoutRequests": 18,
+            "paintEvents": 83,
+            "query": ""
+          }
+        ],
+        "width": 1000
+      },
+      "after": {
+        "assets": 2000,
+        "devicePixelRatio": 1,
+        "filesPerRevision": 64,
+        "height": 700,
+        "medianDispatchMs": 0.9411,
+        "p95DispatchMs": 4.2677,
+        "platform": "offscreen",
+        "runs": [
+          {
+            "dispatchMs": 1.1769,
+            "layoutRequests": 2,
+            "paintEvents": 34,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 1.8098,
+            "layoutRequests": 3,
+            "paintEvents": 14,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 1.471,
+            "layoutRequests": 5,
+            "paintEvents": 14,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 0.3375,
+            "layoutRequests": 5,
+            "paintEvents": 29,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 0.2195,
+            "layoutRequests": 2,
+            "paintEvents": 33,
+            "query": ""
+          },
+          {
+            "dispatchMs": 1.0752,
+            "layoutRequests": 2,
+            "paintEvents": 34,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 0.7945,
+            "layoutRequests": 3,
+            "paintEvents": 14,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 1.2973,
+            "layoutRequests": 5,
+            "paintEvents": 14,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 0.3213,
+            "layoutRequests": 5,
+            "paintEvents": 29,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 0.3289,
+            "layoutRequests": 2,
+            "paintEvents": 21,
+            "query": ""
+          },
+          {
+            "dispatchMs": 0.9411,
+            "layoutRequests": 2,
+            "paintEvents": 25,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 4.2677,
+            "layoutRequests": 3,
+            "paintEvents": 14,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 1.2802,
+            "layoutRequests": 5,
+            "paintEvents": 14,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 0.3648,
+            "layoutRequests": 5,
+            "paintEvents": 29,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 0.1756,
+            "layoutRequests": 2,
+            "paintEvents": 21,
+            "query": ""
+          },
+          {
+            "dispatchMs": 1.0624,
+            "layoutRequests": 2,
+            "paintEvents": 34,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 0.7053,
+            "layoutRequests": 3,
+            "paintEvents": 14,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 2.0514,
+            "layoutRequests": 5,
+            "paintEvents": 14,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 0.8103,
+            "layoutRequests": 5,
+            "paintEvents": 29,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 0.25,
+            "layoutRequests": 2,
+            "paintEvents": 24,
+            "query": ""
+          }
+        ],
+        "width": 1000
+      }
+    },
+    {
+      "scale": 2,
+      "before": {
+        "assets": 2000,
+        "devicePixelRatio": 2,
+        "filesPerRevision": 64,
+        "height": 700,
+        "medianDispatchMs": 19.325,
+        "p95DispatchMs": 24.0427,
+        "platform": "offscreen",
+        "runs": [
+          {
+            "dispatchMs": 18.6931,
+            "layoutRequests": 18,
+            "paintEvents": 94,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 20.8216,
+            "layoutRequests": 16,
+            "paintEvents": 61,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 16.6146,
+            "layoutRequests": 8,
+            "paintEvents": 22,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 18.648,
+            "layoutRequests": 16,
+            "paintEvents": 60,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 20.7463,
+            "layoutRequests": 18,
+            "paintEvents": 83,
+            "query": ""
+          },
+          {
+            "dispatchMs": 20.5168,
+            "layoutRequests": 18,
+            "paintEvents": 78,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 18.0714,
+            "layoutRequests": 16,
+            "paintEvents": 61,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 17.7914,
+            "layoutRequests": 8,
+            "paintEvents": 22,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 18.163,
+            "layoutRequests": 16,
+            "paintEvents": 60,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 19.5683,
+            "layoutRequests": 18,
+            "paintEvents": 77,
+            "query": ""
+          },
+          {
+            "dispatchMs": 19.325,
+            "layoutRequests": 18,
+            "paintEvents": 75,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 18.2922,
+            "layoutRequests": 16,
+            "paintEvents": 61,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 20.0955,
+            "layoutRequests": 8,
+            "paintEvents": 22,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 18.6521,
+            "layoutRequests": 16,
+            "paintEvents": 60,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 23.0536,
+            "layoutRequests": 18,
+            "paintEvents": 82,
+            "query": ""
+          },
+          {
+            "dispatchMs": 20.136,
+            "layoutRequests": 18,
+            "paintEvents": 84,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 17.7961,
+            "layoutRequests": 16,
+            "paintEvents": 61,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 18.4263,
+            "layoutRequests": 8,
+            "paintEvents": 22,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 24.0427,
+            "layoutRequests": 16,
+            "paintEvents": 60,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 21.7194,
+            "layoutRequests": 18,
+            "paintEvents": 79,
+            "query": ""
+          }
+        ],
+        "width": 1000
+      },
+      "after": {
+        "assets": 2000,
+        "devicePixelRatio": 2,
+        "filesPerRevision": 64,
+        "height": 700,
+        "medianDispatchMs": 0.8108,
+        "p95DispatchMs": 2.8234,
+        "platform": "offscreen",
+        "runs": [
+          {
+            "dispatchMs": 0.8379,
+            "layoutRequests": 10,
+            "paintEvents": 53,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 0.9591,
+            "layoutRequests": 3,
+            "paintEvents": 14,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 2.8228,
+            "layoutRequests": 5,
+            "paintEvents": 14,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 0.5366,
+            "layoutRequests": 5,
+            "paintEvents": 29,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 0.1143,
+            "layoutRequests": 2,
+            "paintEvents": 33,
+            "query": ""
+          },
+          {
+            "dispatchMs": 0.8862,
+            "layoutRequests": 2,
+            "paintEvents": 31,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 0.7203,
+            "layoutRequests": 3,
+            "paintEvents": 14,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 2.8234,
+            "layoutRequests": 5,
+            "paintEvents": 14,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 0.4602,
+            "layoutRequests": 5,
+            "paintEvents": 29,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 0.3163,
+            "layoutRequests": 2,
+            "paintEvents": 21,
+            "query": ""
+          },
+          {
+            "dispatchMs": 1.0276,
+            "layoutRequests": 2,
+            "paintEvents": 22,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 0.7726,
+            "layoutRequests": 3,
+            "paintEvents": 14,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 2.2538,
+            "layoutRequests": 5,
+            "paintEvents": 14,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 0.324,
+            "layoutRequests": 5,
+            "paintEvents": 29,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 0.1326,
+            "layoutRequests": 2,
+            "paintEvents": 33,
+            "query": ""
+          },
+          {
+            "dispatchMs": 1.2292,
+            "layoutRequests": 2,
+            "paintEvents": 34,
+            "query": "channel_63"
+          },
+          {
+            "dispatchMs": 0.8108,
+            "layoutRequests": 3,
+            "paintEvents": 14,
+            "query": "block_1"
+          },
+          {
+            "dispatchMs": 2.4309,
+            "layoutRequests": 5,
+            "paintEvents": 14,
+            "query": "absent"
+          },
+          {
+            "dispatchMs": 0.364,
+            "layoutRequests": 5,
+            "paintEvents": 29,
+            "query": "interface"
+          },
+          {
+            "dispatchMs": 0.1196,
+            "layoutRequests": 2,
+            "paintEvents": 33,
+            "query": ""
+          }
+        ],
+        "width": 1000
+      }
+    }
+  ],
+  "patchReplay": {
+    "base": "c5bdd8e",
+    "sharedBaseline": "75180fad5e5f5142684cf092649deffe5720994d",
+    "patches": [
+      25,
+      26,
+      27,
+      28
+    ],
+    "verifiedFiles": 34,
+    "files": [
+      "Development/ElaCentralStackedWidget.cpp",
+      "Development/ElaCentralStackedWidget.h",
+      "Development/ElaDrawerContainer.cpp",
+      "Development/ElaDrawerContainer.h",
+      "Development/ElaDrawerHeader.cpp",
+      "Development/ElaDrawerHeader.h",
+      "ElaComboBox.cpp",
+      "ElaComboBox.h",
+      "ElaDockWidget.cpp",
+      "ElaDockWidget.h",
+      "ElaDrawerArea.cpp",
+      "ElaDrawerArea.h",
+      "ElaListView.cpp",
+      "ElaMenu.cpp",
+      "ElaMenu.h",
+      "ElaNavigationBar.cpp",
+      "ElaNavigationBar.h",
+      "ElaTabBar.cpp",
+      "ElaTabBar.h",
+      "ElaTabWidget.cpp",
+      "ElaTabWidget.h",
+      "ElaToolBar.cpp",
+      "ElaTreeView.cpp",
+      "ElaTreeView.h",
+      "ElaWindow.cpp",
+      "private/ElaComboBoxPrivate.h",
+      "private/ElaDrawerAreaPrivate.cpp",
+      "private/ElaMenuPrivate.h",
+      "private/ElaNavigationBarPrivate.cpp",
+      "private/ElaNavigationBarPrivate.h",
+      "private/ElaTabWidgetHost.cpp",
+      "private/ElaTabWidgetHost.h",
+      "private/ElaTabWidgetPrivate.cpp",
+      "private/ElaWindowPrivate.cpp"
+    ]
+  }
+}

@@ -11,6 +11,7 @@
 #include "ElaTabBarStyle.h"
 #include "private/qtabbar_p.h"
 #include <QTimer>
+#include <QPointer>
 ElaTabBar::ElaTabBar(QWidget* parent)
     : QTabBar(parent), d_ptr(new ElaTabBarPrivate())
 {
@@ -204,7 +205,7 @@ void ElaTabBar::tabRemoved(int index)
 void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
 {
     QTabBar::mouseMoveEvent(event);
-    if (_nativeTabBehavior)
+    if (_nativeTabBehavior && !_hostedDragEnabled)
         return;
     Q_D(ElaTabBar);
     if (d->_tabBarPrivate->pressedIndex >= 0)
@@ -221,7 +222,9 @@ void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
                 d->_mimeData->setProperty("IsFloatWidget", true);
                 QRect currentTabRect = tabRect(currentIndex());
                 d->_mimeData->setProperty("DragPos", QPoint(currentPos.x() - currentTabRect.x(), currentPos.y() - currentTabRect.y()));
+                QPointer<ElaTabBar> guard(this);
                 Q_EMIT tabDragCreate(d->_mimeData);
+                if (!guard) return;
                 d->_mimeData = nullptr;
             }
         }
@@ -261,7 +264,9 @@ void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
                     d->_mimeData->setProperty("DragType", "ElaTabBarDrag");
                     d->_mimeData->setProperty("ElaTabBarObject", QVariant::fromValue(this));
                     d->_mimeData->setProperty("TabSize", d->_style->getTabSize());
+                    QPointer<ElaTabBar> guard(this);
                     Q_EMIT tabDragCreate(d->_mimeData);
+                    if (!guard) return;
                     d->_mimeData = nullptr;
                 }
             }
@@ -271,7 +276,11 @@ void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
 
 void ElaTabBar::dragEnterEvent(QDragEnterEvent* event)
 {
-    if (_nativeTabBehavior) {
+    if (event->mimeData()->property("ElaHostedTabDrag").toBool() && !_hostedDragEnabled) {
+        event->ignore();
+        return;
+    }
+    if (_nativeTabBehavior && !_hostedDragEnabled) {
         QTabBar::dragEnterEvent(event);
         return;
     }
@@ -298,7 +307,7 @@ void ElaTabBar::dragEnterEvent(QDragEnterEvent* event)
 
 void ElaTabBar::dragMoveEvent(QDragMoveEvent* event)
 {
-    if (_nativeTabBehavior) {
+    if (_nativeTabBehavior && !_hostedDragEnabled) {
         QTabBar::dragMoveEvent(event);
         return;
     }
@@ -313,7 +322,7 @@ void ElaTabBar::dragMoveEvent(QDragMoveEvent* event)
 
 void ElaTabBar::dragLeaveEvent(QDragLeaveEvent* event)
 {
-    if (_nativeTabBehavior) {
+    if (_nativeTabBehavior && !_hostedDragEnabled) {
         QTabBar::dragLeaveEvent(event);
         return;
     }
@@ -330,7 +339,7 @@ void ElaTabBar::dragLeaveEvent(QDragLeaveEvent* event)
 
 void ElaTabBar::dropEvent(QDropEvent* event)
 {
-    if (_nativeTabBehavior) {
+    if (_nativeTabBehavior && !_hostedDragEnabled) {
         QTabBar::dropEvent(event);
         return;
     }

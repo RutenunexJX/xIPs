@@ -625,27 +625,66 @@ void ElaNavigationBar::setCustomContentWidthRange(int minimum, int maximum)
     setNavigationBarWidth(d->_pNavigationBarWidth);
 }
 
+void ElaNavigationBar::setOverlayExpanded(bool expanded, const QRect& area, bool animate)
+{
+    Q_D(ElaNavigationBar);
+    if (area.isEmpty())
+        return;
+    const bool moving = isOverlayAnimating();
+    const bool wasOpen = d->_overlayExpanded;
+    if (!d->_overlayAnimation) {
+        d->_overlayAnimation = new QPropertyAnimation(this, "pos", this);
+        d->_overlayAnimation->setEasingCurve(QEasingCurve::OutCubic);
+        d->_overlayAnimation->setDuration(225);
+        connect(d->_overlayAnimation, &QPropertyAnimation::finished, this, [this, d] {
+            if (!d->_overlayExpanded) {
+                hide();
+                setDisplayMode(ElaNavigationType::Minimal, false);
+            }
+            Q_EMIT overlayTransitionFinished(d->_overlayExpanded);
+        });
+    }
+    d->_overlayAnimation->stop();
+    d->_overlayExpanded = expanded;
+    if (expanded) {
+        setIsTransparent(false);
+        setDisplayMode(ElaNavigationType::Maximal, false);
+        resize(area.size());
+        if (!wasOpen && !moving)
+            move(area.left() - width(), area.top());
+        show();
+        raise();
+    }
+    const QPoint target(expanded ? area.left() : area.left() - width(), area.top());
+    if (!animate || pos() == target) {
+        move(target);
+        if (!expanded) {
+            hide();
+            setDisplayMode(ElaNavigationType::Minimal, false);
+        }
+        Q_EMIT overlayTransitionFinished(expanded);
+        return;
+    }
+    d->_overlayAnimation->setStartValue(pos());
+    d->_overlayAnimation->setEndValue(target);
+    d->_overlayAnimation->start();
+}
+
+bool ElaNavigationBar::isOverlayExpanded() const
+{
+    return d_ptr->_overlayExpanded;
+}
+
+bool ElaNavigationBar::isOverlayAnimating() const
+{
+    return d_ptr->_overlayAnimation
+        && d_ptr->_overlayAnimation->state() == QAbstractAnimation::Running;
+}
+
 bool ElaNavigationBar::isDisplayModeAnimating() const
 {
     Q_D(const ElaNavigationBar);
     return d->_widthTransitioning;
-}
-
-void ElaNavigationBar::setDisplayModeTransitionHandler(std::function<bool(int, int, quint64)> handler)
-{
-    Q_D(ElaNavigationBar);
-    d->_widthTransitionHandler = std::move(handler);
-}
-
-void ElaNavigationBar::finishDisplayModeTransition(quint64 generation)
-{
-    Q_D(ElaNavigationBar);
-    if (!d->_widthTransitioning || generation != d->_widthTransitionSerial)
-        return;
-    const int target = d->_widthTargetMode == ElaNavigationType::Minimal ? 0
-        : d->_widthTargetMode == ElaNavigationType::Compact ? 42 : d->_pNavigationBarWidth;
-    setFixedWidth(target);
-    d->_finishWidthTransition(true);
 }
 
 QSize ElaNavigationBar::sizeHint() const

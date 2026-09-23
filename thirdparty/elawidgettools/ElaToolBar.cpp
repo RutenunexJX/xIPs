@@ -1,6 +1,7 @@
 #include "ElaToolBar.h"
 
 #include <QLayout>
+#include <QApplication>
 #include <QPainter>
 #include <QStyleOption>
 
@@ -15,6 +16,7 @@ ElaToolBar::ElaToolBar(QWidget* parent)
     d->q_ptr = this;
     setObjectName("ElaToolBar");
     d->_toolBarStyle = new ElaToolBarStyle(style());
+    d->_toolBarStyle->setParent(qApp);
     setStyle(d->_toolBarStyle);
     layout()->setSpacing(10);
     layout()->setContentsMargins(3, 3, 3, 3);
@@ -50,7 +52,8 @@ ElaToolBar::ElaToolBar(const QString& title, QWidget* parent)
 ElaToolBar::~ElaToolBar()
 {
     Q_D(ElaToolBar);
-    delete d->_toolBarStyle;
+    // QToolBar destroys its native action widgets after this destructor returns.
+    d->_toolBarStyle->deleteLater();
 }
 
 void ElaToolBar::setToolBarSpacing(int spacing)

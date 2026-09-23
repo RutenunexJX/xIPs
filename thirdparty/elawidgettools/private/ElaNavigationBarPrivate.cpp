@@ -539,13 +539,6 @@ void ElaNavigationBarPrivate::_doNavigationBarWidthAnimation(ElaNavigationType::
     const int start = q->width();
     const int target = displayMode == ElaNavigationType::Minimal ? 0
         : displayMode == ElaNavigationType::Compact ? 42 : _pNavigationBarWidth;
-    if (isAnimation && _customContainer && _widthTransitionHandler)
-    {
-        if (_widthTransitionHandler(target, 255, _widthTransitionSerial))
-            return;
-        // A failed compositor must not fall back to resizing a heavy host per frame.
-        isAnimation = false;
-    }
     q->setFixedWidth(start);
     if (!isAnimation || start == target)
     {

@@ -50,6 +50,13 @@ ElaWindow::ElaWindow(QWidget* parent)
     connect(d->_appBar, &ElaAppBar::closeButtonClicked, this, &ElaWindow::closeButtonClicked);
     // 导航栏
     d->_navigationBar = new ElaNavigationBar(this);
+    connect(d->_navigationBar, &ElaNavigationBar::overlayTransitionFinished, d, [d](bool expanded) {
+        d->_isNavigationBarExpanded = expanded;
+        if (!expanded && d->_isNavigationBarFloat) {
+            d->_isNavigationBarFloat = false;
+            d->_resetWindowLayout(false);
+        }
+    });
     // 返回按钮状态变更
     connect(ElaActionCommander::getInstance(), &ElaActionCommander::commanderStateChanged, d, &ElaWindowPrivate::onNavigationRouterStateChanged);
 

@@ -24,9 +24,19 @@ public:
     void expand();
     void collapse();
 
+    void setExpanded(bool expanded, bool animate = true);
+    void setDrawerHeaderVisible(bool visible);
+    void setDrawerEdge(Qt::Edge edge);
+    bool isDrawerAnimating() const;
+    void finishDrawerAnimation();
+    qint64 drawerSnapshotBytes() const;
+    double drawerPreparationMs() const;
+    qreal drawerProgress() const;
+
     bool getIsExpand() const;
 Q_SIGNALS:
     Q_SIGNAL void expandStateChanged(bool isExpand);
+    Q_SIGNAL void drawerAnimationFinished(bool isExpand);
 };
 
 #endif //ELAWORKSPACE_ELAWIDGETTOOLS_ELADRAWERAREA_H_

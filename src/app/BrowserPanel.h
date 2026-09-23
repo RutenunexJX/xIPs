@@ -11,12 +11,15 @@ class ElaLineEdit;
 class ElaPushButton;
 class ElaText;
 class ElaListView;
-class QStandardItemModel;
+class ElaProgressRing;
+class QStringListModel;
 class QSplitter;
 class QTimer;
+template <class T> class QFutureWatcher;
 
 namespace xips
 {
+class CatalogModel;
 class BrowserPanel final : public QWidget
 {
     Q_OBJECT
@@ -38,10 +41,13 @@ class BrowserPanel final : public QWidget
     void resizeEvent(QResizeEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
   private:
     void filter();
     void selectCurrent();
+    void readLegacyDetails(const CatalogAsset &asset);
     void showDetails(const CatalogAsset &asset);
     void selectVersion();
     void chooseLibrary();
@@ -55,6 +61,10 @@ class BrowserPanel final : public QWidget
     void setBusy(bool value, const QString &message = {});
     void notice(const QString &message, bool error = false);
     void applyTheme();
+    void updateActivity();
+    void restoreSplit();
+    double splitRatio() const;
+    bool applyPendingContext();
     QStringList pickSources();
     QString m_library;
     QString m_workspace;
@@ -68,6 +78,14 @@ class BrowserPanel final : public QWidget
     QPointer<QObject> m_host;
     int m_generation = 0;
     bool m_busy = false;
+    bool m_loadingDetails = false;
+    bool m_noticeError = false;
+    double m_horizontalRatio = 0.5;
+    double m_verticalRatio = 0.45;
+    std::optional<QPair<QString, QString>> m_pendingContext;
+    std::optional<CatalogAsset> m_pendingDetail;
+    QFutureWatcher<SnapshotResult> *m_detailWatcher = nullptr;
+    ElaProgressRing *m_activity = nullptr;
     ElaText *m_title = nullptr;
     ElaText *m_status = nullptr;
     ElaText *m_name = nullptr;
@@ -77,8 +95,8 @@ class BrowserPanel final : public QWidget
     ElaComboBox *m_versions = nullptr;
     ElaListView *m_list = nullptr;
     ElaListView *m_files = nullptr;
-    QStandardItemModel *m_model = nullptr;
-    QStandardItemModel *m_fileModel = nullptr;
+    CatalogModel *m_model = nullptr;
+    QStringListModel *m_fileModel = nullptr;
     ElaPushButton *m_add = nullptr;
     ElaPushButton *m_take = nullptr;
     ElaPushButton *m_update = nullptr;

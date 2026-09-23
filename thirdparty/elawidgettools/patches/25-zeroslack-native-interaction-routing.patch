@@ -1,0 +1,1371 @@
+diff --git a/Development/ElaCentralStackedWidget.cpp b/Development/ElaCentralStackedWidget.cpp
+index 11ba060..c2e9b1d 100644
+--- a/Development/ElaCentralStackedWidget.cpp
++++ b/Development/ElaCentralStackedWidget.cpp
+@@ -6,7 +6,9 @@
+ #include <QGraphicsBlurEffect>
+ #include <QPainter>
+ #include <QPainterPath>
+-#include <QPropertyAnimation>
++#include <QPropertyAnimation>
++#include <QParallelAnimationGroup>
++#include <QSequentialAnimationGroup>
+ #include <QTimer>
+ #include <cmath>
+ ElaCentralStackedWidget::ElaCentralStackedWidget(QWidget* parent)
+@@ -38,11 +40,14 @@ ElaCentralStackedWidget::ElaCentralStackedWidget(QWidget* parent)
+     _mainLayout->addWidget(_containerStackedWidget);
+ 
+     _themeMode = eTheme->getThemeMode();
+-    connect(eTheme, &ElaTheme::themeModeChanged, this, &ElaCentralStackedWidget::onThemeModeChanged);
++    connect(eTheme, &ElaTheme::themeModeChanged, this, &ElaCentralStackedWidget::onThemeModeChanged);
++    qApp->installEventFilter(this);
++    connect(_containerStackedWidget, &QStackedWidget::widgetRemoved, this, [this] { finishStackSwitch(); });
+ }
+ 
+-ElaCentralStackedWidget::~ElaCentralStackedWidget()
+-{
++ElaCentralStackedWidget::~ElaCentralStackedWidget()
++{
++    qApp->removeEventFilter(this);
+ }
+ 
+ QStackedWidget* ElaCentralStackedWidget::getContainerStackedWidget() const
+@@ -91,159 +96,123 @@ void ElaCentralStackedWidget::setIsHasRadius(bool isHasRadius)
+     update();
+ }
+ 
+-void ElaCentralStackedWidget::doWindowStackSwitch(ElaWindowType::StackSwitchMode stackSwitchMode, int nodeIndex, bool isRouteBack)
+-{
+-    if (_pLastTargetIndex == nodeIndex)
+-    {
+-        return;
+-    }
+-    _pLastTargetIndex = nodeIndex;
+-    _stackSwitchMode = stackSwitchMode;
+-    switch (stackSwitchMode)
+-    {
+-    case ElaWindowType::None:
+-    {
+-        _containerStackedWidget->setCurrentIndex(nodeIndex);
+-        break;
+-    }
+-    case ElaWindowType::Popup:
+-    {
+-        QTimer::singleShot(180, this, [=]() {
+-            QWidget* targetWidget = _containerStackedWidget->widget(nodeIndex);
+-            _containerStackedWidget->setCurrentIndex(nodeIndex);
+-            _getTargetStackPix();
+-            targetWidget->setVisible(false);
+-            QPropertyAnimation* popupAnimation = new QPropertyAnimation(this, "pPopupAnimationYOffset");
+-            connect(popupAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
+-                update();
+-            });
+-            connect(popupAnimation, &QPropertyAnimation::finished, this, [=]() {
+-                _targetStackPix = QPixmap();
+-                targetWidget->setVisible(true);
+-            });
+-            popupAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-            popupAnimation->setDuration(300);
+-            int targetWidgetY = _containerStackedWidget->mapToParent(QPoint(0, 0)).y();
+-            popupAnimation->setEndValue(targetWidgetY);
+-            targetWidgetY += 80;
+-            popupAnimation->setStartValue(targetWidgetY);
+-            popupAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        });
+-        break;
+-    }
+-    case ElaWindowType::Scale:
+-    {
+-        QWidget* targetWidget = _containerStackedWidget->widget(nodeIndex);
+-        _getCurrentStackPix();
+-        _containerStackedWidget->setCurrentIndex(nodeIndex);
+-        targetWidget->setVisible(true);
+-        _getTargetStackPix();
+-        targetWidget->setVisible(false);
+-        _isDrawNewPix = false;
+-        QPropertyAnimation* currentPixZoomAnimation = new QPropertyAnimation(this, "pScaleAnimationRatio");
+-        connect(currentPixZoomAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
+-            update();
+-        });
+-        connect(currentPixZoomAnimation, &QPropertyAnimation::finished, this, [=]() {
+-            _isDrawNewPix = true;
+-            QPropertyAnimation* targetPixZoomAnimation = new QPropertyAnimation(this, "pScaleAnimationRatio");
+-            connect(targetPixZoomAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
+-                update();
+-            });
+-            connect(targetPixZoomAnimation, &QPropertyAnimation::finished, this, [=]() {
+-                _targetStackPix = QPixmap();
+-                _currentStackPix = QPixmap();
+-                targetWidget->setVisible(true);
+-            });
+-            if (isRouteBack)
+-            {
+-                targetPixZoomAnimation->setStartValue(1.5);
+-                targetPixZoomAnimation->setEndValue(1);
+-            }
+-            else
+-            {
+-                // 放大
+-                targetPixZoomAnimation->setStartValue(0.85);
+-                targetPixZoomAnimation->setEndValue(1);
+-            }
+-            targetPixZoomAnimation->setDuration(300);
+-            targetPixZoomAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-            targetPixZoomAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        });
+-        if (isRouteBack)
+-        {
+-            // 缩小
+-            currentPixZoomAnimation->setStartValue(1);
+-            currentPixZoomAnimation->setEndValue(0.85);
+-        }
+-        else
+-        {
+-            // 放大
+-            currentPixZoomAnimation->setStartValue(1);
+-            currentPixZoomAnimation->setEndValue(1.15);
+-        }
+-        currentPixZoomAnimation->setDuration(150);
+-        currentPixZoomAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-
+-        QPropertyAnimation* currentPixOpacityAnimation = new QPropertyAnimation(this, "pScaleAnimationPixOpacity");
+-        connect(currentPixZoomAnimation, &QPropertyAnimation::finished, this, [=]() {
+-            QPropertyAnimation* targetPixOpacityAnimation = new QPropertyAnimation(this, "pScaleAnimationPixOpacity");
+-            targetPixOpacityAnimation->setStartValue(0);
+-            targetPixOpacityAnimation->setEndValue(1);
+-            targetPixOpacityAnimation->setDuration(300);
+-            targetPixOpacityAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        });
+-        currentPixOpacityAnimation->setStartValue(1);
+-        currentPixOpacityAnimation->setEndValue(0);
+-        currentPixOpacityAnimation->setDuration(150);
+-        currentPixOpacityAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        break;
+-    }
+-    case ElaWindowType::Flip:
+-    {
+-        QWidget* targetWidget = _containerStackedWidget->widget(nodeIndex);
+-        _getCurrentStackPix();
+-        _containerStackedWidget->setCurrentIndex(nodeIndex);
+-        _getTargetStackPix();
+-        targetWidget->setVisible(false);
+-        QPropertyAnimation* flipAnimation = new QPropertyAnimation(this, "pFlipAnimationRatio");
+-        connect(flipAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
+-            update();
+-        });
+-        connect(flipAnimation, &QPropertyAnimation::finished, this, [=]() {
+-            _targetStackPix = QPixmap();
+-            _currentStackPix = QPixmap();
+-            targetWidget->setVisible(true);
+-        });
+-        flipAnimation->setEasingCurve(QEasingCurve::InOutSine);
+-        flipAnimation->setDuration(650);
+-        flipAnimation->setStartValue(0);
+-        flipAnimation->setEndValue(isRouteBack ? -180 : 180);
+-        flipAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        break;
+-    }
+-    case ElaWindowType::Blur:
+-    {
+-        _targetStackPix = QPixmap();
+-        _blurEffect->setEnabled(true);
+-        QPropertyAnimation* blurAnimation = new QPropertyAnimation(this, "pBlurAnimationRadius");
+-        connect(blurAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
+-            _blurEffect->setBlurRadius(_pBlurAnimationRadius);
+-        });
+-        connect(blurAnimation, &QPropertyAnimation::finished, this, [=]() {
+-            _blurEffect->setEnabled(false);
+-        });
+-        blurAnimation->setEasingCurve(QEasingCurve::InOutSine);
+-        blurAnimation->setDuration(350);
+-        blurAnimation->setStartValue(40);
+-        blurAnimation->setEndValue(2);
+-        blurAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        QApplication::processEvents();
+-        _containerStackedWidget->setCurrentIndex(nodeIndex);
+-        break;
+-    }
+-    }
+-}
++void ElaCentralStackedWidget::finishStackSwitch()
++{
++    ++_switchGeneration;
++    if (_switchAnimation) {
++        _switchAnimation->stop();
++        _switchAnimation->deleteLater();
++        _switchAnimation.clear();
++    }
++    _targetStackPix = QPixmap();
++    _currentStackPix = QPixmap();
++    _blurEffect->setEnabled(false);
++    _pLastTargetIndex = _containerStackedWidget->currentIndex();
++    if (auto* current = _containerStackedWidget->currentWidget()) current->show();
++    update();
++}
++
++bool ElaCentralStackedWidget::isStackSwitching() const
++{
++    return _switchAnimation && _switchAnimation->state() == QAbstractAnimation::Running;
++}
++
++bool ElaCentralStackedWidget::eventFilter(QObject* watched, QEvent* event)
++{
++    if (isStackSwitching() && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::KeyPress)) {
++        auto* widget = qobject_cast<QWidget*>(watched);
++        if (widget && (widget == this || isAncestorOf(widget))) finishStackSwitch();
++    }
++    return QWidget::eventFilter(watched, event);
++}
++
++void ElaCentralStackedWidget::resizeEvent(QResizeEvent* event)
++{
++    finishStackSwitch();
++    QWidget::resizeEvent(event);
++}
++
++void ElaCentralStackedWidget::hideEvent(QHideEvent* event)
++{
++    finishStackSwitch();
++    QWidget::hideEvent(event);
++}
++
++void ElaCentralStackedWidget::doWindowStackSwitch(ElaWindowType::StackSwitchMode mode, int index, bool isRouteBack)
++{
++    QPointer<QWidget> target = _containerStackedWidget->widget(index);
++    if (!target || (_containerStackedWidget->currentIndex() == index && !isStackSwitching())) return;
++    finishStackSwitch();
++    const auto generation = _switchGeneration;
++    _pLastTargetIndex = index;
++    _stackSwitchMode = mode;
++    if (mode == ElaWindowType::None || !isVisible()) {
++        _containerStackedWidget->setCurrentIndex(index);
++        return;
++    }
++    if (mode == ElaWindowType::Scale || mode == ElaWindowType::Flip) _getCurrentStackPix();
++    const QPointer<ElaCentralStackedWidget> self(this);
++    _containerStackedWidget->setCurrentIndex(index);
++    if (!self || !target || generation != _switchGeneration) return;
++    target->show();
++    if (!self || !target || generation != _switchGeneration) return;
++    if (mode != ElaWindowType::Blur) {
++        _getTargetStackPix();
++        if (!self || !target || generation != _switchGeneration) return;
++        target->hide();
++        if (!self || !target || generation != _switchGeneration) return;
++    }
++    auto animation = [this](const char* property, const QVariant& from, const QVariant& to,
++                            int duration, QEasingCurve curve) {
++        auto* result = new QPropertyAnimation(this, property);
++        result->setStartValue(from);
++        result->setEndValue(to);
++        result->setDuration(duration);
++        result->setEasingCurve(curve);
++        connect(result, &QPropertyAnimation::valueChanged, this, [this] { update(); });
++        return result;
++    };
++    switch (mode) {
++    case ElaWindowType::Popup: {
++        const int y = _containerStackedWidget->mapToParent(QPoint()).y();
++        _switchAnimation = animation("pPopupAnimationYOffset", y + 80, y, 300, QEasingCurve::OutCubic);
++        break;
++    }
++    case ElaWindowType::Scale: {
++        _isDrawNewPix = false;
++        auto* sequence = new QSequentialAnimationGroup(this);
++        auto* outgoing = new QParallelAnimationGroup(sequence);
++        outgoing->addAnimation(animation("pScaleAnimationRatio", 1.0, isRouteBack ? 0.85 : 1.15, 150, QEasingCurve::Linear));
++        outgoing->addAnimation(animation("pScaleAnimationPixOpacity", 1.0, 0.0, 150, QEasingCurve::Linear));
++        auto* incoming = new QParallelAnimationGroup(sequence);
++        incoming->addAnimation(animation("pScaleAnimationRatio", isRouteBack ? 1.5 : 0.85, 1.0, 300, QEasingCurve::OutCubic));
++        incoming->addAnimation(animation("pScaleAnimationPixOpacity", 0.0, 1.0, 300, QEasingCurve::Linear));
++        connect(outgoing, &QAbstractAnimation::finished, this, [this] { _isDrawNewPix = true; });
++        sequence->addAnimation(outgoing);
++        sequence->addAnimation(incoming);
++        _switchAnimation = sequence;
++        break;
++    }
++    case ElaWindowType::Flip:
++        _switchAnimation = animation("pFlipAnimationRatio", 0.0, isRouteBack ? -180.0 : 180.0, 650, QEasingCurve::InOutSine);
++        break;
++    case ElaWindowType::Blur:
++        _blurEffect->setEnabled(true);
++        _switchAnimation = animation("pBlurAnimationRadius", 40, 2, 350, QEasingCurve::InOutSine);
++        connect(static_cast<QPropertyAnimation*>(_switchAnimation.data()), &QPropertyAnimation::valueChanged,
++                this, [this] { _blurEffect->setBlurRadius(_pBlurAnimationRadius); });
++        break;
++    default:
++        finishStackSwitch();
++        return;
++    }
++    _switchAnimation->setParent(this);
++    connect(_switchAnimation, &QAbstractAnimation::finished, this, [this, generation] {
++        if (generation != _switchGeneration) return;
++        finishStackSwitch();
++    });
++    _switchAnimation->start();
++}
+ 
+ void ElaCentralStackedWidget::paintEvent(QPaintEvent* event)
+ {
+@@ -326,8 +295,9 @@ void ElaCentralStackedWidget::paintEvent(QPaintEvent* event)
+     painter.restore();
+ }
+ 
+-void ElaCentralStackedWidget::_getCurrentStackPix()
+-{
++void ElaCentralStackedWidget::_getCurrentStackPix()
++{
++    if (!_containerStackedWidget->currentWidget()) return;
+     _targetStackPix = QPixmap();
+     bool isTransparent = _isTransparent;
+     _isTransparent = true;
+diff --git a/Development/ElaCentralStackedWidget.h b/Development/ElaCentralStackedWidget.h
+index 98b752f..4d86c59 100644
+--- a/Development/ElaCentralStackedWidget.h
++++ b/Development/ElaCentralStackedWidget.h
+@@ -1,11 +1,13 @@
+ #ifndef ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACENTRALSTACKEDWIDGET_H_
+ #define ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELACENTRALSTACKEDWIDGET_H_
+ 
+-#include <QStackedWidget>
++#include <QStackedWidget>
++#include <QPointer>
+ 
+ #include "ElaWidgetToolsDef.h"
+ #include <QVBoxLayout>
+-class QGraphicsBlurEffect;
++class QGraphicsBlurEffect;
++class QAbstractAnimation;
+ class ELA_EXPORT ElaCentralStackedWidget : public QWidget
+ {
+     Q_OBJECT
+@@ -31,10 +33,15 @@ public:
+ 
+     void setIsHasRadius(bool isHasRadius);
+ 
+-    void doWindowStackSwitch(ElaWindowType::StackSwitchMode stackSwitchMode, int nodeIndex, bool isRouteBack);
++    void doWindowStackSwitch(ElaWindowType::StackSwitchMode stackSwitchMode, int nodeIndex, bool isRouteBack);
++    void finishStackSwitch();
++    bool isStackSwitching() const;
+ 
+ protected:
+-    void paintEvent(QPaintEvent* event) override;
++    void paintEvent(QPaintEvent* event) override;
++    bool eventFilter(QObject* watched, QEvent* event) override;
++    void resizeEvent(QResizeEvent* event) override;
++    void hideEvent(QHideEvent* event) override;
+ 
+ private:
+     ElaWindowType::StackSwitchMode _stackSwitchMode{ElaWindowType::StackSwitchMode::Popup};
+@@ -47,7 +54,9 @@ private:
+     QWidget* _customWidget{nullptr};
+     QStackedWidget* _containerStackedWidget{nullptr};
+     bool _isHasRadius{true};
+-    bool _isDrawNewPix{false};
++    bool _isDrawNewPix{false};
++    QPointer<QAbstractAnimation> _switchAnimation;
++    quint64 _switchGeneration{0};
+     void _getTargetStackPix();
+     void _getCurrentStackPix();
+ };
+diff --git a/ElaDockWidget.cpp b/ElaDockWidget.cpp
+index 58295ec..91d7b5e 100644
+--- a/ElaDockWidget.cpp
++++ b/ElaDockWidget.cpp
+@@ -4,8 +4,14 @@
+ #include <QLayout>
+ #include <QPainter>
+ #include <QPainterPath>
+-#include <QPropertyAnimation>
+-#include <QTimer>
++#include <QPropertyAnimation>
++#include <QPointer>
++#include <QTimer>
++#include <QApplication>
++#include <QMouseEvent>
++#include <QKeyEvent>
++#include <QCloseEvent>
++#include <QtWidgets/private/qdockwidget_p.h>
+ 
+ #include "ElaApplication.h"
+ #include "ElaDockWidgetPrivate.h"
+@@ -45,8 +51,9 @@ ElaDockWidget::ElaDockWidget(const QString& title, QWidget* parent, Qt::WindowFl
+     this->setWindowTitle(title);
+ }
+ 
+-ElaDockWidget::~ElaDockWidget()
+-{
++ElaDockWidget::~ElaDockWidget()
++{
++    qApp->removeEventFilter(this);
+ }
+ 
+ void ElaDockWidget::paintEvent(QPaintEvent* event)
+@@ -77,9 +84,34 @@ void ElaDockWidget::paintEvent(QPaintEvent* event)
+     QDockWidget::paintEvent(event);
+ }
+ 
+-#ifdef Q_OS_WIN
+-bool ElaDockWidget::event(QEvent* event)
+-{
++bool ElaDockWidget::isDockDragging() const
++{
++    const auto* state = static_cast<const QDockWidgetPrivate*>(QWidgetPrivate::get(this))->state;
++    return state && state->dragging;
++}
++
++void ElaDockWidget::beginDockDrag(const QPoint& position)
++{
++    if (!isFloating() || !isVisible() || !features().testFlag(DockWidgetMovable)) return;
++    const QPoint local(20, titleBarWidget() ? titleBarWidget()->height() / 2 : 12);
++    const QPoint distance(QApplication::startDragDistance() + 1, 0);
++    move(position - local - distance);
++    QMouseEvent press(QEvent::MouseButtonPress, local, mapToGlobal(local),
++                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
++    QApplication::sendEvent(this, &press);
++    QMouseEvent motion(QEvent::MouseMove, local + distance, position,
++                       Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
++    QApplication::sendEvent(this, &motion);
++}
++
++bool ElaDockWidget::event(QEvent* event)
++{
++    const QPointer<ElaDockWidget> guard(this);
++    const bool wasDragging = isDockDragging();
++    if (wasDragging && event->type() == QEvent::MouseMove)
++        emit dockDragMoved(static_cast<QMouseEvent*>(event)->globalPosition().toPoint());
++    if (!guard) return true;
++#ifdef Q_OS_WIN
+     Q_D(ElaDockWidget);
+     switch (event->type())
+     {
+@@ -104,9 +136,46 @@ bool ElaDockWidget::event(QEvent* event)
+         break;
+     }
+     }
+-    return QDockWidget::event(event);
+-}
+-
++#endif
++    const bool handled = QDockWidget::event(event);
++    if (!guard) return handled;
++    if (event->type() != QEvent::MouseButtonPress && event->type() != QEvent::MouseMove
++        && event->type() != QEvent::MouseButtonRelease) return handled;
++    const bool dragging = isDockDragging();
++    if (dragging && !wasDragging) {
++        qApp->installEventFilter(this);
++        emit dockDragStarted();
++    }
++    if (!dragging && wasDragging) {
++        qApp->removeEventFilter(this);
++        emit dockDragFinished(false);
++    }
++    return handled;
++}
++
++void ElaDockWidget::cancelDockDrag()
++{
++    if (!isDockDragging()) return;
++    // The base close handler aborts Qt's drag transaction; calling the handler
++    // directly does not close the widget or invoke the application's close flow.
++    QCloseEvent cancel;
++    QDockWidget::closeEvent(&cancel);
++    qApp->removeEventFilter(this);
++    emit dockDragFinished(true);
++}
++
++bool ElaDockWidget::eventFilter(QObject* watched, QEvent* event)
++{
++    if (isDockDragging() && (event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride)
++        && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
++        if (event->type() == QEvent::KeyPress) cancelDockDrag();
++        event->accept();
++        return true;
++    }
++    return QDockWidget::eventFilter(watched, event);
++}
++
++#ifdef Q_OS_WIN
+ #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+ bool ElaDockWidget::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
+ #else
+diff --git a/ElaDockWidget.h b/ElaDockWidget.h
+index 5bf7c78..b3c04ac 100644
+--- a/ElaDockWidget.h
++++ b/ElaDockWidget.h
+@@ -13,12 +13,21 @@ class ELA_EXPORT ElaDockWidget : public QDockWidget
+ public:
+     explicit ElaDockWidget(QWidget* parent = nullptr, Qt::WindowFlags flags = Qt::WindowFlags());
+     explicit ElaDockWidget(const QString& title, QWidget* parent = nullptr, Qt::WindowFlags flags = Qt::WindowFlags());
+-    ~ElaDockWidget() override;
++    ~ElaDockWidget() override;
++    // Resume a drag that started in an application's resource section header.
++    void beginDockDrag(const QPoint& globalPosition);
++    bool isDockDragging() const;
++    void cancelDockDrag();
++signals:
++    void dockDragStarted();
++    void dockDragMoved(const QPoint& globalPosition);
++    void dockDragFinished(bool cancelled);
+ 
+ protected:
+-    virtual void paintEvent(QPaintEvent* event) override;
+-#ifdef Q_OS_WIN
+-    virtual bool event(QEvent* event) override;
++    virtual void paintEvent(QPaintEvent* event) override;
++    virtual bool event(QEvent* event) override;
++    bool eventFilter(QObject* watched, QEvent* event) override;
++#ifdef Q_OS_WIN
+ #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+     virtual bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
+ #else
+diff --git a/ElaNavigationBar.cpp b/ElaNavigationBar.cpp
+index 138dc1e..222266c 100644
+--- a/ElaNavigationBar.cpp
++++ b/ElaNavigationBar.cpp
+@@ -625,27 +625,66 @@ void ElaNavigationBar::setCustomContentWidthRange(int minimum, int maximum)
+     setNavigationBarWidth(d->_pNavigationBarWidth);
+ }
+ 
+-bool ElaNavigationBar::isDisplayModeAnimating() const
++void ElaNavigationBar::setOverlayExpanded(bool expanded, const QRect& area, bool animate)
+ {
+-    Q_D(const ElaNavigationBar);
+-    return d->_widthTransitioning;
++    Q_D(ElaNavigationBar);
++    if (area.isEmpty())
++        return;
++    const bool moving = isOverlayAnimating();
++    const bool wasOpen = d->_overlayExpanded;
++    if (!d->_overlayAnimation) {
++        d->_overlayAnimation = new QPropertyAnimation(this, "pos", this);
++        d->_overlayAnimation->setEasingCurve(QEasingCurve::OutCubic);
++        d->_overlayAnimation->setDuration(225);
++        connect(d->_overlayAnimation, &QPropertyAnimation::finished, this, [this, d] {
++            if (!d->_overlayExpanded) {
++                hide();
++                setDisplayMode(ElaNavigationType::Minimal, false);
++            }
++            Q_EMIT overlayTransitionFinished(d->_overlayExpanded);
++        });
++    }
++    d->_overlayAnimation->stop();
++    d->_overlayExpanded = expanded;
++    if (expanded) {
++        setIsTransparent(false);
++        setDisplayMode(ElaNavigationType::Maximal, false);
++        resize(area.size());
++        if (!wasOpen && !moving)
++            move(area.left() - width(), area.top());
++        show();
++        raise();
++    }
++    const QPoint target(expanded ? area.left() : area.left() - width(), area.top());
++    if (!animate || pos() == target) {
++        move(target);
++        if (!expanded) {
++            hide();
++            setDisplayMode(ElaNavigationType::Minimal, false);
++        }
++        Q_EMIT overlayTransitionFinished(expanded);
++        return;
++    }
++    d->_overlayAnimation->setStartValue(pos());
++    d->_overlayAnimation->setEndValue(target);
++    d->_overlayAnimation->start();
+ }
+ 
+-void ElaNavigationBar::setDisplayModeTransitionHandler(std::function<bool(int, int, quint64)> handler)
++bool ElaNavigationBar::isOverlayExpanded() const
+ {
+-    Q_D(ElaNavigationBar);
+-    d->_widthTransitionHandler = std::move(handler);
++    return d_ptr->_overlayExpanded;
+ }
+ 
+-void ElaNavigationBar::finishDisplayModeTransition(quint64 generation)
++bool ElaNavigationBar::isOverlayAnimating() const
+ {
+-    Q_D(ElaNavigationBar);
+-    if (!d->_widthTransitioning || generation != d->_widthTransitionSerial)
+-        return;
+-    const int target = d->_widthTargetMode == ElaNavigationType::Minimal ? 0
+-        : d->_widthTargetMode == ElaNavigationType::Compact ? 42 : d->_pNavigationBarWidth;
+-    setFixedWidth(target);
+-    d->_finishWidthTransition(true);
++    return d_ptr->_overlayAnimation
++        && d_ptr->_overlayAnimation->state() == QAbstractAnimation::Running;
++}
++
++bool ElaNavigationBar::isDisplayModeAnimating() const
++{
++    Q_D(const ElaNavigationBar);
++    return d->_widthTransitioning;
+ }
+ 
+ QSize ElaNavigationBar::sizeHint() const
+diff --git a/ElaNavigationBar.h b/ElaNavigationBar.h
+index 1529c9d..87c8c42 100644
+--- a/ElaNavigationBar.h
++++ b/ElaNavigationBar.h
+@@ -2,7 +2,6 @@
+ #define ELAWORKSPACE_ELAWIDGETTOOLS_ELANAVIGATIONBAR_H_
+ 
+ #include <QWidget>
+-#include <functional>
+ 
+ #include "ElaWidgetToolsDef.h"
+ #include "ElaWidgetToolsExport.h"
+@@ -58,10 +57,11 @@ public:
+     QWidget* customHeader() const;
+     void setCustomContentWidthRange(int minimum, int maximum);
+     bool isDisplayModeAnimating() const;
+-    // A host may composite the transition without resizing its live document.
+-    // Return true when accepted, then finish with the supplied generation.
+-    void setDisplayModeTransitionHandler(std::function<bool(int, int, quint64)> handler);
+-    void finishDisplayModeTransition(quint64 generation);
++    // Shared with ElaWindow's Minimal-mode navigation overlay. The caller
++    // supplies an uncluttered parent viewport and handles its dock placement.
++    void setOverlayExpanded(bool expanded, const QRect& area, bool animate = true);
++    bool isOverlayExpanded() const;
++    bool isOverlayAnimating() const;
+     QSize sizeHint() const override;
+     QSize minimumSizeHint() const override;
+ 
+@@ -72,6 +72,7 @@ public:
+ Q_SIGNALS:
+     Q_SIGNAL void displayModeChanged(ElaNavigationType::NavigationDisplayMode displayMode);
+     Q_SIGNAL void displayModeTransitionFinished(ElaNavigationType::NavigationDisplayMode displayMode);
++    Q_SIGNAL void overlayTransitionFinished(bool expanded);
+     Q_SIGNAL void pageOpenInNewWindow(QString nodeKey);
+     Q_SIGNAL void userInfoCardClicked();
+     Q_SIGNAL void navigationNodeClicked(ElaNavigationType::NavigationNodeType nodeType, QString nodeKey, bool isRouteBack);
+diff --git a/ElaTabBar.cpp b/ElaTabBar.cpp
+index 43d7516..25897ea 100644
+--- a/ElaTabBar.cpp
++++ b/ElaTabBar.cpp
+@@ -10,7 +10,8 @@
+ #include "ElaTabBarPrivate.h"
+ #include "ElaTabBarStyle.h"
+ #include "private/qtabbar_p.h"
+-#include <QTimer>
++#include <QTimer>
++#include <QPointer>
+ ElaTabBar::ElaTabBar(QWidget* parent)
+     : QTabBar(parent), d_ptr(new ElaTabBarPrivate())
+ {
+@@ -204,7 +205,7 @@ void ElaTabBar::tabRemoved(int index)
+ void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
+ {
+     QTabBar::mouseMoveEvent(event);
+-    if (_nativeTabBehavior)
++    if (_nativeTabBehavior && !_hostedDragEnabled)
+         return;
+     Q_D(ElaTabBar);
+     if (d->_tabBarPrivate->pressedIndex >= 0)
+@@ -220,8 +221,10 @@ void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
+                 d->_mimeData->setProperty("TabSize", d->_style->getTabSize());
+                 d->_mimeData->setProperty("IsFloatWidget", true);
+                 QRect currentTabRect = tabRect(currentIndex());
+-                d->_mimeData->setProperty("DragPos", QPoint(currentPos.x() - currentTabRect.x(), currentPos.y() - currentTabRect.y()));
+-                Q_EMIT tabDragCreate(d->_mimeData);
++                d->_mimeData->setProperty("DragPos", QPoint(currentPos.x() - currentTabRect.x(), currentPos.y() - currentTabRect.y()));
++                QPointer<ElaTabBar> guard(this);
++                Q_EMIT tabDragCreate(d->_mimeData);
++                if (!guard) return;
+                 d->_mimeData = nullptr;
+             }
+         }
+@@ -260,8 +263,10 @@ void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
+                     d->_mimeData = new QMimeData();
+                     d->_mimeData->setProperty("DragType", "ElaTabBarDrag");
+                     d->_mimeData->setProperty("ElaTabBarObject", QVariant::fromValue(this));
+-                    d->_mimeData->setProperty("TabSize", d->_style->getTabSize());
+-                    Q_EMIT tabDragCreate(d->_mimeData);
++                    d->_mimeData->setProperty("TabSize", d->_style->getTabSize());
++                    QPointer<ElaTabBar> guard(this);
++                    Q_EMIT tabDragCreate(d->_mimeData);
++                    if (!guard) return;
+                     d->_mimeData = nullptr;
+                 }
+             }
+@@ -271,7 +276,11 @@ void ElaTabBar::mouseMoveEvent(QMouseEvent* event)
+ 
+ void ElaTabBar::dragEnterEvent(QDragEnterEvent* event)
+ {
+-    if (_nativeTabBehavior) {
++    if (event->mimeData()->property("ElaHostedTabDrag").toBool() && !_hostedDragEnabled) {
++        event->ignore();
++        return;
++    }
++    if (_nativeTabBehavior && !_hostedDragEnabled) {
+         QTabBar::dragEnterEvent(event);
+         return;
+     }
+@@ -298,7 +307,7 @@ void ElaTabBar::dragEnterEvent(QDragEnterEvent* event)
+ 
+ void ElaTabBar::dragMoveEvent(QDragMoveEvent* event)
+ {
+-    if (_nativeTabBehavior) {
++    if (_nativeTabBehavior && !_hostedDragEnabled) {
+         QTabBar::dragMoveEvent(event);
+         return;
+     }
+@@ -313,7 +322,7 @@ void ElaTabBar::dragMoveEvent(QDragMoveEvent* event)
+ 
+ void ElaTabBar::dragLeaveEvent(QDragLeaveEvent* event)
+ {
+-    if (_nativeTabBehavior) {
++    if (_nativeTabBehavior && !_hostedDragEnabled) {
+         QTabBar::dragLeaveEvent(event);
+         return;
+     }
+@@ -330,7 +339,7 @@ void ElaTabBar::dragLeaveEvent(QDragLeaveEvent* event)
+ 
+ void ElaTabBar::dropEvent(QDropEvent* event)
+ {
+-    if (_nativeTabBehavior) {
++    if (_nativeTabBehavior && !_hostedDragEnabled) {
+         QTabBar::dropEvent(event);
+         return;
+     }
+diff --git a/ElaTabBar.h b/ElaTabBar.h
+index 6717ba9..95e6d08 100644
+--- a/ElaTabBar.h
++++ b/ElaTabBar.h
+@@ -20,6 +20,8 @@ public:
+     // Hosts with their own document controller retain Qt layout and input semantics.
+     void setNativeTabBehavior(bool enabled);
+     bool nativeTabBehavior() const;
++    // Keep Qt's variable-width layout while using Ela's tear-out gestures.
++    void setHostedDragEnabled(bool enabled) { _hostedDragEnabled = enabled; }
+     void setSmoothScrollEnabled(bool enabled);
+     bool smoothScrollEnabled() const;
+     void setTabText(int index, const QString& text);
+@@ -49,6 +51,7 @@ protected:
+ 
+ private:
+     bool _nativeTabBehavior{false};
++    bool _hostedDragEnabled{false};
+     bool _smoothScrollEnabled{false};
+     int _lastScrollOffset{0};
+     int smoothScrollMaximum() const;
+diff --git a/ElaTabWidget.cpp b/ElaTabWidget.cpp
+index aa51c73..344411f 100644
+--- a/ElaTabWidget.cpp
++++ b/ElaTabWidget.cpp
+@@ -73,8 +73,12 @@ void ElaTabWidget::paintEvent(QPaintEvent* event)
+     }
+ }
+ 
+-void ElaTabWidget::dragEnterEvent(QDragEnterEvent* event)
+-{
++void ElaTabWidget::dragEnterEvent(QDragEnterEvent* event)
++{
++    if (event->mimeData()->property("ElaHostedTabDrag").toBool() && !_host) {
++        event->ignore();
++        return;
++    }
+     if (event->mimeData()->property("DragType").toString() == "ElaTabBarDrag")
+     {
+         event->acceptProposedAction();
+@@ -111,10 +115,10 @@ void ElaTabWidget::setHostedTabs(QObject* scope, SplitResolver split, ReturnTarg
+     Q_D(ElaTabWidget);
+     if (_host || !scope || count() != 0)
+         return;
+-    // The stock handlers own/delete pages; a hosted document must never enter them.
+-    disconnect(d->_tabBar, nullptr, d, nullptr);
++    // Retain Ela's gesture controller; hosted callbacks only adapt page ownership.
+     d->_allTabWidgetList.clear();
+     d->_tabBar->setNativeTabBehavior(true);
++    d->_tabBar->setHostedDragEnabled(true);
+     d->_tabBar->setSmoothScrollEnabled(true);
+     _host = new ElaTabWidgetHost(this, scope, std::move(split), std::move(returnTarget));
+ }
+@@ -130,9 +134,14 @@ void ElaTabWidget::setHostedTabBar(ElaTabBar* bar)
+         return;
+     d->_tabBar = bar;
+     bar->setNativeTabBehavior(true);
++    bar->setHostedDragEnabled(true);
+     bar->setSmoothScrollEnabled(true);
+     setTabBar(bar);
+     bar->setAcceptDrops(true);
++    connect(bar, &ElaTabBar::tabDragCreate, d, &ElaTabWidgetPrivate::onTabDragCreate);
++    connect(bar, &ElaTabBar::tabDragEnter, d, &ElaTabWidgetPrivate::onTabDragEnter);
++    connect(bar, &ElaTabBar::tabDragLeave, d, &ElaTabWidgetPrivate::onTabDragLeave);
++    connect(bar, &ElaTabBar::tabDragDrop, d, &ElaTabWidgetPrivate::onTabDragDrop);
+ }
+ 
+ bool ElaTabWidget::transferHostedTab(QWidget* page, ElaTabWidget* target, int index)
+diff --git a/ElaTabWidget.h b/ElaTabWidget.h
+index c9bf44f..b197da6 100644
+--- a/ElaTabWidget.h
++++ b/ElaTabWidget.h
+@@ -54,6 +54,7 @@ protected:
+ private:
+     friend class ElaCustomTabWidget;
+     friend class ElaTabWidgetHost;
++    friend class ElaTabWidgetPrivate;
+     friend class ElaHostedTabWindow;
+     ElaTabWidgetHost* _host{nullptr};
+ };
+diff --git a/ElaWindow.cpp b/ElaWindow.cpp
+index b875527..d9ed1ad 100644
+--- a/ElaWindow.cpp
++++ b/ElaWindow.cpp
+@@ -49,7 +49,14 @@ ElaWindow::ElaWindow(QWidget* parent)
+     });
+     connect(d->_appBar, &ElaAppBar::closeButtonClicked, this, &ElaWindow::closeButtonClicked);
+     // 导航栏
+-    d->_navigationBar = new ElaNavigationBar(this);
++    d->_navigationBar = new ElaNavigationBar(this);
++    connect(d->_navigationBar, &ElaNavigationBar::overlayTransitionFinished, d, [d](bool expanded) {
++        d->_isNavigationBarExpanded = expanded;
++        if (!expanded && d->_isNavigationBarFloat) {
++            d->_isNavigationBarFloat = false;
++            d->_resetWindowLayout(false);
++        }
++    });
+     // 返回按钮状态变更
+     connect(ElaActionCommander::getInstance(), &ElaActionCommander::commanderStateChanged, d, &ElaWindowPrivate::onNavigationRouterStateChanged);
+ 
+diff --git a/private/ElaNavigationBarPrivate.cpp b/private/ElaNavigationBarPrivate.cpp
+index ee4bd7c..6bacbf0 100644
+--- a/private/ElaNavigationBarPrivate.cpp
++++ b/private/ElaNavigationBarPrivate.cpp
+@@ -539,13 +539,6 @@ void ElaNavigationBarPrivate::_doNavigationBarWidthAnimation(ElaNavigationType::
+     const int start = q->width();
+     const int target = displayMode == ElaNavigationType::Minimal ? 0
+         : displayMode == ElaNavigationType::Compact ? 42 : _pNavigationBarWidth;
+-    if (isAnimation && _customContainer && _widthTransitionHandler)
+-    {
+-        if (_widthTransitionHandler(target, 255, _widthTransitionSerial))
+-            return;
+-        // A failed compositor must not fall back to resizing a heavy host per frame.
+-        isAnimation = false;
+-    }
+     q->setFixedWidth(start);
+     if (!isAnimation || start == target)
+     {
+diff --git a/private/ElaNavigationBarPrivate.h b/private/ElaNavigationBarPrivate.h
+index ae5995e..3d643b2 100644
+--- a/private/ElaNavigationBarPrivate.h
++++ b/private/ElaNavigationBarPrivate.h
+@@ -6,13 +6,13 @@
+ #include <QMap>
+ #include <QObject>
+ #include <QPointer>
+-#include <functional>
+ class QLayout;
+ class ElaMenu;
+ class QVBoxLayout;
+ class QHBoxLayout;
+ class QLinearGradient;
+ class QVariantAnimation;
++class QPropertyAnimation;
+ 
+ class ElaNavigationBar;
+ class ElaNavigationNode;
+@@ -73,9 +73,10 @@ private:
+     int _customMinimumWidth{180};
+     int _customMaximumWidth{QWIDGETSIZE_MAX};
+     QVariantAnimation* _widthAnimation{nullptr};
++    QPropertyAnimation* _overlayAnimation{nullptr};
++    bool _overlayExpanded{false};
+     bool _widthTransitioning{false};
+     quint64 _widthTransitionSerial{0};
+-    std::function<bool(int, int, quint64)> _widthTransitionHandler;
+     ElaNavigationType::NavigationDisplayMode _widthTargetMode{ElaNavigationType::Maximal};
+ 
+     void _setCustomWidget(QWidget* widget, bool header);
+diff --git a/private/ElaTabWidgetHost.cpp b/private/ElaTabWidgetHost.cpp
+index 424e6c4..476eebb 100644
+--- a/private/ElaTabWidgetHost.cpp
++++ b/private/ElaTabWidgetHost.cpp
+@@ -13,7 +13,9 @@
+ #include <QMouseEvent>
+ #include <QPainter>
+ #include <QScreen>
++#include <QTimer>
+ #include <QVBoxLayout>
++#include <QWindow>
+ #ifdef Q_OS_WIN
+ #include <windows.h>
+ #endif
+@@ -23,11 +25,40 @@ namespace {
+ // cannot reparent a page or cross document-controller scopes.
+ class HostedTabMime final : public QMimeData {
+ public:
++    ~HostedTabMime() override {
++        for (const auto& window : floatingWindows)
++            if (window && window->windowHandle())
++                window->windowHandle()->setFlag(Qt::WindowTransparentForInput, false);
++    }
+     QPointer<ElaTabWidget> source;
+     QPointer<QWidget> page;
+     QPointer<QObject> scope;
++    QList<QPointer<QWidget>> floatingWindows;
++    bool committed{false};
++    bool executing{false};
++    bool cancelled{false};
+ };
+ 
++QPointer<QObject> activeDragScope;
++
++void followFloatingPage(HostedTabMime* data)
++{
++    if (!data->scope || !data->page || !data->source
++        || !data->source->isTabVisible(data->source->indexOf(data->page))) {
++        data->cancelled = true;
++        if (data->executing) QDrag::cancel();
++        return;
++    }
++    if (!data->source || !data->source->isFloatingTabWidget())
++        return;
++    QWidget* window = data->source->window();
++    if (!data->floatingWindows.contains(window))
++        data->floatingWindows.append(window);
++    window->move(QCursor::pos() - QPoint(24, 16));
++    if (window->windowHandle())
++        window->windowHandle()->setFlag(Qt::WindowTransparentForInput, true);
++}
++
+ class DropIndicator final : public QWidget {
+ public:
+     explicit DropIndicator(QWidget* parent) : QWidget(parent) {
+@@ -120,6 +151,19 @@ ElaTabWidgetHost::ElaTabWidgetHost(ElaTabWidget* widget, QObject* owner,
+ 
+ ElaTabWidgetHost::~ElaTabWidgetHost() { clearIndicator(); }
+ 
++bool ElaTabWidgetHost::isDragging() const
++{
++    return dragging || (scope && activeDragScope == scope);
++}
++
++bool ElaTabWidgetHost::acceptsDrag(const QMimeData* mime) const
++{
++    const auto* data = dynamic_cast<const HostedTabMime*>(mime);
++    return data && scope && data->scope == scope && data->source && data->page
++        && !data->cancelled && data->source->indexOf(data->page) >= 0
++        && data->source->isTabVisible(data->source->indexOf(data->page));
++}
++
+ bool ElaTabWidgetHost::transfer(QWidget* page, ElaTabWidget* target, int index)
+ {
+     if (!scope || !group || !page || !target || !target->_host
+@@ -249,51 +293,123 @@ void ElaTabWidgetHost::clearIndicator()
+     indicator = nullptr;
+ }
+ 
+-void ElaTabWidgetHost::startDrag()
++void ElaTabWidgetHost::startDrag(QMimeData* gesture)
+ {
+-    if (!pressedPage || !scope || dragging)
++    if (!gesture)
++        return;
++    gesture->deleteLater();
++    if (!scope || !group || isDragging() || !group->currentWidget())
+         return;
++    // ElaTabBar and ElaTabWidgetPrivate own gesture/enter/leave routing. This
++    // transaction adapts their live-window flow to externally owned documents.
+     QPointer<ElaTabWidgetHost> guard(this);
+-    QPointer<QWidget> page(pressedPage);
++    QPointer<ElaTabWidget> origin(group);
++    QPointer<QWidget> page(group->currentWidget());
++    const int originIndex = group->indexOf(page);
+     auto* data = new HostedTabMime;
+     data->source = group;
+     data->page = page;
+     data->scope = scope;
+     data->setData(QStringLiteral("application/x-ela-hosted-tab"), QByteArrayLiteral("1"));
++    data->setProperty("DragType", "ElaTabBarDrag");
++    data->setProperty("ElaHostedTabDrag", true);
++    data->setProperty("TabSize", gesture->property("TabSize"));
+     QPointer<QDrag> drag(new QDrag(group));
+     drag->setMimeData(data);
+-    const QRect tabRect = group->tabBar()->tabRect(group->indexOf(page));
+-    drag->setPixmap(group->tabBar()->grab(tabRect));
+-    drag->setHotSpot(QPoint(qMin(24, tabRect.width() / 2), tabRect.height() / 2));
++    connect(page, &QObject::destroyed, drag, [data] { if (data->executing) QDrag::cancel(); });
++    connect(scope, &QObject::destroyed, drag, [data] { if (data->executing) QDrag::cancel(); });
++    QPixmap transparent(1, 1);
++    transparent.fill(Qt::transparent);
++    drag->setPixmap(transparent);
+     dragging = true;
+     cancelled = false;
++    activeDragScope = scope;
+     // End QTabBar's internal reorder gesture before entering the native loop.
+-    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(pressPosition),
+-                        QPointF(group->tabBar()->mapToGlobal(pressPosition)),
++    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(-1, -1),
++                        QPointF(group->tabBar()->mapToGlobal(QPoint(-1, -1))),
+                         Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+     QApplication::sendEvent(group->tabBar(), &release);
++    data->source = detach(page, QCursor::pos() - QPoint(24, 16));
++    if (!data->source) {
++        dragging = false;
++        activeDragScope.clear();
++        drag->deleteLater();
++        return;
++    }
++    followFloatingPage(data);
++    QTimer follow;
++    follow.setInterval(10); // Same live content tracking cadence as upstream.
++    const QPointer<QMimeData> dataGuard(data);
++    connect(&follow, &QTimer::timeout, &follow, [dataGuard, data] {
++        if (dataGuard) followFloatingPage(data);
++    });
++    follow.start();
+     emit group->hostedTabDragStarted(drag);
+-    if (!guard) {
++    if (!guard || !drag || !dataGuard) {
++        activeDragScope.clear();
+         if (drag) drag->deleteLater();
+         return;
+     }
+-    const Qt::DropAction result = !cancelled && drag && page && group->indexOf(page) >= 0
++    followFloatingPage(data);
++    data->executing = true;
++    const Qt::DropAction result = !cancelled && !data->cancelled && !data->committed && drag && page && scope
+         ? drag->exec(Qt::MoveAction) : Qt::IgnoreAction;
+-    if (drag)
+-        drag->deleteLater();
++    follow.stop();
++    if (dataGuard) data->executing = false;
++    if (!guard || !drag || !dataGuard) {
++        activeDragScope.clear();
++        return;
++    }
++    for (const auto& window : data->floatingWindows)
++        if (window && window->windowHandle())
++            window->windowHandle()->setFlag(Qt::WindowTransparentForInput, false);
+     if (!guard)
+         return;
+-    dragging = false;
+     clearIndicator();
+-    pressedPage = nullptr;
+-    // Never detach over a rejected target inside the owner window.
+-    const QPoint position = QCursor::pos();
+-    QWidget* under = QApplication::widgetAt(position);
+-    const bool insideOwner = under && group && under->window() == group->window();
+-    if (result == Qt::IgnoreAction && page && releasedOutside(cancelled) && !insideOwner)
+-        detach(page, position - QPoint(24, 16));
++    if (!data->committed && result == Qt::IgnoreAction && !releasedOutside(cancelled || data->cancelled)
++        && data->source && page) {
++        ElaTabWidget* target = origin ? origin.data() : (scope && returnTarget ? returnTarget() : nullptr);
++        if (target)
++            data->source->transferHostedTab(page, target, originIndex);
++    }
++    dragging = false;
++    activeDragScope.clear();
+     if (guard && group)
+         emit group->hostedTabDragFinished();
++    if (drag)
++        drag->deleteLater();
++}
++
++bool ElaTabWidgetHost::enterDrag(QMimeData* mime)
++{
++    if (!acceptsDrag(mime))
++        return false;
++    auto* data = static_cast<HostedTabMime*>(mime);
++    if (!data->source->transferHostedTab(data->page, group, mime->property("TabDropIndex").toInt()))
++        return false;
++    data->source = group;
++    return true;
++}
++
++void ElaTabWidgetHost::leaveDrag(QMimeData* mime)
++{
++    if (!acceptsDrag(mime))
++        return;
++    auto* data = static_cast<HostedTabMime*>(mime);
++    if (data->source != group)
++        return;
++    if (auto* floating = detach(data->page, QCursor::pos() - QPoint(24, 16))) {
++        data->source = floating;
++        followFloatingPage(data);
++    }
++}
++
++bool ElaTabWidgetHost::dropDrag(QMimeData* mime)
++{
++    if (!enterDrag(mime))
++        return false;
++    static_cast<HostedTabMime*>(mime)->committed = true;
++    return true;
+ }
+ 
+ bool ElaTabWidgetHost::eventFilter(QObject* watched, QEvent* event)
+@@ -319,25 +435,6 @@ bool ElaTabWidgetHost::eventFilter(QObject* watched, QEvent* event)
+     }
+     if (!belongsToGroup(watched))
+         return false;
+-    if (watched == group->tabBar()) {
+-        if (event->type() == QEvent::MouseButtonPress) {
+-            auto* mouse = static_cast<QMouseEvent*>(event);
+-            if (mouse->button() == Qt::LeftButton) {
+-                pressPosition = mouse->position().toPoint();
+-                pressedPage = group->widget(group->tabBar()->tabAt(pressPosition));
+-            }
+-        } else if (event->type() == QEvent::MouseMove && !dragging && pressedPage) {
+-            auto* mouse = static_cast<QMouseEvent*>(event);
+-            if ((mouse->buttons() & Qt::LeftButton)
+-                && (mouse->position().toPoint() - pressPosition).manhattanLength() >= QApplication::startDragDistance()
+-                && !group->tabBar()->rect().adjusted(-8, -8, 8, 8).contains(mouse->position().toPoint())) {
+-                startDrag();
+-                return true;
+-            }
+-        } else if (event->type() == QEvent::MouseButtonRelease && !dragging) {
+-            pressedPage = nullptr;
+-        }
+-    }
+     if (event->type() == QEvent::DragLeave) {
+         clearIndicator();
+         return false;
+@@ -345,14 +442,15 @@ bool ElaTabWidgetHost::eventFilter(QObject* watched, QEvent* event)
+     if (event->type() != QEvent::DragEnter && event->type() != QEvent::DragMove && event->type() != QEvent::Drop)
+         return false;
+     auto* drop = static_cast<QDropEvent*>(event);
+-    const auto* data = dynamic_cast<const HostedTabMime*>(drop->mimeData());
+-    if (!data)
++    auto* data = const_cast<HostedTabMime*>(dynamic_cast<const HostedTabMime*>(drop->mimeData()));
++    if (!data && drop->mimeData()->property("DragType").toString() != QStringLiteral("ElaTabBarDrag"))
+         return false;
+-    if (!data->source || !data->page || data->scope != scope
+-        || data->source->indexOf(data->page) < 0) {
++    if (!acceptsDrag(drop->mimeData())) {
+         drop->ignore();
+         return true;
+     }
++    if (watched == group->tabBar())
++        return false; // The original ElaTabBar enter/leave/drop route handles this.
+     auto* widget = qobject_cast<QWidget*>(watched);
+     const QPoint position = widget->mapTo(group, drop->position().toPoint());
+     const auto area = areaAt(position);
+@@ -370,6 +468,8 @@ bool ElaTabWidgetHost::eventFilter(QObject* watched, QEvent* event)
+     if (area == ElaTabWidget::DropArea::Center)
+         index = group->tabBar()->tabAt(group->tabBar()->mapFrom(group, position));
+     if (target && data->source->transferHostedTab(data->page, target, index)) {
++        data->source = target;
++        data->committed = true;
+         drop->setDropAction(Qt::MoveAction);
+         drop->accept();
+     } else {
+diff --git a/private/ElaTabWidgetHost.h b/private/ElaTabWidgetHost.h
+index be35514..9eaed8d 100644
+--- a/private/ElaTabWidgetHost.h
++++ b/private/ElaTabWidgetHost.h
+@@ -15,7 +15,11 @@ public:
+     bool transfer(QWidget* page, ElaTabWidget* target, int index);
+     ElaTabWidget* detach(QWidget* page, const QPoint& globalPosition);
+     void syncVisibility();
+-    bool isDragging() const { return dragging; }
++    bool isDragging() const;
++    void startDrag(QMimeData* mime);
++    bool enterDrag(QMimeData* mime);
++    void leaveDrag(QMimeData* mime);
++    bool dropDrag(QMimeData* mime);
+     QPointer<QWidget> floatingWindow;
+ 
+ protected:
+@@ -27,13 +31,11 @@ private:
+     QPointer<QObject> scope;
+     ElaTabWidget::SplitResolver split;
+     ElaTabWidget::ReturnTarget returnTarget;
+-    QPointer<QWidget> pressedPage;
+-    QPoint pressPosition;
+     QPointer<QWidget> indicator;
+     bool dragging{false};
+     bool cancelled{false};
+ 
+-    void startDrag();
++    bool acceptsDrag(const QMimeData* mime) const;
+     bool belongsToGroup(QObject* watched) const;
+     ElaTabWidget::DropArea areaAt(const QPoint& position) const;
+     void showIndicator(ElaTabWidget::DropArea area);
+diff --git a/private/ElaTabWidgetPrivate.cpp b/private/ElaTabWidgetPrivate.cpp
+index fdb2c29..9026a69 100644
+--- a/private/ElaTabWidgetPrivate.cpp
++++ b/private/ElaTabWidgetPrivate.cpp
+@@ -2,7 +2,8 @@
+ 
+ #include "ElaCustomTabWidget.h"
+ #include "ElaTabBar.h"
+-#include "ElaTabWidget.h"
++#include "ElaTabWidget.h"
++#include "ElaTabWidgetHost.h"
+ #include <QApplication>
+ #include <QDebug>
+ #include <QMimeData>
+@@ -28,9 +29,13 @@ ElaTabWidgetPrivate::~ElaTabWidgetPrivate()
+ {
+ }
+ 
+-void ElaTabWidgetPrivate::onTabDragCreate(QMimeData* mimeData)
+-{
+-    Q_Q(ElaTabWidget);
++void ElaTabWidgetPrivate::onTabDragCreate(QMimeData* mimeData)
++{
++    Q_Q(ElaTabWidget);
++    if (q->_host) {
++        q->_host->startDrag(mimeData);
++        return;
++    }
+     if (ElaDragMonitor::getInstance()->getIsInDrag())
+     {
+         return;
+@@ -159,16 +164,24 @@ void ElaTabWidgetPrivate::onTabDragCreate(QMimeData* mimeData)
+     }
+ }
+ 
+-void ElaTabWidgetPrivate::onTabDragEnter(QMimeData* mimeData)
+-{
+-    Q_Q(ElaTabWidget);
++void ElaTabWidgetPrivate::onTabDragEnter(QMimeData* mimeData)
++{
++    Q_Q(ElaTabWidget);
++    if (q->_host) {
++        q->_host->enterDrag(mimeData);
++        return;
++    }
+     mimeData->setProperty("ElaTabBarObject", QVariant::fromValue<ElaTabBar*>(dynamic_cast<ElaTabBar*>(q->tabBar())));
+     onTabDragDrop(mimeData);
+ }
+ 
+-void ElaTabWidgetPrivate::onTabDragLeave(QMimeData* mimeData)
+-{
+-    Q_Q(ElaTabWidget);
++void ElaTabWidgetPrivate::onTabDragLeave(QMimeData* mimeData)
++{
++    Q_Q(ElaTabWidget);
++    if (q->_host) {
++        q->_host->leaveDrag(mimeData);
++        return;
++    }
+     QWidget* dragWidget = mimeData->property("DragWidget").value<QWidget*>();
+     int index = q->indexOf(dragWidget);
+     mimeData->setProperty("ElaTabWidgetObject", QVariant::fromValue(q));
+@@ -222,9 +235,13 @@ void ElaTabWidgetPrivate::onTabDragLeave(QMimeData* mimeData)
+     mimeData->setProperty("TempFloatWidget", QVariant::fromValue<ElaCustomTabWidget*>(floatWidget));
+ }
+ 
+-void ElaTabWidgetPrivate::onTabDragDrop(QMimeData* mimeData)
+-{
+-    Q_Q(ElaTabWidget);
++void ElaTabWidgetPrivate::onTabDragDrop(QMimeData* mimeData)
++{
++    Q_Q(ElaTabWidget);
++    if (q->_host) {
++        q->_host->dropDrag(mimeData);
++        return;
++    }
+     QWidget* dragWidget = mimeData->property("DragWidget").value<QWidget*>();
+     QString tabText = dragWidget->property("TabText").toString();
+     QIcon tabIcon = dragWidget->property("TabIcon").value<QIcon>();
+@@ -248,9 +265,11 @@ void ElaTabWidgetPrivate::onTabDragDrop(QMimeData* mimeData)
+     }
+ }
+ 
+-void ElaTabWidgetPrivate::onTabCloseRequested(int index)
+-{
+-    Q_Q(ElaTabWidget);
++void ElaTabWidgetPrivate::onTabCloseRequested(int index)
++{
++    Q_Q(ElaTabWidget);
++    if (q->_host)
++        return; // QTabWidget::tabCloseRequested reaches the document controller.
+     QWidget* closeWidget = q->widget(index);
+     ElaTabWidget* originTabWidget = closeWidget->property("ElaOriginTabWidget").value<ElaTabWidget*>();
+     if (originTabWidget && originTabWidget != q)
+diff --git a/private/ElaWindowPrivate.cpp b/private/ElaWindowPrivate.cpp
+index d9cff2c..37379ce 100644
+--- a/private/ElaWindowPrivate.cpp
++++ b/private/ElaWindowPrivate.cpp
+@@ -32,20 +32,10 @@ void ElaWindowPrivate::onNavigationButtonClicked()
+     {
+         _isNavigationDisplayModeChanged = false;
+         _resetWindowLayout(true);
+-        _navigationBar->setIsTransparent(false);
+-        _navigationBar->setDisplayMode(ElaNavigationType::Maximal, false);
+-        _navigationBar->move(-_navigationBar->width(), _navigationBar->pos().y());
+-        _navigationBar->resize(_navigationBar->width(), _navigationCenterStackedWidget->height() + 1);
+-        QPropertyAnimation* navigationMoveAnimation = new QPropertyAnimation(_navigationBar, "pos");
+-        connect(navigationMoveAnimation, &QPropertyAnimation::finished, this, [=]() {
+-            _isNavigationBarExpanded = true;
+-        });
+-        navigationMoveAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-        navigationMoveAnimation->setDuration(225);
+-        navigationMoveAnimation->setStartValue(_navigationBar->pos());
+-        navigationMoveAnimation->setEndValue(QPoint(0, 0));
+-        navigationMoveAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        _isNavigationBarFloat = true;
++        _isNavigationBarFloat = true;
++        _isNavigationBarExpanded = true;
++        _navigationBar->setOverlayExpanded(true, QRect(0, 0,
++            _navigationBar->getNavigationBarWidth(), _navigationCenterStackedWidget->height() + 1));
+     }
+     else
+     {
+@@ -71,29 +61,9 @@ void ElaWindowPrivate::onWMWindowClickedEvent(const QVariantMap& data)
+         }
+         if (_isNavigationBarExpanded)
+         {
+-            QPropertyAnimation* navigationMoveAnimation = new QPropertyAnimation(_navigationBar, "pos");
+-            connect(navigationMoveAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
+-                if (_isNavigationDisplayModeChanged)
+-                {
+-                    _isNavigationBarFloat = false;
+-                    _resetWindowLayout(false);
+-                    navigationMoveAnimation->deleteLater();
+-                }
+-            });
+-            connect(navigationMoveAnimation, &QPropertyAnimation::finished, this, [=]() {
+-                if (!_isNavigationDisplayModeChanged)
+-                {
+-                    _navigationBar->setDisplayMode(ElaNavigationType::Minimal, false);
+-                    _resetWindowLayout(false);
+-                }
+-                _isNavigationBarFloat = false;
+-            });
+-            navigationMoveAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-            navigationMoveAnimation->setDuration(225);
+-            navigationMoveAnimation->setStartValue(_navigationBar->pos());
+-            navigationMoveAnimation->setEndValue(QPoint(-_navigationBar->width(), 0));
+-            navigationMoveAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-            _isNavigationBarExpanded = false;
++            _isNavigationBarExpanded = false;
++            _navigationBar->setOverlayExpanded(false, QRect(0, 0,
++                _navigationBar->getNavigationBarWidth(), _navigationCenterStackedWidget->height() + 1));
+         }
+     }
+ }
+@@ -280,14 +250,19 @@ void ElaWindowPrivate::_resetWindowLayout(bool isAnimation)
+             _centerLayout->takeAt(0);
+         }
+     }
+-    else
+-    {
+-        if (_centerLayout->count() == 0)
+-        {
+-            _navigationBar->setIsTransparent(true);
+-            _navigationBar->setDisplayMode(ElaNavigationType::Minimal, false);
+-            _centerLayout->addWidget(_navigationBar);
+-            _centerLayout->addWidget(_navigationCenterStackedWidget);
++    else
++    {
++        if (_centerLayout->count() == 0)
++        {
++            _isNavigationBarFloat = false;
++            _isNavigationBarExpanded = false;
++            _navigationBar->setOverlayExpanded(false, QRect(0, 0,
++                _navigationBar->getNavigationBarWidth(), _navigationCenterStackedWidget->height() + 1), false);
++            _navigationBar->setIsTransparent(true);
++            _navigationBar->setDisplayMode(ElaNavigationType::Minimal, false);
++            _centerLayout->addWidget(_navigationBar);
++            _centerLayout->addWidget(_navigationCenterStackedWidget);
++            _navigationBar->show();
+         }
+     }
+ }

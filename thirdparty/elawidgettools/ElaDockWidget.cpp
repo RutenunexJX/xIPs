@@ -5,7 +5,13 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPropertyAnimation>
+#include <QPointer>
 #include <QTimer>
+#include <QApplication>
+#include <QMouseEvent>
+#include <QKeyEvent>
+#include <QCloseEvent>
+#include <QtWidgets/private/qdockwidget_p.h>
 
 #include "ElaApplication.h"
 #include "ElaDockWidgetPrivate.h"
@@ -47,6 +53,7 @@ ElaDockWidget::ElaDockWidget(const QString& title, QWidget* parent, Qt::WindowFl
 
 ElaDockWidget::~ElaDockWidget()
 {
+    qApp->removeEventFilter(this);
 }
 
 void ElaDockWidget::paintEvent(QPaintEvent* event)
@@ -77,9 +84,34 @@ void ElaDockWidget::paintEvent(QPaintEvent* event)
     QDockWidget::paintEvent(event);
 }
 
-#ifdef Q_OS_WIN
+bool ElaDockWidget::isDockDragging() const
+{
+    const auto* state = static_cast<const QDockWidgetPrivate*>(QWidgetPrivate::get(this))->state;
+    return state && state->dragging;
+}
+
+void ElaDockWidget::beginDockDrag(const QPoint& position)
+{
+    if (!isFloating() || !isVisible() || !features().testFlag(DockWidgetMovable)) return;
+    const QPoint local(20, titleBarWidget() ? titleBarWidget()->height() / 2 : 12);
+    const QPoint distance(QApplication::startDragDistance() + 1, 0);
+    move(position - local - distance);
+    QMouseEvent press(QEvent::MouseButtonPress, local, mapToGlobal(local),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(this, &press);
+    QMouseEvent motion(QEvent::MouseMove, local + distance, position,
+                       Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(this, &motion);
+}
+
 bool ElaDockWidget::event(QEvent* event)
 {
+    const QPointer<ElaDockWidget> guard(this);
+    const bool wasDragging = isDockDragging();
+    if (wasDragging && event->type() == QEvent::MouseMove)
+        emit dockDragMoved(static_cast<QMouseEvent*>(event)->globalPosition().toPoint());
+    if (!guard) return true;
+#ifdef Q_OS_WIN
     Q_D(ElaDockWidget);
     switch (event->type())
     {
@@ -104,9 +136,46 @@ bool ElaDockWidget::event(QEvent* event)
         break;
     }
     }
-    return QDockWidget::event(event);
+#endif
+    const bool handled = QDockWidget::event(event);
+    if (!guard) return handled;
+    if (event->type() != QEvent::MouseButtonPress && event->type() != QEvent::MouseMove
+        && event->type() != QEvent::MouseButtonRelease) return handled;
+    const bool dragging = isDockDragging();
+    if (dragging && !wasDragging) {
+        qApp->installEventFilter(this);
+        emit dockDragStarted();
+    }
+    if (!dragging && wasDragging) {
+        qApp->removeEventFilter(this);
+        emit dockDragFinished(false);
+    }
+    return handled;
 }
 
+void ElaDockWidget::cancelDockDrag()
+{
+    if (!isDockDragging()) return;
+    // The base close handler aborts Qt's drag transaction; calling the handler
+    // directly does not close the widget or invoke the application's close flow.
+    QCloseEvent cancel;
+    QDockWidget::closeEvent(&cancel);
+    qApp->removeEventFilter(this);
+    emit dockDragFinished(true);
+}
+
+bool ElaDockWidget::eventFilter(QObject* watched, QEvent* event)
+{
+    if (isDockDragging() && (event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride)
+        && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+        if (event->type() == QEvent::KeyPress) cancelDockDrag();
+        event->accept();
+        return true;
+    }
+    return QDockWidget::eventFilter(watched, event);
+}
+
+#ifdef Q_OS_WIN
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 bool ElaDockWidget::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
 #else

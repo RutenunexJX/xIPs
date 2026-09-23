@@ -1,0 +1,986 @@
+diff --git a/Development/ElaDrawerContainer.cpp b/Development/ElaDrawerContainer.cpp
+index 0bacc19..2d3e38f 100644
+--- a/Development/ElaDrawerContainer.cpp
++++ b/Development/ElaDrawerContainer.cpp
+@@ -2,8 +2,13 @@
+ 
+ #include "ElaTheme.h"
+ 
+-#include <QPainter>
+-#include <QPropertyAnimation>
++#include <QPainter>
++#include <QPropertyAnimation>
++#include <QApplication>
++#include <QElapsedTimer>
++#include <QMouseEvent>
++#include <QResizeEvent>
++#include <QScopedValueRollback>
+ ElaDrawerContainer::ElaDrawerContainer(QWidget* parent)
+     : QWidget(parent)
+ {
+@@ -13,20 +18,21 @@ ElaDrawerContainer::ElaDrawerContainer(QWidget* parent)
+     setObjectName("ElaDrawerContainer");
+     setStyleSheet("#ElaDrawerContainer{background-color:transparent;}");
+ 
+-    _mainLayout = new QVBoxLayout(this);
+-    _mainLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
+-    _mainLayout->setContentsMargins(0, 0, 0, 0);
+-
+-    _containerWidget = new QWidget(this);
++    _containerWidget = new QWidget(this);
+     _containerWidget->setObjectName("ElaDrawerContainerWidget");
+     _containerWidget->setStyleSheet("#ElaDrawerContainerWidget{background-color:transparent;}");
+     _containerWidget->setVisible(false);
+ 
+     _containerLayout = new QVBoxLayout(_containerWidget);
+-    _containerLayout->setContentsMargins(0, 0, 0, 0);
+-    _containerLayout->setSpacing(0);
+-
+-    _mainLayout->addWidget(_containerWidget);
++    _containerLayout->setContentsMargins(0, 0, 0, 0);
++    _containerLayout->setSpacing(0);
++    _containerLayout->setSizeConstraint(QLayout::SetNoConstraint);
++    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
++    setMaximumHeight(0);
++    _animation = new QPropertyAnimation(this, "pOpacity", this);
++    _animation->setEasingCurve(QEasingCurve::OutCubic);
++    connect(_animation, &QPropertyAnimation::valueChanged, this, [this] { update(); });
++    connect(_animation, &QPropertyAnimation::finished, this, &ElaDrawerContainer::finishAnimation);
+ 
+     _themeMode = eTheme->getThemeMode();
+     connect(eTheme, &ElaTheme::themeModeChanged, this, [=](ElaThemeType::ThemeMode themeMode) {
+@@ -35,18 +41,29 @@ ElaDrawerContainer::ElaDrawerContainer(QWidget* parent)
+     });
+ }
+ 
+-ElaDrawerContainer::~ElaDrawerContainer()
+-{
++ElaDrawerContainer::~ElaDrawerContainer()
++{
++    qApp->removeEventFilter(this);
++    _animation->stop();
++    for (const auto& widget : _drawerWidgetList)
++        if (widget) disconnect(widget, nullptr, this, nullptr);
+ }
+ 
+ void ElaDrawerContainer::addWidget(QWidget* widget)
+ {
+-    if (!widget || _drawerWidgetList.contains(widget))
++    if (!widget || _drawerWidgetList.contains(widget))
+     {
+         return;
+-    }
+-    _containerLayout->addWidget(widget);
+-    _drawerWidgetList.append(widget);
++    }
++    finishAnimation();
++    _containerLayout->addWidget(widget);
++    _drawerWidgetList.append(widget);
++    connect(widget, &QObject::destroyed, this, [this] {
++        _drawerWidgetList.removeIf([](const auto& item) { return item.isNull(); });
++        finishAnimation();
++        updateGeometry();
++    });
++    updateGeometry();
+ }
+ 
+ void ElaDrawerContainer::removeWidget(QWidget* widget)
+@@ -55,39 +72,146 @@ void ElaDrawerContainer::removeWidget(QWidget* widget)
+     {
+         return;
+     }
+-    _containerLayout->removeWidget(widget);
+-    _drawerWidgetList.removeOne(widget);
+-}
+-
+-void ElaDrawerContainer::doDrawerAnimation(bool isExpand)
+-{
+-    if (_containerLayout->count() == 0)
+-    {
+-        return;
+-    }
+-    _containerWidget->setVisible(true);
+-    _mainLayout->setSizeConstraint(QLayout::SetDefaultConstraint);
+-    int expandHeight = height();
+-    _isShowBorder = true;
+-    setFixedHeight(expandHeight);
+-    _pContainerPix = grab(rect());
+-    QPropertyAnimation* opacityAnimation = new QPropertyAnimation(this, "pOpacity");
+-    connect(opacityAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-        update();
+-    });
+-    connect(opacityAnimation, &QPropertyAnimation::finished, this, [=]() {
+-        _pContainerPix = QPixmap();
+-        _isShowBorder = isExpand;
+-        _containerWidget->setVisible(isExpand);
+-        _mainLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
+-    });
+-    opacityAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-    opacityAnimation->setDuration(300);
+-    opacityAnimation->setStartValue(_pOpacity);
+-    opacityAnimation->setEndValue(isExpand ? 1 : 0);
+-    opacityAnimation->start(QPropertyAnimation::DeleteWhenStopped);
+-    _containerWidget->setVisible(false);
+-    _isShowBorder = false;
++    finishAnimation();
++    _containerLayout->removeWidget(widget);
++    _drawerWidgetList.removeOne(widget);
++    disconnect(widget, nullptr, this, nullptr);
++    updateGeometry();
++}
++
++bool ElaDrawerContainer::isAnimating() const
++{
++    return _animation->state() == QAbstractAnimation::Running;
++}
++
++qint64 ElaDrawerContainer::snapshotBytes() const
++{
++    return qint64(_pContainerPix.width()) * _pContainerPix.height() * 4;
++}
++
++QSize ElaDrawerContainer::sizeHint() const
++{
++    const QSize content = _containerLayout->sizeHint();
++    return _expanded ? content : QSize(0, 0);
++}
++
++QSize ElaDrawerContainer::minimumSizeHint() const
++{
++    const QSize content = _containerLayout->minimumSize();
++    return _expanded ? content : QSize(0, 0);
++}
++
++void ElaDrawerContainer::setEdge(Qt::Edge edge)
++{
++    if (_edge == edge) return;
++    finishAnimation();
++    _edge = edge;
++}
++
++void ElaDrawerContainer::finishAnimation()
++{
++    if (_settling || _preparing) return;
++    _settling = true;
++    const bool wasAnimating = isAnimating() || !_pContainerPix.isNull();
++    _animation->stop();
++    qApp->removeEventFilter(this);
++    _pContainerPix = QPixmap();
++    _pOpacity = _expanded ? 1 : 0;
++    _isShowBorder = _expanded;
++    setMinimumHeight(0);
++    setMaximumHeight(_expanded ? QWIDGETSIZE_MAX : 0);
++    _containerWidget->setVisible(_expanded);
++    _containerWidget->setGeometry(rect());
++    updateGeometry();
++    update();
++    _settling = false;
++    if (wasAnimating) Q_EMIT animationFinished(_expanded);
++}
++
++void ElaDrawerContainer::doDrawerAnimation(bool isExpand, bool animate)
++{
++    if (_expanded == isExpand) {
++        if (!animate) finishAnimation();
++        return;
++    }
++    _expanded = isExpand;
++    _animation->stop();
++    if (!animate || !isVisible() || _containerLayout->count() == 0) {
++        finishAnimation();
++        return;
++    }
++    QElapsedTimer preparation;
++    preparation.start();
++    {
++        QScopedValueRollback<bool> guard(_preparing, true);
++        if (_pContainerPix.isNull()) {
++            setMinimumHeight(0);
++            setMaximumHeight(QWIDGETSIZE_MAX);
++            updateGeometry();
++            if (parentWidget() && parentWidget()->layout()) parentWidget()->layout()->activate();
++            if (height() <= 0) resize(width(), qMax(1, _containerLayout->sizeHint().height()));
++            _containerWidget->setGeometry(rect());
++            _containerWidget->show();
++            _containerLayout->activate();
++            const qreal scale = devicePixelRatioF();
++            const qint64 bytes = qint64(qCeil(width() * scale)) * qCeil(height() * scale) * 4;
++            if (bytes <= 32 * 1024 * 1024 && width() > 0) {
++                _pContainerPix = _containerWidget->grab();
++            }
++        }
++        _containerWidget->hide();
++        _isShowBorder = false;
++    }
++    _preparationMs = preparation.nsecsElapsed() / 1e6;
++    if (_pContainerPix.isNull()) {
++        finishAnimation();
++        return;
++    }
++    const qreal target = isExpand ? 1 : 0;
++    _animation->setDuration(qMax(1, qRound(300 * qAbs(target - _pOpacity))));
++    _animation->setStartValue(_pOpacity);
++    _animation->setEndValue(target);
++    qApp->installEventFilter(this);
++    _animation->start();
++}
++
++void ElaDrawerContainer::resizeEvent(QResizeEvent* event)
++{
++    QWidget::resizeEvent(event);
++    if (!_preparing) finishAnimation();
++    _containerWidget->setGeometry(rect());
++}
++
++void ElaDrawerContainer::hideEvent(QHideEvent* event)
++{
++    finishAnimation();
++    QWidget::hideEvent(event);
++}
++
++bool ElaDrawerContainer::eventFilter(QObject* watched, QEvent* event)
++{
++    if (!_preparing && isAnimating()) {
++        const auto type = event->type();
++        auto* widget = qobject_cast<QWidget*>(watched);
++        const bool contentInput = widget && (widget == this || widget == _containerWidget || _containerWidget->isAncestorOf(widget))
++            && (type == QEvent::MouseButtonPress || type == QEvent::Wheel);
++        if (type == QEvent::KeyPress || contentInput) {
++            QPointer<ElaDrawerContainer> guard(this);
++            finishAnimation();
++            if (!guard) return false;
++            if (widget == this && type == QEvent::MouseButtonPress && _expanded) {
++                auto* mouse = static_cast<QMouseEvent*>(event);
++                if (auto* target = childAt(mouse->position().toPoint())) {
++                    const QPointF position = target->mapFromGlobal(mouse->globalPosition().toPoint());
++                    QMouseEvent forwarded(mouse->type(), position, mouse->globalPosition(),
++                                          mouse->button(), mouse->buttons(), mouse->modifiers());
++                    QApplication::sendEvent(target, &forwarded);
++                    return true;
++                }
++            }
++        }
++    }
++    return QWidget::eventFilter(watched, event);
+ }
+ 
+ void ElaDrawerContainer::paintEvent(QPaintEvent* event)
+@@ -106,7 +230,8 @@ void ElaDrawerContainer::paintEvent(QPaintEvent* event)
+         int drawerHeight = 0;
+         for (int i = 0; i < _drawerWidgetList.count() - 1; i++)
+         {
+-            QWidget* drawerWidget = _drawerWidgetList[i];
++            QWidget* drawerWidget = _drawerWidgetList[i];
++            if (!drawerWidget) continue;
+             drawerHeight += drawerWidget->height();
+             painter.drawLine(0, drawerHeight, width(), drawerHeight);
+         }
+@@ -114,7 +239,13 @@ void ElaDrawerContainer::paintEvent(QPaintEvent* event)
+     if (!_pContainerPix.isNull())
+     {
+         painter.setOpacity(_pOpacity);
+-        painter.drawPixmap(QRect(0, -height() * (1 - _pOpacity), width(), height()), _pContainerPix);
++        const qreal distance = 1 - _pOpacity;
++        QPointF offset;
++        if (_edge == Qt::TopEdge) offset.setY(-height() * distance);
++        else if (_edge == Qt::BottomEdge) offset.setY(height() * distance);
++        else if (_edge == Qt::LeftEdge) offset.setX(-width() * distance);
++        else offset.setX(width() * distance);
++        painter.drawPixmap(offset, _pContainerPix);
+     }
+     painter.restore();
+ }
+diff --git a/Development/ElaDrawerContainer.h b/Development/ElaDrawerContainer.h
+index 0b3dcc4..ff22dcc 100644
+--- a/Development/ElaDrawerContainer.h
++++ b/Development/ElaDrawerContainer.h
+@@ -6,7 +6,8 @@
+ #include "ElaWidgetToolsDef.h"
+ #include <QVBoxLayout>
+ 
+-#include <QGraphicsOpacityEffect>
++#include <QGraphicsOpacityEffect>
++#include <QPointer>
+ class ElaDrawerContainer : public QWidget
+ {
+     Q_OBJECT
+@@ -20,18 +21,37 @@ public:
+     void addWidget(QWidget* widget);
+     void removeWidget(QWidget* widget);
+ 
+-    void doDrawerAnimation(bool isExpand);
++    void doDrawerAnimation(bool isExpand, bool animate = true);
++    void finishAnimation();
++    bool isAnimating() const;
++    bool isExpanded() const { return _expanded; }
++    void setEdge(Qt::Edge edge);
++    qint64 snapshotBytes() const;
++    double preparationMs() const { return _preparationMs; }
++    QSize sizeHint() const override;
++    QSize minimumSizeHint() const override;
++
++signals:
++    void animationFinished(bool expanded);
+ 
+ protected:
+-    virtual void paintEvent(QPaintEvent* event) override;
++    virtual void paintEvent(QPaintEvent* event) override;
++    void resizeEvent(QResizeEvent* event) override;
++    void hideEvent(QHideEvent* event) override;
++    bool eventFilter(QObject* watched, QEvent* event) override;
+ 
+ private:
+     bool _isShowBorder{true};
+     ElaThemeType::ThemeMode _themeMode;
+-    QVBoxLayout* _mainLayout{nullptr};
+-    QVBoxLayout* _containerLayout{nullptr};
+-    QWidget* _containerWidget{nullptr};
+-    QList<QWidget*> _drawerWidgetList;
+-};
++    QVBoxLayout* _containerLayout{nullptr};
++    QWidget* _containerWidget{nullptr};
++    QList<QPointer<QWidget>> _drawerWidgetList;
++    class QPropertyAnimation* _animation{nullptr};
++    Qt::Edge _edge{Qt::TopEdge};
++    bool _expanded{false};
++    bool _preparing{false};
++    bool _settling{false};
++    double _preparationMs{0};
++};
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELADRAWERCONTAINER_H_
+diff --git a/Development/ElaDrawerHeader.cpp b/Development/ElaDrawerHeader.cpp
+index f767e94..cb12653 100644
+--- a/Development/ElaDrawerHeader.cpp
++++ b/Development/ElaDrawerHeader.cpp
+@@ -18,7 +18,11 @@ ElaDrawerHeader::ElaDrawerHeader(QWidget* parent)
+ 
+     _mainLayout = new QVBoxLayout(this);
+     _mainLayout->setContentsMargins(0, 0, 0, 0);
+-    setContentsMargins(0, 0, 30, 0);
++    setContentsMargins(0, 0, 30, 0);
++    _rotation = new QPropertyAnimation(this, "pExpandIconRotate", this);
++    _rotation->setDuration(300);
++    _rotation->setEasingCurve(QEasingCurve::InOutSine);
++    connect(_rotation, &QPropertyAnimation::valueChanged, this, [this] { update(); });
+ 
+     _themeMode = eTheme->getThemeMode();
+     connect(eTheme, &ElaTheme::themeModeChanged, this, [=](ElaThemeType::ThemeMode themeMode) {
+@@ -45,17 +49,18 @@ void ElaDrawerHeader::setHeaderWidget(QWidget* widget)
+     _headerWidget = widget;
+ }
+ 
+-void ElaDrawerHeader::doExpandOrCollapseAnimation()
+-{
+-    QPropertyAnimation* rotateAnimation = new QPropertyAnimation(this, "pExpandIconRotate");
+-    connect(rotateAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-        update();
+-    });
+-    rotateAnimation->setDuration(300);
+-    rotateAnimation->setEasingCurve(QEasingCurve::InOutSine);
+-    rotateAnimation->setStartValue(_pExpandIconRotate);
+-    rotateAnimation->setEndValue(_pIsExpand ? -180 : 0);
+-    rotateAnimation->start(QAbstractAnimation::DeleteWhenStopped);
++void ElaDrawerHeader::doExpandOrCollapseAnimation(bool animate)
++{
++    _rotation->stop();
++    const qreal target = _pIsExpand ? -180 : 0;
++    if (!animate || !isVisible()) {
++        _pExpandIconRotate = target;
++        update();
++        return;
++    }
++    _rotation->setStartValue(_pExpandIconRotate);
++    _rotation->setEndValue(target);
++    _rotation->start();
+ }
+ 
+ bool ElaDrawerHeader::event(QEvent* event)
+diff --git a/Development/ElaDrawerHeader.h b/Development/ElaDrawerHeader.h
+index 1918293..044a740 100644
+--- a/Development/ElaDrawerHeader.h
++++ b/Development/ElaDrawerHeader.h
+@@ -15,7 +15,7 @@ public:
+     ~ElaDrawerHeader() override;
+ 
+     void setHeaderWidget(QWidget* widget);
+-    void doExpandOrCollapseAnimation();
++    void doExpandOrCollapseAnimation(bool animate = true);
+ Q_SIGNALS:
+     Q_SIGNAL void drawerHeaderClicked(bool isExpand);
+ 
+@@ -30,7 +30,8 @@ private:
+     ElaThemeType::ThemeMode _themeMode;
+     bool _isPressed{false};
+     QWidget* _headerWidget{nullptr};
+-    QVBoxLayout* _mainLayout{nullptr};
++    QVBoxLayout* _mainLayout{nullptr};
++    class QPropertyAnimation* _rotation{nullptr};
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_DEVELOPERCOMPONENTS_ELADRAWERHEADER_H_
+diff --git a/ElaComboBox.cpp b/ElaComboBox.cpp
+index f2a24a7..3c06f57 100644
+--- a/ElaComboBox.cpp
++++ b/ElaComboBox.cpp
+@@ -10,7 +10,10 @@
+ #include <QLineEdit>
+ #include <QListView>
+ #include <QMouseEvent>
+-#include <QPropertyAnimation>
++#include <QPropertyAnimation>
++#include <QParallelAnimationGroup>
++#include <QHideEvent>
++#include <QResizeEvent>
+ Q_PROPERTY_CREATE_Q_CPP(ElaComboBox, int, BorderRadius)
+ ElaComboBox::ElaComboBox(QWidget* parent)
+     : QComboBox(parent), d_ptr(new ElaComboBoxPrivate())
+@@ -23,7 +26,17 @@ ElaComboBox::ElaComboBox(QWidget* parent)
+     setFixedHeight(35);
+     d->_comboBoxStyle = new ElaComboBoxStyle(style());
+     d->_comboBoxStyle->setParent(qApp);
+-    setStyle(d->_comboBoxStyle);
++    setStyle(d->_comboBoxStyle);
++    d->_popupAnimation = new QParallelAnimationGroup(this);
++    connect(d->_popupAnimation, &QParallelAnimationGroup::finished, this, &ElaComboBox::finishPopupAnimation);
++    d->_indicatorAnimation = new QParallelAnimationGroup(this);
++    d->_rotation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandIconRotate", d->_indicatorAnimation);
++    d->_mark = new QPropertyAnimation(d->_comboBoxStyle, "pExpandMarkWidth", d->_indicatorAnimation);
++    for (auto* animation : {d->_rotation, d->_mark}) {
++        animation->setDuration(150);
++        animation->setEasingCurve(QEasingCurve::InOutSine);
++    }
++    connect(d->_rotation, &QPropertyAnimation::valueChanged, this, [this] { update(); });
+ 
+     //调用view 让container初始化
+     setView(new QListView(this));
+@@ -37,10 +50,13 @@ ElaComboBox::ElaComboBox(QWidget* parent)
+     comboBoxView->setSelectionMode(QAbstractItemView::NoSelection);
+     comboBoxView->setObjectName("ElaComboBoxView");
+     comboBoxView->setStyleSheet("#ElaComboBoxView{background-color:transparent;}");
+-    comboBoxView->setStyle(d->_comboBoxStyle);
++    comboBoxView->setStyle(d->_comboBoxStyle);
++    comboBoxView->installEventFilter(this);
++    comboBoxView->viewport()->installEventFilter(this);
+     QWidget* container = this->findChild<QFrame*>();
+-    if (container)
+-    {
++    if (container)
++    {
++        container->installEventFilter(this);
+         container->setWindowFlags(Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
+         container->setAttribute(Qt::WA_TranslucentBackground);
+         container->setObjectName("ElaComboBoxContainer");
+@@ -65,6 +81,8 @@ ElaComboBox::ElaComboBox(QWidget* parent)
+ ElaComboBox::~ElaComboBox()
+ {
+     Q_D(ElaComboBox);
++    finishPopupAnimation();
++    d->_indicatorAnimation->stop();
+     // Keep the shared style alive through QComboBox's popup/view destruction.
+     // Resetting popup styles here repolishes its native children mid-teardown.
+     // The application owns the fallback lifetime if its event loop has stopped.
+@@ -82,134 +100,105 @@ void ElaComboBox::setEditable(bool editable)
+     }
+ }
+ 
+-void ElaComboBox::showPopup()
+-{
+-    Q_D(ElaComboBox);
+-    bool oldAnimationEffects = qApp->isEffectEnabled(Qt::UI_AnimateCombo);
+-    qApp->setEffectEnabled(Qt::UI_AnimateCombo, false);
+-    QComboBox::showPopup();
+-    qApp->setEffectEnabled(Qt::UI_AnimateCombo, oldAnimationEffects);
+-    if (count() > 0)
+-    {
+-        QWidget* container = this->findChild<QFrame*>();
+-        if (container)
+-        {
+-            int containerHeight = 0;
+-            if (count() >= maxVisibleItems())
+-            {
+-                containerHeight = maxVisibleItems() * 35 + 8;
+-            }
+-            else
+-            {
+-                containerHeight = count() * 35 + 8;
+-            }
+-            view()->resize(view()->width(), containerHeight - 8);
+-            container->move(container->x(), container->y() + 3);
+-            QLayout* layout = container->layout();
+-            while (layout->count())
+-            {
+-                layout->takeAt(0);
+-            }
+-            QPropertyAnimation* fixedSizeAnimation = new QPropertyAnimation(container, "maximumHeight");
+-            connect(fixedSizeAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-                container->setFixedHeight(value.toUInt());
+-            });
+-            fixedSizeAnimation->setStartValue(1);
+-            fixedSizeAnimation->setEndValue(containerHeight);
+-            fixedSizeAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-            fixedSizeAnimation->setDuration(400);
+-            fixedSizeAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-
+-            QPropertyAnimation* viewPosAnimation = new QPropertyAnimation(view(), "pos");
+-            connect(viewPosAnimation, &QPropertyAnimation::finished, this, [=]() {
+-                d->_isAllowHidePopup = true;
+-                layout->addWidget(view());
+-            });
+-            QPoint viewPos = view()->pos();
+-            viewPosAnimation->setStartValue(QPoint(viewPos.x(), viewPos.y() - view()->height()));
+-            viewPosAnimation->setEndValue(viewPos);
+-            viewPosAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-            viewPosAnimation->setDuration(400);
+-            viewPosAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        }
+-        //指示器动画
+-        QPropertyAnimation* rotateAnimation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandIconRotate");
+-        connect(rotateAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-            update();
+-        });
+-        rotateAnimation->setDuration(300);
+-        rotateAnimation->setEasingCurve(QEasingCurve::InOutSine);
+-        rotateAnimation->setStartValue(d->_comboBoxStyle->getExpandIconRotate());
+-        rotateAnimation->setEndValue(-180);
+-        rotateAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        QPropertyAnimation* markAnimation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandMarkWidth");
+-        markAnimation->setDuration(300);
+-        markAnimation->setEasingCurve(QEasingCurve::InOutSine);
+-        markAnimation->setStartValue(d->_comboBoxStyle->getExpandMarkWidth());
+-        markAnimation->setEndValue(width() / 2 - d->_pBorderRadius - 6);
+-        markAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-    }
+-}
+-
+-void ElaComboBox::hidePopup()
+-{
+-    Q_D(ElaComboBox);
+-    if (d->_isAllowHidePopup)
+-    {
+-        QWidget* container = this->findChild<QFrame*>();
+-        int containerHeight = container->height();
+-        if (container)
+-        {
+-            QLayout* layout = container->layout();
+-            while (layout->count())
+-            {
+-                layout->takeAt(0);
+-            }
+-            QPropertyAnimation* viewPosAnimation = new QPropertyAnimation(view(), "pos");
+-            connect(viewPosAnimation, &QPropertyAnimation::finished, this, [=]() {
+-                layout->addWidget(view());
+-                QMouseEvent focusEvent(QEvent::MouseButtonPress, QPoint(-1, -1), QPoint(-1, -1), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+-                QApplication::sendEvent(parentWidget(), &focusEvent);
+-                QComboBox::hidePopup();
+-                container->setFixedHeight(containerHeight);
+-            });
+-            QPoint viewPos = view()->pos();
+-            connect(viewPosAnimation, &QPropertyAnimation::finished, this, [=]() {
+-                view()->move(viewPos);
+-            });
+-            viewPosAnimation->setStartValue(viewPos);
+-            viewPosAnimation->setEndValue(QPoint(viewPos.x(), viewPos.y() - view()->height()));
+-            viewPosAnimation->setEasingCurve(QEasingCurve::InCubic);
+-            viewPosAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-
+-            QPropertyAnimation* fixedSizeAnimation = new QPropertyAnimation(container, "maximumHeight");
+-            connect(fixedSizeAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-                container->setFixedHeight(value.toUInt());
+-            });
+-            fixedSizeAnimation->setStartValue(container->height());
+-            fixedSizeAnimation->setEndValue(1);
+-            fixedSizeAnimation->setEasingCurve(QEasingCurve::InCubic);
+-            fixedSizeAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-            d->_isAllowHidePopup = false;
+-        }
+-        //指示器动画
+-        QPropertyAnimation* rotateAnimation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandIconRotate");
+-        connect(rotateAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-            update();
+-        });
+-        rotateAnimation->setDuration(300);
+-        rotateAnimation->setEasingCurve(QEasingCurve::InOutSine);
+-        rotateAnimation->setStartValue(d->_comboBoxStyle->getExpandIconRotate());
+-        rotateAnimation->setEndValue(0);
+-        rotateAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-        QPropertyAnimation* markAnimation = new QPropertyAnimation(d->_comboBoxStyle, "pExpandMarkWidth");
+-        markAnimation->setDuration(300);
+-        markAnimation->setEasingCurve(QEasingCurve::InOutSine);
+-        markAnimation->setStartValue(d->_comboBoxStyle->getExpandMarkWidth());
+-        markAnimation->setEndValue(0);
+-        markAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+-    }
+-}
++bool ElaComboBox::isPopupAnimating() const
++{
++    Q_D(const ElaComboBox);
++    return d->_popupAnimation->state() == QAbstractAnimation::Running;
++}
++
++void ElaComboBox::finishPopupAnimation()
++{
++    Q_D(ElaComboBox);
++    if (d->_settling || !d->_popup) return;
++    d->_settling = true;
++    d->_popupAnimation->stop();
++    auto* layout = d->_popup->layout();
++    d->_popup->setMinimumHeight(0);
++    d->_popup->setMaximumHeight(QWIDGETSIZE_MAX);
++    if (d->_popupHeight > 0) d->_popup->resize(d->_popup->width(), d->_popupHeight);
++    view()->move(d->_viewPosition);
++    if (layout->indexOf(view()) < 0) layout->addWidget(view());
++    layout->activate();
++    d->_settling = false;
++}
++
++void ElaComboBox::animateIndicator(bool expanded)
++{
++    Q_D(ElaComboBox);
++    d->_indicatorAnimation->stop();
++    d->_rotation->setStartValue(d->_comboBoxStyle->getExpandIconRotate());
++    d->_rotation->setEndValue(expanded ? -180 : 0);
++    d->_mark->setStartValue(d->_comboBoxStyle->getExpandMarkWidth());
++    d->_mark->setEndValue(expanded ? qMax(0, width() / 2 - d->_pBorderRadius - 6) : 0);
++    d->_indicatorAnimation->start();
++}
++
++void ElaComboBox::showPopup()
++{
++    Q_D(ElaComboBox);
++    finishPopupAnimation();
++    QPointer<ElaComboBox> alive(this);
++    const bool oldEffects = qApp->isEffectEnabled(Qt::UI_AnimateCombo);
++    qApp->setEffectEnabled(Qt::UI_AnimateCombo, false);
++    QComboBox::showPopup();
++    qApp->setEffectEnabled(Qt::UI_AnimateCombo, oldEffects);
++    if (!alive || count() == 0 || !view()->isVisible()) return;
++    d->_popup = view()->window();
++    d->_popupHeight = d->_popup->height();
++    d->_viewPosition = view()->pos();
++    auto* layout = d->_popup->layout();
++    if (!layout) return;
++    layout->removeWidget(view());
++    d->_popupAnimation->clear();
++    auto* height = new QPropertyAnimation(d->_popup, "maximumHeight", d->_popupAnimation);
++    connect(height, &QPropertyAnimation::valueChanged, this, [this](const QVariant& value) {
++        Q_D(ElaComboBox);
++        if (d->_popup) d->_popup->setFixedHeight(value.toInt());
++    });
++    height->setStartValue(1);
++    height->setEndValue(d->_popupHeight);
++    height->setDuration(180);
++    height->setEasingCurve(QEasingCurve::OutCubic);
++    auto* position = new QPropertyAnimation(view(), "pos", d->_popupAnimation);
++    position->setStartValue(d->_viewPosition - QPoint(0, view()->height()));
++    position->setEndValue(d->_viewPosition);
++    position->setDuration(180);
++    position->setEasingCurve(QEasingCurve::OutCubic);
++    d->_popupAnimation->start();
++    animateIndicator(true);
++}
++
++void ElaComboBox::hidePopup()
++{
++    finishPopupAnimation();
++    QComboBox::hidePopup();
++    animateIndicator(false);
++}
++
++bool ElaComboBox::eventFilter(QObject* watched, QEvent* event)
++{
++    Q_D(ElaComboBox);
++    if (watched == d->_popup && event->type() == QEvent::Hide) {
++        finishPopupAnimation();
++        animateIndicator(false);
++    } else if (isPopupAnimating() && (event->type() == QEvent::KeyPress
++        || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Wheel)) {
++        finishPopupAnimation();
++    }
++    return QComboBox::eventFilter(watched, event);
++}
++
++void ElaComboBox::hideEvent(QHideEvent* event)
++{
++    hidePopup();
++    QComboBox::hideEvent(event);
++}
++
++void ElaComboBox::resizeEvent(QResizeEvent* event)
++{
++    if (isPopupAnimating()) finishPopupAnimation();
++    QComboBox::resizeEvent(event);
++}
+ 
+ void ElaComboBox::paintEvent(QPaintEvent* event)
+ {
+diff --git a/ElaComboBox.h b/ElaComboBox.h
+index 4a78625..70e8337 100644
+--- a/ElaComboBox.h
++++ b/ElaComboBox.h
+@@ -16,12 +16,18 @@ public:
+     explicit ElaComboBox(QWidget* parent = nullptr);
+     ~ElaComboBox() override;
+ 
+-    void setEditable(bool editable);
++    void setEditable(bool editable);
++    bool isPopupAnimating() const;
++    void finishPopupAnimation();
+ 
+ protected:
+     virtual void showPopup() override;
+     virtual void hidePopup() override;
+-    virtual void paintEvent(QPaintEvent* event) override;
++    virtual void paintEvent(QPaintEvent* event) override;
++    bool eventFilter(QObject* watched, QEvent* event) override;
++    void hideEvent(QHideEvent* event) override;
++    void resizeEvent(QResizeEvent* event) override;
++    void animateIndicator(bool expanded);
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELACOMBOBOX_H_
+diff --git a/ElaDrawerArea.cpp b/ElaDrawerArea.cpp
+index 0756481..84026a4 100644
+--- a/ElaDrawerArea.cpp
++++ b/ElaDrawerArea.cpp
+@@ -11,7 +11,9 @@ ElaDrawerArea::ElaDrawerArea(QWidget* parent)
+ 
+     d->_drawerHeader = new ElaDrawerHeader(this);
+     d->_drawerContainer = new ElaDrawerContainer(this);
+-    connect(d->_drawerHeader, &ElaDrawerHeader::drawerHeaderClicked, d, &ElaDrawerAreaPrivate::onDrawerHeaderClicked);
++    connect(d->_drawerHeader, &ElaDrawerHeader::drawerHeaderClicked, d, &ElaDrawerAreaPrivate::onDrawerHeaderClicked);
++    connect(d->_drawerContainer, &ElaDrawerContainer::animationFinished,
++            this, &ElaDrawerArea::drawerAnimationFinished);
+ 
+     QVBoxLayout* mainLayout = new QVBoxLayout(this);
+     mainLayout->setContentsMargins(0, 0, 0, 0);
+@@ -73,22 +75,67 @@ void ElaDrawerArea::removeDrawer(QWidget* widget)
+     d->_drawerContainer->removeWidget(widget);
+ }
+ 
+-void ElaDrawerArea::expand()
+-{
+-    Q_D(ElaDrawerArea);
+-    d->_drawerHeader->setIsExpand(true);
+-    d->_drawerHeader->doExpandOrCollapseAnimation();
+-    d->_drawerContainer->doDrawerAnimation(true);
+-    Q_EMIT expandStateChanged(true);
++void ElaDrawerArea::expand()
++{
++    setExpanded(true);
+ }
+ 
+-void ElaDrawerArea::collapse()
+-{
+-    Q_D(ElaDrawerArea);
+-    d->_drawerHeader->setIsExpand(false);
+-    d->_drawerHeader->doExpandOrCollapseAnimation();
+-    d->_drawerContainer->doDrawerAnimation(false);
+-    Q_EMIT expandStateChanged(false);
++void ElaDrawerArea::collapse()
++{
++    setExpanded(false);
++}
++
++void ElaDrawerArea::setExpanded(bool expanded, bool animate)
++{
++    Q_D(ElaDrawerArea);
++    const bool changed = d->_drawerContainer->isExpanded() != expanded;
++    d->_drawerHeader->setIsExpand(expanded);
++    d->_drawerHeader->doExpandOrCollapseAnimation(animate && isVisible());
++    QPointer<ElaDrawerArea> guard(this);
++    d->_drawerContainer->doDrawerAnimation(expanded, animate);
++    if (guard && changed) Q_EMIT expandStateChanged(expanded);
++}
++
++void ElaDrawerArea::setDrawerHeaderVisible(bool visible)
++{
++    Q_D(ElaDrawerArea);
++    d->_drawerHeader->setVisible(visible);
++}
++
++void ElaDrawerArea::setDrawerEdge(Qt::Edge edge)
++{
++    Q_D(ElaDrawerArea);
++    d->_drawerContainer->setEdge(edge);
++}
++
++bool ElaDrawerArea::isDrawerAnimating() const
++{
++    Q_D(const ElaDrawerArea);
++    return d->_drawerContainer->isAnimating();
++}
++
++void ElaDrawerArea::finishDrawerAnimation()
++{
++    Q_D(ElaDrawerArea);
++    d->_drawerContainer->finishAnimation();
++}
++
++qint64 ElaDrawerArea::drawerSnapshotBytes() const
++{
++    Q_D(const ElaDrawerArea);
++    return d->_drawerContainer->snapshotBytes();
++}
++
++double ElaDrawerArea::drawerPreparationMs() const
++{
++    Q_D(const ElaDrawerArea);
++    return d->_drawerContainer->preparationMs();
++}
++
++qreal ElaDrawerArea::drawerProgress() const
++{
++    Q_D(const ElaDrawerArea);
++    return d->_drawerContainer->getOpacity();
+ }
+ 
+ bool ElaDrawerArea::getIsExpand() const
+diff --git a/ElaDrawerArea.h b/ElaDrawerArea.h
+index 5d89d6e..12f01b3 100644
+--- a/ElaDrawerArea.h
++++ b/ElaDrawerArea.h
+@@ -21,12 +21,22 @@ public:
+     void addDrawer(QWidget* widget);
+     void removeDrawer(QWidget* widget);
+ 
+-    void expand();
+-    void collapse();
++    void expand();
++    void collapse();
++
++    void setExpanded(bool expanded, bool animate = true);
++    void setDrawerHeaderVisible(bool visible);
++    void setDrawerEdge(Qt::Edge edge);
++    bool isDrawerAnimating() const;
++    void finishDrawerAnimation();
++    qint64 drawerSnapshotBytes() const;
++    double drawerPreparationMs() const;
++    qreal drawerProgress() const;
+ 
+     bool getIsExpand() const;
+ Q_SIGNALS:
+-    Q_SIGNAL void expandStateChanged(bool isExpand);
++    Q_SIGNAL void expandStateChanged(bool isExpand);
++    Q_SIGNAL void drawerAnimationFinished(bool isExpand);
+ };
+ 
+ #endif //ELAWORKSPACE_ELAWIDGETTOOLS_ELADRAWERAREA_H_
+diff --git a/ElaToolBar.cpp b/ElaToolBar.cpp
+index a08e48b..574a735 100644
+--- a/ElaToolBar.cpp
++++ b/ElaToolBar.cpp
+@@ -1,6 +1,7 @@
+ #include "ElaToolBar.h"
+ 
+-#include <QLayout>
++#include <QLayout>
++#include <QApplication>
+ #include <QPainter>
+ #include <QStyleOption>
+ 
+@@ -14,7 +15,8 @@ ElaToolBar::ElaToolBar(QWidget* parent)
+     Q_D(ElaToolBar);
+     d->q_ptr = this;
+     setObjectName("ElaToolBar");
+-    d->_toolBarStyle = new ElaToolBarStyle(style());
++    d->_toolBarStyle = new ElaToolBarStyle(style());
++    d->_toolBarStyle->setParent(qApp);
+     setStyle(d->_toolBarStyle);
+     layout()->setSpacing(10);
+     layout()->setContentsMargins(3, 3, 3, 3);
+@@ -50,7 +52,8 @@ ElaToolBar::ElaToolBar(const QString& title, QWidget* parent)
+ ElaToolBar::~ElaToolBar()
+ {
+     Q_D(ElaToolBar);
+-    delete d->_toolBarStyle;
++    // QToolBar destroys its native action widgets after this destructor returns.
++    d->_toolBarStyle->deleteLater();
+ }
+ 
+ void ElaToolBar::setToolBarSpacing(int spacing)
+diff --git a/ElaTreeView.cpp b/ElaTreeView.cpp
+index a8cbd19..4d7c57e 100644
+--- a/ElaTreeView.cpp
++++ b/ElaTreeView.cpp
+@@ -1,4 +1,14 @@
+-#include "ElaTreeView.h"
++#include "ElaTreeView.h"
++#include <QtWidgets/private/qtreeview_p.h>
++
++void ElaTreeView::finishExpansion(QTreeView* view)
++{
++    if (!view) return;
++    auto* state = static_cast<QTreeViewPrivate*>(QObjectPrivate::get(view));
++    auto& animation = state->animatedOperation;
++    if (animation.state() == QAbstractAnimation::Running)
++        animation.setCurrentTime(animation.duration());
++}
+ 
+ #include "ElaScrollBar.h"
+ #include "ElaTreeViewPrivate.h"
+diff --git a/ElaTreeView.h b/ElaTreeView.h
+index 0186bca..37cef66 100644
+--- a/ElaTreeView.h
++++ b/ElaTreeView.h
+@@ -18,6 +18,7 @@ public:
+     ~ElaTreeView();
+     // Reuse Ela rendering without replacing a host's QTreeWidget item model.
+     static QStyle* createStyle(QObject* owner, int itemHeight = 28);
++    static void finishExpansion(QTreeView* view);
+     void setNativeItemContent(bool enabled);
+ };
+ 
+diff --git a/private/ElaComboBoxPrivate.h b/private/ElaComboBoxPrivate.h
+index 67cf525..f6d3d07 100644
+--- a/private/ElaComboBoxPrivate.h
++++ b/private/ElaComboBoxPrivate.h
+@@ -1,13 +1,18 @@
+ #ifndef ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACOMBOBOXPRIVATE_H_
+ #define ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACOMBOBOXPRIVATE_H_
+ 
+-#include <QObject>
++#include <QObject>
++#include <QPointer>
++#include <QPoint>
+ 
+ #include "ElaWidgetToolsDef.h"
+ 
+ class QLineEdit;
+ class ElaComboBox;
+-class ElaComboBoxStyle;
++class ElaComboBoxStyle;
++class QParallelAnimationGroup;
++class QPropertyAnimation;
++class QWidget;
+ class ElaComboBoxPrivate : public QObject
+ {
+     Q_OBJECT
+@@ -21,7 +26,14 @@ public:
+     Q_SLOT void onThemeChanged(ElaThemeType::ThemeMode themeMode);
+ 
+ private:
+-    bool _isAllowHidePopup{false};
++    QParallelAnimationGroup* _popupAnimation{nullptr};
++    QParallelAnimationGroup* _indicatorAnimation{nullptr};
++    QPropertyAnimation* _rotation{nullptr};
++    QPropertyAnimation* _mark{nullptr};
++    QPointer<QWidget> _popup;
++    QPoint _viewPosition;
++    int _popupHeight{0};
++    bool _settling{false};
+     ElaComboBoxStyle* _comboBoxStyle{nullptr};
+     ElaThemeType::ThemeMode _themeMode;
+ };
+diff --git a/private/ElaDrawerAreaPrivate.cpp b/private/ElaDrawerAreaPrivate.cpp
+index f1114e8..e85d5e0 100644
+--- a/private/ElaDrawerAreaPrivate.cpp
++++ b/private/ElaDrawerAreaPrivate.cpp
+@@ -13,6 +13,5 @@ ElaDrawerAreaPrivate::~ElaDrawerAreaPrivate()
+ void ElaDrawerAreaPrivate::onDrawerHeaderClicked(bool isExpand)
+ {
+     Q_Q(ElaDrawerArea);
+-    _drawerContainer->doDrawerAnimation(isExpand);
+-    Q_EMIT q->expandStateChanged(isExpand);
++    q->setExpanded(isExpand);
+ }

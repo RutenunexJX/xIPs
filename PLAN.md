@@ -1,4 +1,14 @@
-# xIPs 2.1 implementation
+# xIPs implementation
+
+## 2.2 Ela capability integration
+
+Implemented in the existing compact panel: interruptible combos and menus,
+English edit-menu lifecycle, precision/smooth ordinary scrolling, splitter ratio
+restoration, real busy feedback, bounded tooltips, and cached catalog filtering.
+Modern metadata selection performs no filesystem work; legacy reads retain one
+active request and the latest pending selection. Snapshot transactions are unchanged.
+Shared vendor patches 25–27 and the focused-list style lifetime fix 28 are replayable.
+See [capability and validation record](docs/ela-integration.md).
 
 ## Delivered scope
 
