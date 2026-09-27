@@ -117,6 +117,7 @@ QJsonObject SuiteIntegration::processRequest(const QJsonObject &request) {
     resource.insert("category", asset->category);
     resource.insert("description", asset->description);
     resource.insert("legacy", asset->legacy);
+    resource.insert("discovered", asset->discovered);
     resource.insert("revisionCount", asset->snapshots.size());
     if (!asset->snapshots.isEmpty()) {
       auto selected = asset->snapshots.last();

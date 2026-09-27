@@ -12,11 +12,15 @@ add_library(xips_core STATIC
     library/FileSystemUtil.h
     library/SnapshotLibrary.cpp
     library/SnapshotLibrary.h
+    library/ContentStore.cpp
+    library/ContentStore.h
+    library/CatalogIndex.cpp
+    library/CatalogIndex.h
     manifest/ManifestService.cpp
     manifest/ManifestService.h
 )
 target_include_directories(xips_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(xips_core PUBLIC Qt6::Core)
+target_link_libraries(xips_core PUBLIC Qt6::Core Qt6::Sql)
 if(BUILD_TESTING)
     target_compile_definitions(xips_core PUBLIC XIPS_ENABLE_TEST_HOOKS)
 endif()
@@ -27,6 +31,10 @@ add_library(xips_app STATIC
     ${CMAKE_SOURCE_DIR}/assets/xips.qrc
     app/BrowserPanel.cpp
     app/BrowserPanel.h
+    app/ElaFilePicker.cpp
+    app/ElaFilePicker.h
+    app/MainWindow.cpp
+    app/MainWindow.h
     app/CatalogModel.cpp
     app/CatalogModel.h
     app/UiSupport.cpp
@@ -41,7 +49,7 @@ target_link_libraries(xips_app
         Ela::WidgetTools
 )
 
-add_executable(xips app/main.cpp app/MainWindow.cpp app/MainWindow.h)
+add_executable(xips app/main.cpp)
 target_compile_definitions(xips PRIVATE XIPS_VERSION="${PROJECT_VERSION}")
 target_link_libraries(xips PRIVATE xips_app)
 if(WIN32)

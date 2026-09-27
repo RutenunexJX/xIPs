@@ -46,7 +46,7 @@ class NativeTest final : public QObject
         QVERIFY(QMetaObject::invokeMethod(panel.get(), "setContext", Q_ARG(QString, root),
                                           Q_ARG(QString, QString())));
         const QVariantMap state{
-            {"assetId", asset.asset.id}, {"revision", "1"}, {"query", "counter"}};
+            {"assetId", asset.asset.id}, {"revision", asset.snapshot.id}, {"query", "counter"}};
         QVERIFY(QMetaObject::invokeMethod(panel.get(), "restoreState", Q_ARG(QVariantMap, state)));
         auto *versions = panel->findChild<QComboBox *>("versionCombo");
         QVERIFY(versions);

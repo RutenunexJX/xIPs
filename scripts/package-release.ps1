@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [string]$QtDirectory = 'E:/QT6/6.10.2/mingw_64',
     [string]$CompilerDirectory = 'E:/QT6/Tools/mingw1310_64',
-    [switch]$Formal
+    [switch]$Formal,
+    [switch]$Standalone
 )
 $ErrorActionPreference = 'Stop'
 $sourceRoot = Split-Path -Parent $PSScriptRoot
@@ -32,13 +33,21 @@ if ($Formal) {
     if ($LASTEXITCODE -ne 0 -or $tagRevision -ne $revision) { throw 'Release tag must identify HEAD.' }
 }
 $suiteEntry = $cache | Where-Object { $_.StartsWith('SuiteApp_DIR:') }
-if ($cache -notcontains 'XIPS_ENABLE_SUITEAPP:BOOL=ON' -or -not $suiteEntry) {
-    throw 'The AppSuite package requires the SuiteApp SDK.'
+$suiteSdkVersion = $null
+if ($Standalone) {
+    if ($cache -notcontains 'XIPS_ENABLE_SUITEAPP:BOOL=OFF') {
+        throw 'Standalone packaging requires XIPS_ENABLE_SUITEAPP=OFF.'
+    }
+} else {
+    if ($cache -notcontains 'XIPS_ENABLE_SUITEAPP:BOOL=ON' -or -not $suiteEntry) {
+        throw 'The AppSuite package requires the SuiteApp SDK, or select -Standalone explicitly.'
+    }
+    $suiteVersionFile = Join-Path (($suiteEntry -split '=',2)[1]) 'SuiteAppConfigVersion.cmake'
+    $suiteVersionMatch = [regex]::Match((Get-Content -Raw -LiteralPath $suiteVersionFile),
+        'set\(PACKAGE_VERSION "([^"]+)"\)')
+    if (-not $suiteVersionMatch.Success) { throw 'Cannot read the SuiteApp SDK version.' }
+    $suiteSdkVersion = $suiteVersionMatch.Groups[1].Value
 }
-$suiteVersionFile = Join-Path (($suiteEntry -split '=',2)[1]) 'SuiteAppConfigVersion.cmake'
-$suiteVersionMatch = [regex]::Match((Get-Content -Raw -LiteralPath $suiteVersionFile),
-    'set\(PACKAGE_VERSION "([^"]+)"\)')
-if (-not $suiteVersionMatch.Success) { throw 'Cannot read the SuiteApp SDK version.' }
 $binaryRoot = Join-Path $buildRoot 'bin'
 $binaries = @('xips.exe', 'xips-cli.exe', 'xips-browser.dll', 'ElaWidgetTools.dll')
 foreach ($name in $binaries) {
@@ -88,7 +97,8 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs') -Destination (Join-Path $o
     channel = $(if ($Formal) { 'formal' } else { 'preview' })
     releaseTag = $(if ($Formal) { $tag } else { $null })
     backend = 'ela'; qt = '6.10.2'; compiler = 'MinGW 13.1'; nativeSurfaceAbi = 1
-    suiteProtocol = 'suite-app/v1'; suiteSdk = $suiteVersionMatch.Groups[1].Value
+    suiteProtocol = $(if ($Standalone) { $null } else { 'suite-app/v1' }); suiteSdk = $suiteSdkVersion
+    distribution = $(if ($Standalone) { 'standalone' } else { 'appsuite' }); appSuiteEnabled = -not [bool]$Standalone
     elaBaseline = $capabilities.elaBaseline; elaSourceSha256 = $capabilities.elaSourceSha256
     elaPatchLevel = $capabilities.elaPatchLevel
     elaDllSha256 = (Get-FileHash -LiteralPath (Join-Path $outputRoot 'ElaWidgetTools.dll') -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -2,25 +2,41 @@
 
 ## CLI
 
-The CLI retains a schemaVersion 1 JSON **envelope**; this is separate from the schemaVersion 2 asset format.
+The CLI retains a schemaVersion 1 JSON **envelope**; this is separate from the schemaVersion 3 asset format.
 Success is emitted on stdout, and errors on stderr. Exit codes are 0 success, 2 invalid arguments, 3 unavailable/invalid data, and 4 missing asset or revision.
 
 ```powershell
 xips-cli --action list --library E:/Library --query uart
 xips-cli --action resolve --library E:/Library --asset <id>
-xips-cli --action resolve --library E:/Library --asset <id> --asset-version 1 --destination E:/Project/uart.sv
+xips-cli --action resolve --library E:/Library --asset <id> --asset-version <revision-uuid> --destination E:/Project/uart.sv
 ```
 
-For schema 2, resolve defaults to the highest retained revision and verifies its payload.
+For collected assets, resolve defaults to the latest retained revision and verifies its content objects.
+Source items default to `current`; supply a saved revision UUID to resolve immutable history.
+Decimal sequence selectors are accepted only when unambiguous. `resolvedVersion` always returns the exact saved UUID.
 Without --destination it returns metadata, revision ID, digest, and relative file names, with access=metadata-only.
 It never returns the private snapshot directory as an editable source path.
 With --destination it creates a verified new copy and returns the exported path(s).
 A one-file asset needs a final file path; a multi-file asset needs a new directory path.
-The CLI never modifies the library.
+The CLI never modifies the library. Listing refreshes the disposable local SQLite index.
+
+Listing includes only explicitly created/registered definitions and pinned references.
+Registered working sources default to version `current`. Resolve returns
+`discovered: true` and `immutable: false`, with the current file digest; it still
+returns metadata only unless `--destination` is supplied. An explicit exported
+copy of current files reports `sourceImmutable: false`. Saved history of the same
+source reports `immutable: true` for metadata or `sourceImmutable: true` for an export.
+Scanning itself never hashes or copies
+source contents. A `component.xml` package keeps its relative source layout.
+
+List and resolve expose `indexes` and `reference`. List queries support combined
+terms such as `category:Communication tag:serial interface:AXI`. Reference entries
+resolve their pinned UUID in the owning library; listing a project directory also
+loads its `.xips/references` catalog. Adding a reference never materializes source files.
 
 Schema 1 preserves its prior behavior: resolution without --asset-version addresses the working copy.
 Saved legacy versions require explicit materialization before exposing paths.
-New integrations should use schema 2 and exact resolvedVersion/contentHash values.
+New integrations should use schema 3 and exact resolvedVersion/contentHash values.
 
 The GUI accepts --library, --open-asset, --search, and existing xips://asset and xips://search activation requests.
 XIPS_LIBRARY overrides a saved library when no --library or explicit native library path is given.
@@ -59,6 +75,8 @@ An optional host QObject implements:
 
 Export receipts use schema **xips.use/v1**, with assetId, name, category, revision, contentHash, path, workspace, and relative files.
 A callback failure does not remove an already created project copy.
+For current source files, revision is `current` and contentHash identifies the bytes
+actually copied. Selecting saved source history produces its immutable revision UUID.
 
 ## ZeroSlack host
 

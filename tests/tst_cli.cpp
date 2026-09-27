@@ -90,7 +90,44 @@ class CliTest final : public QObject
     void caseInsensitiveResolveRejectsAmbiguity();
     void savedVersionRequiresExplicitMaterializationForPaths();
     void snapshotsResolveAndExportPinnedContent();
+    void existingDirectoryListsAndResolvesCurrentFiles();
 };
+
+void CliTest::existingDirectoryListsAndResolvesCurrentFiles()
+{
+    QTemporaryDir temporary;
+    const auto library = temporary.filePath("library");
+    const auto source = library + "/rtl/uart.sv";
+    QVERIFY(writeFile(source, "module uart; endmodule"));
+    const auto unregistered = runCli({"--action", "list", "--library", library});
+    QCOMPARE(envelope(unregistered.standardOutput).value("data").toObject().value("count").toInt(), 0);
+    CatalogDefinition definition;
+    definition.name = "UART";
+    definition.source = source;
+    QVERIFY(SnapshotLibrary::create(library, definition).ok);
+    const auto listed = runCli({"--action", "list", "--library", library});
+    QCOMPARE(listed.exitCode, 0);
+    const auto data = envelope(listed.standardOutput).value("data").toObject();
+    QCOMPARE(data.value("count").toInt(), 1);
+    const auto asset = data.value("assets").toArray().first().toObject();
+    QCOMPARE(asset.value("version").toString(), QString("current"));
+    const QStringList resolve{"--action", "resolve", "--library", library,
+                              "--asset", asset.value("id").toString()};
+    const auto resolved = runCli(resolve);
+    QCOMPARE(resolved.exitCode, 0);
+    const auto metadata = envelope(resolved.standardOutput).value("data").toObject();
+    QVERIFY(metadata.value("discovered").toBool());
+    QVERIFY(!metadata.value("immutable").toBool(true));
+    QCOMPARE(metadata.value("resolvedVersion").toString(), QString("current"));
+    QCOMPARE(metadata.value("access").toString(), QString("metadata-only"));
+    QVERIFY(!QFileInfo::exists(library + "/rtl/.xips.json"));
+    const auto target = temporary.filePath("copy.sv");
+    const auto exported = runCli(resolve + QStringList{"--destination", target});
+    QCOMPARE(exported.exitCode, 0);
+    QVERIFY(!envelope(exported.standardOutput).value("data").toObject()
+                 .value("sourceImmutable").toBool(true));
+    QCOMPARE(readFile(target), readFile(source));
+}
 
 void CliTest::snapshotsResolveAndExportPinnedContent()
 {
@@ -115,7 +152,7 @@ void CliTest::snapshotsResolveAndExportPinnedContent()
     const auto latest = runCli(resolve);
     QCOMPARE(latest.exitCode, 0);
     const auto data = envelope(latest.standardOutput).value("data").toObject();
-    QCOMPARE(data.value("resolvedVersion").toString(), QString("2"));
+    QCOMPARE(data.value("resolvedVersion").toString(), second.snapshot.id);
     QCOMPARE(data.value("access").toString(), QString("metadata-only"));
     QVERIFY(!data.contains("resolvedPath"));
     QVERIFY(!data.contains("path"));
@@ -126,7 +163,7 @@ void CliTest::snapshotsResolveAndExportPinnedContent()
     QCOMPARE(readFile(target), QByteArray("version one"));
     const auto missing = runCli(resolve + QStringList{"--asset-version", "99"});
     QCOMPARE(missing.exitCode, 4);
-    QVERIFY(writeFile(second.asset.root + "/.xips/revisions/2/uart.sv", "corrupt"));
+    QVERIFY(writeFile(ContentStore(library).objectPath(second.snapshot.objects.value("uart.sv").hash), "corrupt"));
     const auto corruptTarget = temporary.filePath("corrupt.sv");
     const auto rejected = runCli(resolve + QStringList{"--destination", corruptTarget});
     QCOMPARE(rejected.exitCode, 3);

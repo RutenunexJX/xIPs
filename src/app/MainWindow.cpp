@@ -8,10 +8,14 @@ MainWindow::MainWindow(QString libraryRoot, QWidget *parent) : ElaWidget(parent)
 {
     setWindowTitle(QStringLiteral("xIPs"));
     setWindowIcon(applicationIcon());
-    setAppBarHeight(36);
-    resize(900, 640);
+    setAppBarHeight(32);
+    setIsStayTop(false);
+    setWindowButtonFlags(ElaAppBarType::MinimizeButtonHint | ElaAppBarType::MaximizeButtonHint |
+                        ElaAppBarType::CloseButtonHint);
+    resize(720, 420);
     auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(0, 36, 0, 0);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
     m_browser = new BrowserPanel(this);
     layout->addWidget(m_browser);
     m_browser->setContext(libraryRoot, {});

@@ -38,7 +38,7 @@ target_compile_definitions(tst_gui_smoke
         XIPS_EXAMPLE_LIBRARY="${CMAKE_SOURCE_DIR}/examples/library"
 )
 target_link_libraries(tst_gui_smoke PRIVATE xips_app Qt6::Test)
-add_test(NAME gui_smoke COMMAND tst_gui_smoke)
+add_test(NAME gui_smoke COMMAND tst_gui_smoke -o -,txt)
 
 add_executable(tst_user_journey tst_user_journey.cpp)
 set_target_properties(tst_user_journey PROPERTIES FOLDER "tests")

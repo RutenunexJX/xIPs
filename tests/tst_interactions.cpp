@@ -269,10 +269,10 @@ class Interactions final : public QObject
         PoolGate gate;
         panel.revealAsset(last.asset.id);
         QCOMPARE(panel.saveState()["assetId"].toString(), last.asset.id);
-        QCOMPARE(panel.saveState()["revision"].toString(), QString("1"));
+        QCOMPARE(panel.saveState()["revision"].toString(), last.snapshot.id);
         QVERIFY(take->isEnabled());
         QSignalSpy resets(list->model(), &QAbstractItemModel::modelReset);
-        panel.restoreState({{"query", ".sv"}, {"assetId", last.asset.id}, {"revision", "1"}});
+        panel.restoreState({{"query", ".sv"}, {"assetId", last.asset.id}, {"revision", last.snapshot.id}});
         QCOMPARE(resets.size(), 0);
         QCOMPARE(panel.saveState()["assetId"].toString(), last.asset.id);
     }
@@ -377,6 +377,7 @@ class Interactions final : public QObject
             reference.fill(eTheme->getThemeColor(mode, ElaThemeType::WindowBase));
             { QPainter painter(&reference); painter.fillRect(reference.rect(), overlay); }
             const auto expected = reference.pixelColor(0, 0);
+            QCOMPARE(panel.grab().toImage().pixelColor(2, 2), expected);
             for (const auto &name : {"assetList", "fileList"})
             {
                 auto *view = panel.findChild<ElaListView *>(name);

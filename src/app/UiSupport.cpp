@@ -3,6 +3,8 @@
 #include "ElaScrollBar.h"
 #include "ElaText.h"
 #include "ElaToolTip.h"
+#include "ElaPushButton.h"
+#include "ElaTheme.h"
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QHelpEvent>
@@ -15,6 +17,18 @@
 
 namespace xips
 {
+void primaryButton(ElaPushButton *button)
+{
+    using namespace ElaThemeType;
+    button->setLightDefaultColor(eTheme->getThemeColor(Light, PrimaryNormal));
+    button->setLightHoverColor(eTheme->getThemeColor(Light, PrimaryHover));
+    button->setLightPressColor(eTheme->getThemeColor(Light, PrimaryPress));
+    button->setDarkDefaultColor(eTheme->getThemeColor(Dark, PrimaryNormal));
+    button->setDarkHoverColor(eTheme->getThemeColor(Dark, PrimaryHover));
+    button->setDarkPressColor(eTheme->getThemeColor(Dark, PrimaryPress));
+    button->setLightTextColor(Qt::white);
+    button->setDarkTextColor(QColor("#172235"));
+}
 namespace
 {
 class TextUnitScrollBar final : public ElaScrollBar

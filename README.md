@@ -1,39 +1,69 @@
-# xIPs 2.1
+# xIPs
 
 xIPs is a small, local library for reusable FPGA assets: Module, IP, Artifact, or Other.
-It collects files, keeps explicit immutable revisions, and copies a selected revision into a project.
+It manages explicitly created IP/module definitions, working sources, immutable revisions and shared references.
 The interface uses Ela controls and shares ZeroSlack's compact panel layout. All application text is English.
 
 ## Everyday workflow
 
-1. Choose a library folder from **More > Choose library**. No hidden default library is created.
-2. Click **Collect**, select files or a folder, confirm the name and category. Dropping local files or folders is also supported. The first collection creates **rev1**.
-3. Search names, descriptions, tags retained from older libraries, or files. Category buttons narrow the results.
-4. Select a revision and click **Use**. In ZeroSlack, this becomes **Use in project**. Confirm the complete new destination path.
-5. Click **Update** and select the complete current source to create **rev2**, **rev3**, and so on. An optional note describes the change.
+1. Choose the catalog root once. Only explicitly created, registered or referenced entries appear; loose source files never become catalog entries automatically.
+2. Click **New** to create an IP or module. Generate a SystemVerilog source folder, or register an existing file/folder inside the root. Registering a folder associates its files automatically and saves the first revision.
+3. Assign multiple categories, tags, interfaces and purposes to one definition. Browse with **All indexes**, combine type filters with search, or use terms such as `category:Communication tag:serial interface:AXI`. Category paths support parent browsing, e.g. Communication includes Communication/UART.
+4. Click **Save revision** on an original item to save its current content and an optional note. Unchanged content creates no extra revision. Choose **Current files** or a saved revision from the version list.
+5. Click **Use** (or **Use in project** in ZeroSlack) to export the selected content to a new destination. **Collect** also saves external files as a new asset; **Update** saves subsequent revisions of collected assets.
 
-Updating captures a complete snapshot, not an incremental patch. Identical content creates no revision.
-Editing a name, category, or description creates no revision. There are no branches, merges, working copies, dependency resolution, or automatic project updates.
+Registered folders retain their relative file layout, including IP packages with
+`component.xml`. Hidden files/directories, links and generated build directories are
+excluded from registered working sources. Rescan refreshes definitions and their file
+lists without hashing or copying source content. Hashes are calculated when saving,
+resolving or using a version. Vendor Tcl is not executed by the catalog.
 
-**More** contains metadata editing, refresh, deletion, and reported issues.
-Deleting a revision moves it to the Recycle Bin; the last revision can only be removed with the whole asset.
+Created definitions have a globally unique ID and a library-relative source location.
+Moving the whole library preserves history. **Current files** selects working sources;
+saved revisions remain selectable. **More → Edit asset details** maintains the index
+values, and **Open source folder** opens the working directory.
+
+**More → Reference in library / project** adds a reference to a saved revision in another
+catalog or project directory. The reference contains the owner location, asset ID and
+revision ID, with no source or history-object copy. New owner revisions do not advance
+existing references. Referenced definitions are read-only through the receiving catalog;
+their owner must remain available. Use **Use** when an editable materialized copy is needed.
+
+Each saved revision describes a complete file set, while unchanged content is shared
+across revisions and assets. Editing collected asset details creates no revision.
+Project copies never update automatically.
+
+**More** contains folder selection, rescan, saved-asset editing/deletion, and reported issues.
+Removing a new-format revision writes a deletion record; shared content remains available to other revisions.
+The last revision can only be removed with the whole collected asset.
 Deletion never renumbers subsequent revisions. Existing project copies stay unchanged.
 
 ## Files and revisions
 
-Each asset has a stable ID and a small JSON manifest. Payload exists only under its revisions:
+Version metadata and content are synchronized with the library. SQLite is a disposable
+search/version index in the local user's cache directory, outside the selected library.
+Scanning rebuilds it; missing or unavailable caches fall back to the in-memory catalog.
 
 ```text
 Library/
+  rtl/uart.sv                    # original working file
+  .xips/
+    objects/ab/<hash-rest>.obj   # shared, compressed content
+    assets/<source-key>/         # definition and history of registered sources
+      .xips.json
+      .xips/revisions/<uuid>.json
+    references/<asset-id>.json   # references to versions in other libraries
   uart/
-    .xips.json
-    .xips/revisions/
-      1/uart.sv
-      2/uart.sv
+    .xips.json                  # optionally collected asset
+    .xips/revisions/<uuid>.json
 ```
 
-The highest retained revision is the default selection. There is no duplicate mutable "latest" payload.
-Every use verifies the recorded file list and SHA-256 digest before publishing a copy.
+Revision UUIDs identify immutable JSON manifests; rev1/rev2 are display sequence numbers.
+Concurrent saves can share a sequence number and remain distinct. A later save records
+both parents, preserving the supplied current file set without merging source text.
+Content objects use SHA-256 and bounded compressed blocks, including for large artifacts.
+Every use verifies the selected content before publishing a copy. Missing objects during
+cloud synchronization cause an explicit error until the content arrives.
 Source files remain untouched. Existing destination files are never overwritten.
 
 Module and IP collections omit common generated folders, including build and ip_user_files.
@@ -43,22 +73,15 @@ The collection dialog identifies this policy before copying.
 A single-file asset is exported to the specified **file path**. A multi-file asset is exported to the specified **new directory**.
 Only payload is exported; internal manifests and revisions are not copied to the project.
 
-## Existing libraries
-
-Schema 1 assets remain visible and can be used without conversion.
-**Convert legacy asset** imports their healthy saved versions, followed by a distinct working copy, into the linear revision model.
-Original version labels are retained in revision notes. Saved timestamps are preserved.
-The entire original asset is retained in a sibling **.xips-legacy-...** backup directory; its path remains listed in Issues.
-Conversion is explicit, and refuses unhealthy legacy version records.
-
 Unrecognized staging directories, retained deletions, and orphaned revision payloads are reported by path.
-They are preserved for inspection. There is no background cleanup or cloud synchronization service.
-Use Refresh after external or synchronized-folder changes.
+Shared objects are retained after deletion; there is no automatic garbage collection,
+object packing, or built-in cloud synchronization service.
+Use Rescan after external or synchronized-folder changes.
 
 ## ZeroSlack
 
 The standalone app and ZeroSlack load the same **BrowserPanel** through **xips-browser.dll**.
-There is no embedded process, database, or local HTTP service.
+The panel uses the same local SQLite cache and runs without a separate process or HTTP service.
 
 - The host manages docking, floating windows, and panel state.
 - **Collect > Current file** asks ZeroSlack to save the current document before collection.
@@ -89,6 +112,8 @@ exposing private file paths or verifying payloads. File copying remains an expli
 ## Build
 
 Use Qt **6.10.2**, its private Widgets headers, CMake 3.25 or newer, and C++20.
+Qt SQL and its SQLite driver are required for the local index. Deploy `Qt6Sql.dll`
+and `sqldrivers/qsqlite.dll` with the Windows application/native component.
 The Windows embedding build is tested with MinGW **13.1**.
 Ela is vendored from the ZeroSlack fork; its license and bundled font license are included.
 AppSuite integration defaults to enabled when the installed SuiteApp SDK is found.
@@ -107,7 +132,9 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 ## Formal package
 
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
-and the SuiteApp SDK enabled. The release tag **v2.2.1** must identify HEAD.
+and the SuiteApp SDK enabled. For an explicitly standalone release, configure
+**XIPS_ENABLE_SUITEAPP=OFF** and pass **-Standalone** to the packaging script.
+The release tag **v2.3.0** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell

@@ -1,4 +1,5 @@
 #include "CatalogModel.h"
+#include "library/CatalogIndex.h"
 #include <QSize>
 #include <algorithm>
 
@@ -15,43 +16,50 @@ QVariant CatalogModel::data(const QModelIndex &index, int role) const
     const auto &row = m_rows[m_visible[index.row()]];
     switch (role)
     {
-    case Qt::DisplayRole: case Qt::ToolTipRole: return row.label;
+    case Qt::DisplayRole: return row.label;
+    case Qt::ToolTipRole: return row.tooltip;
     case Qt::UserRole: return row.root;
-    case Qt::SizeHintRole: return QSize(200, 54);
+    case Qt::SizeHintRole: return QSize(160, 28);
     default: return {};
     }
 }
-void CatalogModel::setAssets(const QList<CatalogAsset> &assets)
+void CatalogModel::setAssets(const QList<CatalogAsset> &assets, const QString &library)
 {
     QList<Row> rows;
     rows.reserve(assets.size());
     for (const auto &asset : assets)
     {
         QString secondary = SnapshotLibrary::categoryLabel(asset.category);
-        secondary += asset.legacy ? QStringLiteral(" · Legacy")
-            : QStringLiteral(" · rev%1").arg(asset.snapshots.last().id);
+        secondary += !asset.referencePath.isEmpty() ? QStringLiteral(" · Referenced")
+            : asset.discovered ? QStringLiteral(" · Working files")
+            : asset.legacy ? QStringLiteral(" · Legacy")
+            : QStringLiteral(" · %1").arg(SnapshotLibrary::revisionLabel(asset.snapshots.last()));
         if (!asset.description.isEmpty())
             secondary += " · " + asset.description.simplified();
-        QString search = asset.name + ' ' + asset.description + ' ' + asset.tags.join(' ');
-        if (!asset.snapshots.isEmpty())
-            search += ' ' + asset.snapshots.last().files.join(' ');
-        rows.append({asset.id, asset.root, asset.category, asset.name + '\n' + secondary,
+        QString search = CatalogIndex::searchText(asset);
+        rows.append({asset.id, asset.root, asset.category, asset.name, asset.name + '\n' + secondary,
                      search.toCaseFolded()});
     }
     beginResetModel();
     m_rows = std::move(rows);
+    m_assets = assets;
+    m_library = library.isEmpty() ? (assets.isEmpty() ? QString() : assets.first().library) : library;
+    m_generation = CatalogIndex::generation(assets);
     m_visible.clear();
     endResetModel();
 }
 void CatalogModel::filter(const QString &category, const QStringList &terms)
 {
     QList<int> visible;
+    const auto indexed = m_library.isEmpty() ? std::nullopt
+        : CatalogIndex::matchingRoots(m_library, m_generation, category, terms);
     visible.reserve(m_rows.size());
     for (qsizetype i = 0; i < m_rows.size(); ++i)
     {
         const auto &row = m_rows[i];
-        if ((!category.isEmpty() && row.category != category) ||
-            !std::all_of(terms.cbegin(), terms.cend(), [&](const auto &term) { return row.search.contains(term); }))
+        if (indexed ? !indexed->contains(row.root) : ((!category.isEmpty() && row.category != category) ||
+            !CatalogIndex::matches(m_assets[i], terms))
+            )
             continue;
         visible.append(static_cast<int>(i));
     }

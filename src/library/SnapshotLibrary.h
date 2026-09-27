@@ -3,17 +3,25 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QStringList>
+#include "ContentStore.h"
 
 namespace xips
 {
 
 struct Snapshot
 {
+    Snapshot() = default;
+    Snapshot(const QString &id, const QString &note, const QDateTime &created,
+             const QString &hash, const QStringList &files)
+        : id(id), note(note), created(created), hash(hash), files(files) {}
     QString id;
     QString note;
     QDateTime created;
     QString hash;
     QStringList files;
+    QMap<QString, ContentObject> objects;
+    qint64 sequence = 0;
+    QStringList parents;
 };
 
 struct CatalogAsset
@@ -28,6 +36,22 @@ struct CatalogAsset
     bool legacy = false;
     QList<Snapshot> snapshots;
     QJsonObject document;
+    bool discovered = false;
+    bool sourceIsDirectory = false;
+    QString historyRoot;
+    qint64 nextSequence = 1;
+    QMap<QString, QStringList> indexes;
+    QString referencePath;
+    QString pinnedRevision;
+};
+
+struct CatalogDefinition
+{
+    QString name;
+    QString category = "module";
+    QString source;
+    QString description;
+    QMap<QString, QStringList> indexes;
 };
 
 struct CatalogResult
@@ -53,6 +77,12 @@ class SnapshotLibrary
     static CatalogResult scan(const QString &library);
     static QString suggestedCategory(const QStringList &sources);
     static QString categoryLabel(const QString &category);
+    static QString revisionLabel(const Snapshot &snapshot);
+    static SnapshotResult create(const QString &library, const CatalogDefinition &definition);
+    static SnapshotResult setDefinition(const CatalogAsset &asset, const CatalogDefinition &definition);
+    static SnapshotResult addReference(const CatalogAsset &asset, const QString &revision,
+                                       const QString &destinationLibrary);
+    static SnapshotResult saveCurrent(const CatalogAsset &asset, const QString &note = {});
     static SnapshotResult describe(const CatalogAsset &asset);
     static SnapshotResult verifySnapshot(const CatalogAsset &asset, const QString &revision);
     static SnapshotResult collect(const QString &library, const QStringList &sources,

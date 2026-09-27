@@ -48,9 +48,9 @@ void UserJourneyTest::collectChooseAndUsePinnedVersion()
     panel.show();
     panel.setContext(library, workspace);
     auto *take = panel.findChild<ElaPushButton *>("takeButton");
-    auto *collect = panel.findChild<ElaPushButton *>("collectButton");
+    auto *create = panel.findChild<ElaPushButton *>("newAssetButton");
     auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
-    QTRY_VERIFY(collect->isEnabled());
+    QTRY_VERIFY(create->isEnabled());
     QTimer::singleShot(0, &panel,
                        [&]
                        {
@@ -61,6 +61,7 @@ void UserJourneyTest::collectChooseAndUsePinnedVersion()
     panel.collectPaths({source});
     QTRY_COMPARE(versions->count(), 1);
     QTRY_VERIFY(take->isEnabled());
+    const auto firstRevision = versions->currentData().toString();
     QTimer::singleShot(0, &panel,
                        [&]
                        {
@@ -69,7 +70,7 @@ void UserJourneyTest::collectChooseAndUsePinnedVersion()
                            form->findChild<ElaPushButton *>("formAccept")->click();
                        });
     take->click();
-    QTRY_COMPARE(host.receipt.value("revision").toString(), QString("1"));
+    QTRY_COMPARE(host.receipt.value("revision").toString(), firstRevision);
     QCOMPARE(host.receipt.value("workspace").toString(), workspace);
     QFile project(workspace + "/uart.sv");
     QVERIFY(project.open(QIODevice::ReadOnly));
@@ -81,12 +82,12 @@ void UserJourneyTest::collectChooseAndUsePinnedVersion()
     auto catalog = SnapshotLibrary::scan(library);
     QCOMPARE(catalog.assets.size(), 1);
     QVERIFY(SnapshotLibrary::update(catalog.assets.first(), {source}, "verified").ok);
-    QTRY_VERIFY(collect->isEnabled());
+    QTRY_VERIFY(create->isEnabled());
     panel.refresh();
     QTRY_COMPARE(versions->count(), 2);
     QVERIFY(project.open(QIODevice::ReadOnly));
     QCOMPARE(project.readAll(), QByteArray("first version"));
-    QCOMPARE(host.receipt.value("revision").toString(), QString("1"));
+    QCOMPARE(host.receipt.value("revision").toString(), firstRevision);
 }
 QTEST_MAIN(UserJourneyTest)
 #include "tst_user_journey.moc"

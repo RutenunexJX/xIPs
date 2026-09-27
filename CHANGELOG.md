@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.3.0 — 2026-09-27
+
+- Use one compact Ela toolbar, 28px catalog rows and version actions beside the content; default to a 720x420 window.
+- Remove the duplicate title-bar margin and the default always-on-top state.
+- Replace native file/folder dialogs with an Ela picker supporting path entry, drive navigation and multiple source files.
+- Simplify the catalog toolbar and New form; show type/index filters and optional index fields on demand.
+- Use consistent neutral light/dark palettes, readable secondary text and a single blue accent; fix mixed theme backgrounds.
+- Add New IP/module with a generated HDL skeleton or in-place registration of existing sources.
+- List explicitly registered definitions and references only; loose files are no longer catalog entries.
+- Support multiple category paths, tags, interfaces and purposes per IP, with combined field search and index browsing.
+- Add version-pinned references across catalogs and project directories without copying source/history content.
+- Save new revisions as independent immutable JSON manifests with unique IDs and parent references.
+- Share compressed SHA-256 content objects across files, versions and assets; unchanged saves are skipped.
+- Add explicit Save revision for original source items, preserving their directory layout and source files.
+- Keep a rebuildable SQLite catalog/search index in the local user cache, outside the synchronized library.
+- Verify streamed history exports, preserve concurrent revisions and retain shared objects on deletion.
+- Choose the library folder on first use; keep refresh and source-folder actions in the More menu.
+  Distinguish working files from saved revisions.
+- Keep scanning free of source content hashing and writes inside the selected library. Preserve saved assets,
+  skip generated/internal directories, and protect original files from library mutations.
+- Support explicit verified exports of current source contents without claiming
+  they are immutable revisions.
+
 ## 2.2.1 — 2026-09-24
 
 - Include Ela popup padding in combo height so the first and last revision rows

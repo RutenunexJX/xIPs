@@ -4,6 +4,7 @@
 #include "library/AssetScanner.h"
 #include "library/FileSystemUtil.h"
 #include "library/SnapshotLibrary.h"
+#include "library/CatalogIndex.h"
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -294,9 +295,18 @@ int main(int argc, char *argv[])
                     break;
                 }
             }
+            if (modern.contains(asset.manifest.id.toCaseFolded()))
+                matches = xips::CatalogIndex::matches(modern.value(asset.manifest.id.toCaseFolded()), terms);
             if (matches)
             {
-                assets.append(assetJson(asset));
+                auto item = assetJson(asset);
+                if (modern.contains(asset.manifest.id.toCaseFolded()))
+                {
+                    const auto entry = modern.value(asset.manifest.id.toCaseFolded());
+                    item.insert("indexes", entry.document.value("indexes"));
+                    item.insert("reference", !entry.referencePath.isEmpty());
+                }
+                assets.append(item);
             }
         }
         QJsonObject data{
@@ -338,7 +348,10 @@ int main(int argc, char *argv[])
                         verified.error.startsWith("Revision not found:") ? 4 : 3, index.problems);
         QJsonObject data = assetMetadataJson(found);
         data.insert("category", entry.category);
-        data.insert("resolvedVersion", revision);
+        data.insert("discovered", entry.discovered);
+        data.insert("indexes", entry.document.value("indexes"));
+        data.insert("reference", !entry.referencePath.isEmpty());
+        data.insert("resolvedVersion", verified.snapshot.id);
         data.insert("resolvedContentHash", verified.snapshot.hash);
         data.insert("resolvedStrictContentHash", verified.snapshot.hash);
         data.insert("resolvedRelativeFiles", xips::json::toArray(verified.snapshot.files));
@@ -348,7 +361,7 @@ int main(int argc, char *argv[])
         if (destination.isEmpty())
         {
             data.insert("access", "metadata-only");
-            data.insert("immutable", true);
+            data.insert("immutable", verified.snapshot.id != "current");
             data.insert("editable", false);
             data.insert("materialized", false);
         }
@@ -360,7 +373,12 @@ int main(int argc, char *argv[])
                 return fail(action, exported.error, 3, index.problems);
             data.insert("access", "materialized-copy");
             data.insert("immutable", false);
-            data.insert("sourceImmutable", true);
+            data.insert("sourceImmutable", exported.snapshot.id != "current");
+            data.insert("resolvedContentHash", exported.snapshot.hash);
+            data.insert("resolvedStrictContentHash", exported.snapshot.hash);
+            data.insert("resolvedRelativeFiles", xips::json::toArray(exported.snapshot.files));
+            data.insert("files", xips::json::toArray(exported.snapshot.files));
+            data.insert("fileCount", exported.snapshot.files.size());
             data.insert("editable", true);
             data.insert("materialized", true);
             data.insert("materializedPath", exported.exportedPath);
