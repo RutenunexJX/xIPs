@@ -52,6 +52,7 @@ class SnapshotTest : public QObject
     void localIndexCanBeRebuilt();
     void catalogDefinitionsSupportMultipleIndexes();
     void referencesPinOneDefinitionAcrossLibrariesAndProjects();
+    void groupsPersistWithoutChangingSourcesOrHistory();
 };
 void SnapshotTest::linearVersionsAndPinnedCopies()
 {
@@ -531,6 +532,67 @@ void SnapshotTest::referencesPinOneDefinitionAcrossLibrariesAndProjects()
     const auto record = QJsonDocument::fromJson(get(projectRef.exportedPath)).object();
     QVERIFY(!QDir::isAbsolutePath(record.value("definition").toString()));
     QCOMPARE(record.value("revision").toString(), created.snapshot.id);
+}
+void SnapshotTest::groupsPersistWithoutChangingSourcesOrHistory()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    QVERIFY(CatalogGroups::scan(library).groups.isEmpty());
+    QVERIFY(!QFileInfo::exists(library + "/.xips"));
+    const auto first = CatalogGroups::create(library, "Bus");
+    QVERIFY2(first.ok, qPrintable(first.error));
+    QVERIFY(!CatalogGroups::create(library, "bus").ok);
+    QVERIFY(!CatalogGroups::create(library, "   ").ok);
+    const auto second = CatalogGroups::create(library, "Empty");
+    QVERIFY(second.ok);
+    QCOMPARE(SnapshotLibrary::scan(library).groups.size(), 2);
+    CatalogDefinition definition;
+    definition.name = "axi_bridge";
+    const auto asset = SnapshotLibrary::create(library, definition);
+    QVERIFY(asset.ok);
+    const auto source = library + "/axi_bridge/rtl/axi_bridge.sv";
+    const auto original = get(source);
+    const auto metadata = get(asset.asset.historyRoot + "/.xips.json");
+    const int objects = objectCount(library);
+    QVERIFY(CatalogGroups::setMember(library, first.group.id, asset.asset.id, true).ok);
+    QVERIFY(CatalogGroups::setMember(library, first.group.id, asset.asset.id.toUpper(), true).ok);
+    QVERIFY(CatalogGroups::setMember(library, second.group.id, asset.asset.id, true).ok);
+    const auto renamed = CatalogGroups::rename(library, first.group.id, "AXI");
+    QVERIFY(renamed.ok);
+    QCOMPARE(renamed.group.id, first.group.id);
+    QCOMPARE(renamed.group.members.size(), 1);
+    QVERIFY(renamed.group.members.contains(asset.asset.id, Qt::CaseInsensitive));
+    QVERIFY(!CatalogGroups::rename(library, first.group.id, "Empty").ok);
+    const auto groupFile = library + "/.xips/groups/" + first.group.id + ".json";
+    const auto record = get(groupFile);
+    QLockFile lock(library + "/.xips/groups/.groups.lock");
+    QVERIFY(lock.tryLock());
+    QVERIFY(!CatalogGroups::rename(library, first.group.id, "Locked").ok);
+    QCOMPARE(get(groupFile), record);
+    lock.unlock();
+    QVERIFY(!CatalogGroups::erase(library, "../../axi_bridge").ok);
+    put(groupFile, "{broken");
+    QVERIFY(!CatalogGroups::rename(library, first.group.id, "Broken").ok);
+    QCOMPARE(get(groupFile), QByteArray("{broken"));
+    const auto partial = SnapshotLibrary::scan(library);
+    QCOMPARE(partial.groups.size(), 1);
+    QVERIFY(!partial.problems.isEmpty());
+    QCOMPARE(partial.assets.size(), 1);
+    put(groupFile, record);
+    QVERIFY(CatalogGroups::erase(library, first.group.id).ok);
+    auto groups = CatalogGroups::scan(library).groups;
+    QCOMPARE(groups.size(), 1);
+    QCOMPARE(groups.first().members, QStringList{asset.asset.id});
+    QVERIFY(CatalogGroups::setMember(library, second.group.id, asset.asset.id, false).ok);
+    groups = CatalogGroups::scan(library).groups;
+    QCOMPARE(groups.size(), 1);
+    QVERIFY(groups.first().members.isEmpty());
+    QCOMPARE(SnapshotLibrary::scan(library).assets.size(), 1);
+    QCOMPARE(get(source), original);
+    QCOMPARE(get(asset.asset.historyRoot + "/.xips.json"), metadata);
+    QCOMPARE(objectCount(library), objects);
+    QVERIFY(SnapshotLibrary::verifySnapshot(asset.asset, asset.snapshot.id).ok);
 }
 QTEST_GUILESS_MAIN(SnapshotTest)
 #include "tst_snapshots.moc"

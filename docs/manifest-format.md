@@ -91,6 +91,25 @@ when their sequence numbers match. Numeric selectors reject ambiguity; project
 receipts always pin the UUID. A later save records all known heads as parents and
 captures the supplied source content; it does not merge source text.
 
+## Catalog groups
+
+The left catalog tree stores each group in `.xips/groups/<group-uuid>.json`:
+
+```json
+{
+  "schema": "xips.group/v1",
+  "id": "<group-uuid>",
+  "name": "Bus",
+  "members": ["<asset-id>"]
+}
+```
+
+Membership refers to stable asset IDs. An IP can belong to multiple groups; empty
+groups persist. Ungrouped IPs appear at the root. Group edits never move source
+files or change revision history. Deleting a group removes only that group file.
+Group updates use atomic file replacement and a cooperative local lock; refresh
+loads synchronized changes from other machines.
+
 ## Shared content objects
 
 Objects live at `.xips/objects/<first-two-hash-digits>/<remaining-digits>.obj`.

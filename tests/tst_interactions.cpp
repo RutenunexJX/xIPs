@@ -3,6 +3,7 @@
 #include "ElaComboBox.h"
 #include "ElaLineEdit.h"
 #include "ElaListView.h"
+#include "ElaTreeView.h"
 #include "ElaMenu.h"
 #include "ElaProgressRing.h"
 #include "ElaPushButton.h"
@@ -263,7 +264,7 @@ class Interactions final : public QObject
         BrowserPanel panel;
         panel.setContext(root, {});
         QTRY_VERIFY(!panel.isCatalogBusy());
-        auto *list = panel.findChild<ElaListView *>("assetList");
+        auto *list = panel.findChild<ElaTreeView *>("assetList");
         auto *take = panel.findChild<ElaPushButton *>("takeButton");
         QCOMPARE(list->model()->rowCount(), 2);
         PoolGate gate;
@@ -313,7 +314,7 @@ class Interactions final : public QObject
         BrowserPanel panel;
         panel.setContext(QString::fromUtf8(XIPS_EXAMPLE_LIBRARY), {});
         QTRY_VERIFY(!panel.isCatalogBusy());
-        auto *list = panel.findChild<ElaListView *>("assetList");
+        auto *list = panel.findChild<ElaTreeView *>("assetList");
         auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
         QVERIFY(list->model()->rowCount() >= 2);
         QTRY_VERIFY(versions->count() > 0);
@@ -380,7 +381,7 @@ class Interactions final : public QObject
             QCOMPARE(panel.grab().toImage().pixelColor(2, 2), expected);
             for (const auto &name : {"assetList", "fileList"})
             {
-                auto *view = panel.findChild<ElaListView *>(name);
+                auto *view = panel.findChild<QAbstractItemView *>(name);
                 const auto pixels = view->viewport()->grab().toImage();
                 const auto actual = pixels.pixelColor(pixels.width() / 2, pixels.height() / 2);
                 QVERIFY(qAbs(actual.red() - expected.red()) <= 1);

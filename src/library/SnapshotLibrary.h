@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QStringList>
 #include "ContentStore.h"
+#include "CatalogGroups.h"
 
 namespace xips
 {
@@ -58,6 +59,7 @@ struct CatalogResult
 {
     QList<CatalogAsset> assets;
     QStringList problems;
+    QList<CatalogGroup> groups;
 };
 
 struct SnapshotResult

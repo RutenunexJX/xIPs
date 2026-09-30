@@ -811,6 +811,9 @@ CatalogResult SnapshotLibrary::scan(const QString &library)
             result.assets.end());
         std::sort(result.assets.begin(), result.assets.end(), [](const auto &a, const auto &b)
                   { return a.name.localeAwareCompare(b.name) < 0; });
+        const auto groups = CatalogGroups::scan(library);
+        result.groups = groups.groups;
+        result.problems.append(groups.problems);
     }
     catch (const Failure &failure)
     {

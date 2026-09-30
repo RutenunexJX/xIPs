@@ -16,6 +16,8 @@ add_library(xips_core STATIC
     library/ContentStore.h
     library/CatalogIndex.cpp
     library/CatalogIndex.h
+    library/CatalogGroups.cpp
+    library/CatalogGroups.h
     manifest/ManifestService.cpp
     manifest/ManifestService.h
 )

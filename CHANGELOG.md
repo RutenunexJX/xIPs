@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.4.0 — 2026-09-30
+
+- Organize the left Ela tree with persistent groups: create, rename, delete, and add/remove IP memberships without moving source files; one IP can appear in multiple groups.
+
 ## 2.3.0 — 2026-09-27
 
 - Use one compact Ela toolbar, 28px catalog rows and version actions beside the content; default to a 720x420 window.

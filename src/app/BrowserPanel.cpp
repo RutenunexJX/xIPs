@@ -7,6 +7,7 @@
 #include "ElaContentDialog.h"
 #include "ElaLineEdit.h"
 #include "ElaListView.h"
+#include "ElaTreeView.h"
 #include "ElaMenu.h"
 #include "ElaPlainTextEdit.h"
 #include "ElaProgressRing.h"
@@ -25,6 +26,7 @@
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QHideEvent>
 #include <QMimeData>
 #include <QResizeEvent>
@@ -406,19 +408,40 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_splitter->setObjectName("assetSplitter");
     m_splitter->setChildrenCollapsible(false);
     m_splitter->setHandleWidth(1);
-    m_list = new ElaListView(m_splitter);
+    auto *catalog = new QWidget(m_splitter);
+    auto *catalogLayout = new QVBoxLayout(catalog);
+    catalogLayout->setContentsMargins(0, 0, 0, 0);
+    catalogLayout->setSpacing(2);
+    auto *groupHeader = new QHBoxLayout;
+    groupHeader->addWidget(new ElaText(QStringLiteral("Groups"), 12, catalog));
+    groupHeader->addStretch();
+    m_newGroup = new ElaToolButton(catalog);
+    m_newGroup->setObjectName("newGroupButton");
+    m_newGroup->setText(QStringLiteral("+"));
+    m_newGroup->setAccessibleName(QStringLiteral("New group"));
+    m_newGroup->setToolTip(QStringLiteral("New group"));
+    m_newGroup->setFixedSize(26, 24);
+    enableToolTip(m_newGroup);
+    groupHeader->addWidget(m_newGroup);
+    catalogLayout->addLayout(groupHeader);
+    m_list = new ElaTreeView(catalog);
     m_list->setObjectName("assetList");
     m_list->setItemHeight(28);
     m_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_list->setUniformItemSizes(true);
-    m_list->setIsTransparent(true);
+    m_list->setUniformRowHeights(true);
+    m_list->setHeaderHidden(true);
+    m_list->setIndentation(16);
+    m_list->setNativeItemContent(true);
+    m_list->header()->setSectionResizeMode(QHeaderView::Stretch);
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     m_list->setFrameShape(QFrame::NoFrame);
     m_list->setStyleSheet({});
     enableSmoothScrolling(m_list);
     enableToolTip(m_list);
     m_model = new CatalogModel(this);
     m_list->setModel(m_model);
+    catalogLayout->addWidget(m_list, 1);
     m_details = new QWidget(m_splitter);
     m_details->setObjectName("assetDetails");
     auto *details = new QVBoxLayout(m_details);
@@ -516,6 +539,15 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
             &BrowserPanel::selectCurrent);
     connect(m_versions, &QComboBox::currentIndexChanged, this, &BrowserPanel::selectVersion);
     connect(m_new, &QPushButton::clicked, this, &BrowserPanel::createAsset);
+    connect(m_newGroup, &QToolButton::clicked, this, &BrowserPanel::createGroup);
+    connect(m_list, &QWidget::customContextMenuRequested, this, &BrowserPanel::groupMenu);
+    connect(m_list, &QTreeView::collapsed, this, [this](const QModelIndex &index)
+    {
+        m_collapsedGroups.insert(m_model->groupId(index));
+        if (m_list->currentIndex().parent() == index) m_list->setCurrentIndex(index);
+    });
+    connect(m_list, &QTreeView::expanded, this, [this](const QModelIndex &index)
+    { m_collapsedGroups.remove(m_model->groupId(index)); });
     connect(m_filterToggle, &QToolButton::toggled, this, [this](bool expanded)
     {
         m_filters->setVisible(expanded);
@@ -577,7 +609,7 @@ void BrowserPanel::applyTheme()
     setStyleSheet(QStringLiteral("QWidget#xipsBrowser, QWidget#assetDetails { background: %1; } "
                                   "QSplitter#assetSplitter::handle { background: %2; }")
                       .arg(background.name(), border.name()));
-    for (auto *view : {m_list, m_files})
+    for (auto *view : {static_cast<QAbstractItemView *>(m_list), static_cast<QAbstractItemView *>(m_files)})
     {
         view->setPalette(p);
         view->viewport()->setPalette(p);
@@ -671,6 +703,8 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
     if (path == m_library && !m_assets.isEmpty())
         return;
     m_library = path;
+    m_activeGroup.clear();
+    m_collapsedGroups.clear();
     m_folder->setVisible(m_library.isEmpty());
     m_assets.clear();
     m_model->setAssets({});
@@ -713,7 +747,7 @@ void BrowserPanel::refresh()
                 const auto result = watcher->result();
                 watcher->deleteLater();
                 m_assets = result.assets;
-                m_model->setAssets(m_assets, m_library);
+                m_model->setAssets(m_assets, m_library, result.groups);
                 refreshIndexes();
                 m_problems = result.problems;
                 if (m_pendingId.isEmpty())
@@ -748,12 +782,25 @@ void BrowserPanel::filter()
     auto terms = m_search->text().trimmed().toCaseFolded().split(' ', Qt::SkipEmptyParts);
     if (!m_indexTerm.isEmpty()) terms.append(m_indexTerm);
     const QSignalBlocker selectionSignals(m_list->selectionModel());
+    const QSignalBlocker treeSignals(m_list);
     m_model->filter(m_category, terms);
-    const int selectedRow = m_model->rowForId(selectedId);
-    m_pendingId.clear();
-    if (selectedRow >= 0)
+    auto selected = m_model->indexForId(selectedId, m_activeGroup);
+    if (selected.parent().isValid())
     {
-        m_list->setCurrentIndex(m_model->index(selectedRow, 0));
+        const auto group = m_model->groupId(selected);
+        if (!m_pendingId.isEmpty()) m_collapsedGroups.remove(group);
+        else if (m_collapsedGroups.contains(group)) selected = selected.parent();
+    }
+    for (int row = 0; row < m_model->rowCount(); ++row)
+    {
+        const auto root = m_model->index(row, 0);
+        if (m_model->assetIndex(root) < 0)
+            m_list->setExpanded(root, !m_collapsedGroups.contains(m_model->groupId(root)));
+    }
+    m_pendingId.clear();
+    if (selected.isValid())
+    {
+        m_list->setCurrentIndex(selected);
         selectCurrent();
     }
     else
@@ -782,7 +829,32 @@ void BrowserPanel::filter()
 }
 void BrowserPanel::selectCurrent()
 {
-    const int index = m_model->assetIndex(m_list->currentIndex().row());
+    const auto current = m_list->currentIndex();
+    m_activeGroup = m_model->groupId(current);
+    const int index = m_model->assetIndex(current);
+    if (index < 0 && !m_activeGroup.isEmpty())
+    {
+        ++m_generation;
+        m_selected = {};
+        m_snapshot = {};
+        m_pendingDetail.reset();
+        m_loadingDetails = false;
+        for (const auto &group : m_model->groups())
+            if (group.id == m_activeGroup) m_name->setText(group.name);
+        const int count = m_model->rowCount(current);
+        m_summary->setText(QStringLiteral("Group · %1 IPs").arg(count));
+        m_description->setText(QStringLiteral("Use New to create an IP here, or right-click an IP to add it."));
+        m_description->setToolTip(m_description->text());
+        m_description->setVisible(count == 0);
+        const QSignalBlocker versions(m_versions);
+        m_versions->clear();
+        m_versions->hide();
+        m_take->hide();
+        m_update->hide();
+        m_fileModel->setStringList({});
+        setBusy(false);
+        return;
+    }
     if (index < 0 || index >= m_assets.size())
         return;
     if (m_selected.root == m_assets[index].root && !m_snapshot.id.isEmpty())
@@ -914,6 +986,7 @@ void BrowserPanel::setBusy(bool value, const QString &message)
 {
     m_busy = value;
     m_new->setEnabled(!value);
+    m_newGroup->setEnabled(!value && !m_library.isEmpty());
     m_indexes->setEnabled(!value);
     if (value)
     {
@@ -1076,6 +1149,124 @@ void BrowserPanel::refreshIndexes()
     m_indexes->setCurrentIndex(index < 0 ? 0 : index);
     m_indexTerm = m_indexes->currentData().toString();
 }
+void BrowserPanel::runGroup(std::function<GroupResult()> work, const QString &selectedAsset)
+{
+    if (m_busy) return;
+    ++m_generation;
+    m_pendingDetail.reset();
+    m_loadingDetails = false;
+    setBusy(true, QStringLiteral("Saving group…"));
+    auto *watcher = new QFutureWatcher<GroupResult>(this);
+    connect(watcher, &QFutureWatcher<GroupResult>::finished, this, [this, watcher, selectedAsset]
+    {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+        setBusy(false);
+        if (!result.ok) { notice(result.error, true); applyPendingContext(); return; }
+        if (applyPendingContext()) return;
+        auto groups = m_model->groups();
+        groups.erase(std::remove_if(groups.begin(), groups.end(), [&](const auto &group)
+            { return group.id == result.group.id; }), groups.end());
+        if (!result.removed) groups.append(result.group);
+        std::sort(groups.begin(), groups.end(), [](const auto &a, const auto &b)
+        { return a.name.compare(b.name, Qt::CaseInsensitive) < 0; });
+        m_model->setAssets(m_assets, m_library, groups);
+        m_selected = {};
+        m_snapshot = {};
+        m_activeGroup = result.removed ? QString() : result.group.id;
+        m_pendingId = selectedAsset;
+        if (result.removed) m_collapsedGroups.remove(result.group.id);
+        else m_collapsedGroups.remove(m_activeGroup);
+        filter();
+        notice(result.removed ? QStringLiteral("Group removed. IPs and source files are unchanged.")
+                              : QStringLiteral("Group saved: %1").arg(result.group.name));
+    });
+    watcher->setFuture(QtConcurrent::run(std::move(work)));
+}
+void BrowserPanel::createGroup()
+{
+    if (m_busy || m_library.isEmpty()) return;
+    Form form(this, QStringLiteral("New group"), QStringLiteral("Create"));
+    auto *name = new EnglishLineEdit(&form);
+    name->setObjectName("groupName");
+    name->setPlaceholderText(QStringLiteral("Group name"));
+    name->setMaxLength(128);
+    form.body->addWidget(name);
+    form.acceptButton->setEnabled(false);
+    connect(name, &QLineEdit::textChanged, &form, [&] { form.acceptButton->setEnabled(!name->text().trimmed().isEmpty()); });
+    if (form.exec() != QDialog::Accepted) return;
+    const auto library = m_library, title = name->text();
+    runGroup([library, title] { return CatalogGroups::create(library, title); });
+}
+void BrowserPanel::groupMenu(const QPoint &position)
+{
+    if (m_busy) return;
+    const auto index = m_list->indexAt(position);
+    if (index.isValid()) m_list->setCurrentIndex(index);
+    const auto groupId = m_model->groupId(index);
+    const int assetIndex = m_model->assetIndex(index);
+    const auto assetId = assetIndex >= 0 ? m_assets[assetIndex].id : QString();
+    CatalogGroup group;
+    for (const auto &candidate : m_model->groups()) if (candidate.id == groupId) group = candidate;
+    ElaMenu menu;
+    menu.setObjectName("groupMenu");
+    auto *create = menu.addAction(QStringLiteral("New group…"));
+    create->setObjectName("createGroupAction");
+    create->setEnabled(!m_library.isEmpty());
+    QAction *rename = nullptr, *erase = nullptr, *remove = nullptr;
+    ElaMenu *add = nullptr;
+    if (!assetId.isEmpty())
+    {
+        add = new ElaMenu(&menu);
+        add->setTitle(QStringLiteral("Add to group"));
+        add->setObjectName("addToGroupMenu");
+        menu.addMenu(add);
+        for (const auto &candidate : m_model->groups())
+            if (!candidate.members.contains(assetId, Qt::CaseInsensitive))
+            {
+                auto *action = add->addAction(candidate.name);
+                action->setObjectName("addToGroup_" + candidate.id);
+                action->setData(candidate.id);
+            }
+        add->setEnabled(!add->actions().isEmpty());
+        if (!groupId.isEmpty())
+        {
+            remove = menu.addAction(QStringLiteral("Remove from this group"));
+            remove->setObjectName("removeFromGroupAction");
+        }
+    }
+    else if (!groupId.isEmpty())
+    {
+        rename = menu.addAction(QStringLiteral("Rename group…"));
+        rename->setObjectName("renameGroupAction");
+        erase = menu.addAction(QStringLiteral("Delete group"));
+        erase->setObjectName("deleteGroupAction");
+    }
+    auto *chosen = executeMenu(menu, this, m_list->viewport()->mapToGlobal(position));
+    const auto library = m_library;
+    if (chosen == create) createGroup();
+    else if (chosen && add && add->actions().contains(chosen))
+    {
+        const auto target = chosen->data().toString();
+        runGroup([library, target, assetId] { return CatalogGroups::setMember(library, target, assetId, true); }, assetId);
+    }
+    else if (chosen && chosen == remove)
+        runGroup([library, groupId, assetId] { return CatalogGroups::setMember(library, groupId, assetId, false); }, assetId);
+    else if (chosen && chosen == erase)
+        runGroup([library, groupId] { return CatalogGroups::erase(library, groupId); });
+    else if (chosen && chosen == rename)
+    {
+        Form form(this, QStringLiteral("Rename group"), QStringLiteral("Save"));
+        auto *name = new EnglishLineEdit(&form);
+        name->setObjectName("groupName");
+        name->setMaxLength(128);
+        name->setText(group.name);
+        form.body->addWidget(name);
+        if (form.exec() != QDialog::Accepted) return;
+        const auto title = name->text();
+        runGroup([library, groupId, title] { return CatalogGroups::rename(library, groupId, title); });
+    }
+}
 void BrowserPanel::createAsset()
 {
     if (m_busy) return;
@@ -1130,8 +1321,22 @@ void BrowserPanel::createAsset()
     definition.source = mode->currentData().toString() == "new" ? QString() : source->text().trimmed();
     definition.indexes = readIndexes(editors);
     const auto library = m_library;
-    run(QStringLiteral("Creating catalog entry…"), [library, definition]
-        { return SnapshotLibrary::create(library, definition); });
+    const auto group = m_activeGroup;
+    run(QStringLiteral("Creating catalog entry…"), [library, definition, group]
+    {
+        auto result = SnapshotLibrary::create(library, definition);
+        if (result.ok && !group.isEmpty())
+        {
+            const auto membership = CatalogGroups::setMember(library, group, result.asset.id, true);
+            if (!membership.ok)
+            {
+                result.ok = false;
+                result.error = QStringLiteral("IP created, but could not add it to the group: %1").arg(membership.error);
+                result.retainedPath = result.asset.root;
+            }
+        }
+        return result;
+    });
 }
 void BrowserPanel::referenceAsset()
 {
@@ -1521,6 +1726,8 @@ QVariantMap BrowserPanel::saveState() const
             {"index", m_indexTerm},
             {"filtersExpanded", m_filterToggle->isChecked()},
             {"assetId", m_selected.id},
+            {"groupId", m_activeGroup},
+            {"collapsedGroups", QStringList(m_collapsedGroups.values())},
             {"revision", m_snapshot.id},
             {"horizontalRatio", m_splitter->orientation() == Qt::Horizontal ? splitRatio() : m_horizontalRatio},
             {"verticalRatio", m_splitter->orientation() == Qt::Vertical ? splitRatio() : m_verticalRatio}};
@@ -1544,6 +1751,9 @@ void BrowserPanel::restoreState(const QVariantMap &state)
     m_filterToggle->setChecked(state.value("filtersExpanded",
         !m_category.isEmpty() || !m_indexTerm.isEmpty()).toBool());
     m_pendingId = state.value("assetId").toString();
+    m_activeGroup = state.value("groupId").toString();
+    const auto collapsed = state.value("collapsedGroups").toStringList();
+    m_collapsedGroups = QSet<QString>(collapsed.cbegin(), collapsed.cend());
     m_pendingRevision = state.value("revision").toString();
     if (!m_busy)
         filter();

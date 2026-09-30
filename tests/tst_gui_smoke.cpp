@@ -1,14 +1,18 @@
 #include "ElaComboBox.h"
 #include "ElaLineEdit.h"
 #include "ElaListView.h"
+#include "ElaTreeView.h"
+#include "ElaMenu.h"
 #include "ElaPushButton.h"
 #include "ElaTheme.h"
 #include "ElaText.h"
 #include "ElaToolBar.h"
 #include "app/BrowserPanel.h"
+#include "app/CatalogModel.h"
 #include "app/ElaFilePicker.h"
 #include "app/MainWindow.h"
 #include <QContextMenuEvent>
+#include <QAbstractItemModelTester>
 #include <QDir>
 #include <QFile>
 #include <QFileSystemModel>
@@ -37,6 +41,7 @@ class GuiSmokeTest : public QObject
     void newIpSupportsFacetBrowsingAndProjectReferences();
     void compactWindowKeepsActionsBesideContent();
     void elaFilePickerNavigatesAndSelects();
+    void groupsCanBeCreatedAndOrganized();
 };
 void GuiSmokeTest::compactPanelFiltersAndSelectsVersions()
 {
@@ -58,7 +63,7 @@ void GuiSmokeTest::compactPanelFiltersAndSelectsVersions()
     panel.resize(900, 560);
     panel.show();
     panel.setContext(tmp.filePath("library"), {});
-    auto *list = panel.findChild<ElaListView *>("assetList");
+    auto *list = panel.findChild<ElaTreeView *>("assetList");
     auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
     auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
     auto *take = panel.findChild<ElaPushButton *>("takeButton");
@@ -130,7 +135,7 @@ void GuiSmokeTest::selectedFolderScansAndRescansWithoutCollect()
     panel.resize(850, 600);
     panel.show();
     auto *folder = panel.findChild<ElaPushButton *>("folderButton");
-    auto *list = panel.findChild<ElaListView *>("assetList");
+    auto *list = panel.findChild<ElaTreeView *>("assetList");
     auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
     auto *update = panel.findChild<ElaPushButton *>("updateButton");
     QVERIFY(folder);
@@ -235,7 +240,7 @@ void GuiSmokeTest::newIpSupportsFacetBrowsingAndProjectReferences()
     panel.setContext(library, project);
     panel.show();
     auto *create = panel.findChild<ElaPushButton *>("newAssetButton");
-    auto *list = panel.findChild<ElaListView *>("assetList");
+    auto *list = panel.findChild<ElaTreeView *>("assetList");
     auto *indexes = panel.findChild<ElaComboBox *>("indexCombo");
     auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
     auto *filters = panel.findChild<QToolButton *>("filterButton");
@@ -343,6 +348,138 @@ void GuiSmokeTest::newIpSupportsFacetBrowsingAndProjectReferences()
         }
         eTheme->setThemeMode(previousMode);
     }
+}
+void GuiSmokeTest::groupsCanBeCreatedAndOrganized()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition;
+    definition.name = "axi_lite_adapter";
+    const auto created = SnapshotLibrary::create(library, definition);
+    QVERIFY2(created.ok, qPrintable(created.error));
+    BrowserPanel panel;
+    panel.resize(720, 388);
+    panel.show();
+    panel.setContext(library, {});
+    auto *tree = panel.findChild<ElaTreeView *>("assetList");
+    auto *model = static_cast<CatalogModel *>(tree->model());
+    QAbstractItemModelTester modelTester(model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+    auto *addGroup = panel.findChild<QToolButton *>("newGroupButton");
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    const auto newGroup = [&](const QString &name)
+    {
+        QTimer::singleShot(0, &panel, [&, name]
+        {
+            auto *field = panel.findChild<ElaLineEdit *>("groupName");
+            QVERIFY(field);
+            field->setText(name);
+            panel.findChild<ElaPushButton *>("formAccept")->click();
+        });
+        addGroup->click();
+    };
+    const auto chooseAction = [&](const QModelIndex &index, const QString &name)
+    {
+        QTimer::singleShot(0, &panel, [&, name]
+        {
+            ElaMenu *menu = nullptr;
+            for (auto *widget : QApplication::topLevelWidgets())
+                if (widget->objectName() == "groupMenu") menu = qobject_cast<ElaMenu *>(widget);
+            QVERIFY(menu);
+            auto *action = menu->findChild<QAction *>(name);
+            if (!action) { menu->close(); QFAIL("Missing group action"); }
+            auto *owner = qobject_cast<QMenu *>(action->parent());
+            if (owner != menu)
+            {
+                menu->setActiveAction(owner->menuAction());
+                QTest::keyClick(menu, Qt::Key_Right);
+            }
+            owner->setActiveAction(action);
+            QTest::keyClick(owner, Qt::Key_Return);
+        });
+        tree->scrollTo(index);
+        const auto point = tree->visualRect(index).center();
+        QMetaObject::invokeMethod(tree, "customContextMenuRequested", Q_ARG(QPoint, point));
+    };
+    newGroup("Bus");
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->groups().size(), 1);
+    const auto bus = model->groups().first().id;
+    QCOMPARE(model->rowCount(), 2);
+    QCOMPARE(model->rowCount(model->indexForId({}, bus)), 0);
+    QCOMPARE(panel.saveState().value("groupId").toString(), bus);
+    QVERIFY(!panel.findChild<ElaPushButton *>("takeButton")->isVisible());
+    QTimer::singleShot(0, &panel, [&]
+    {
+        panel.findChild<ElaLineEdit *>("newAssetName")->setText("fifo");
+        panel.findChild<ElaPushButton *>("formAccept")->click();
+    });
+    panel.findChild<ElaPushButton *>("newAssetButton")->click();
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->rowCount(model->indexForId({}, bus)), 1);
+    QVERIFY(QFileInfo::exists(library + "/fifo/rtl/fifo.sv"));
+    chooseAction(model->indexForId(created.asset.id), "addToGroup_" + bus);
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->rowCount(), 1);
+    QCOMPARE(model->rowCount(model->indexForId({}, bus)), 2);
+    QVERIFY(tree->currentIndex().parent().isValid());
+    newGroup("Empty");
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->groups().size(), 2);
+    const auto empty = model->groups().last().id;
+    chooseAction(model->indexForId(created.asset.id, bus), "addToGroup_" + empty);
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->rowCount(model->indexForId({}, bus)), 2);
+    QCOMPARE(model->rowCount(model->indexForId({}, empty)), 1);
+    chooseAction(model->indexForId(created.asset.id, empty), "removeFromGroupAction");
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->rowCount(model->indexForId({}, empty)), 0);
+    QCOMPARE(model->rowCount(model->indexForId({}, bus)), 2);
+    auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
+    search->setText("axi");
+    QTRY_COMPARE(model->rowCount(model->indexForId({}, bus)), 1);
+    QCOMPARE(model->rowCount(), 2);
+    search->clear();
+    QTRY_COMPARE(model->rowCount(model->indexForId({}, bus)), 2);
+    tree->setCurrentIndex(model->indexForId(created.asset.id, bus));
+    const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
+    if (!screenshots.isEmpty())
+    {
+        QDir().mkpath(screenshots);
+        const auto previous = eTheme->getThemeMode();
+        for (const auto mode : {ElaThemeType::Light, ElaThemeType::Dark})
+        {
+            eTheme->setThemeMode(mode);
+            QCoreApplication::processEvents();
+            panel.grab().save(screenshots + (mode == ElaThemeType::Light
+                ? "/groups-light.png" : "/groups-dark.png"));
+        }
+        eTheme->setThemeMode(previous);
+    }
+    tree->collapse(model->indexForId({}, bus));
+    const auto state = panel.saveState();
+    QVERIFY(state.value("collapsedGroups").toStringList().contains(bus));
+    BrowserPanel reopened;
+    reopened.setContext(library, {});
+    QTRY_VERIFY(!reopened.isCatalogBusy());
+    reopened.restoreState(state);
+    auto *restoredTree = reopened.findChild<ElaTreeView *>("assetList");
+    auto *restoredModel = static_cast<CatalogModel *>(restoredTree->model());
+    QCOMPARE(restoredModel->groups().size(), 2);
+    QCOMPARE(restoredModel->rowCount(restoredModel->indexForId({}, bus)), 2);
+    QCOMPARE(restoredModel->rowCount(restoredModel->indexForId({}, empty)), 0);
+    QVERIFY(!restoredTree->isExpanded(restoredModel->indexForId({}, bus)));
+    chooseAction(model->indexForId({}, bus), "deleteGroupAction");
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->groups().size(), 1);
+    QCOMPARE(model->rowCount(), 3);
+    QCOMPARE(model->groups().first().id, empty);
+    const auto catalog = SnapshotLibrary::scan(library);
+    QCOMPARE(catalog.assets.size(), 2);
+    QCOMPARE(catalog.groups.size(), 1);
+    QVERIFY(catalog.groups.first().members.isEmpty());
+    QVERIFY(QFileInfo::exists(library + "/axi_lite_adapter/rtl/axi_lite_adapter.sv"));
+    QVERIFY(SnapshotLibrary::verifySnapshot(created.asset, created.snapshot.id).ok);
 }
 void GuiSmokeTest::compactWindowKeepsActionsBesideContent()
 {

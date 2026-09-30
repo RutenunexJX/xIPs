@@ -12,6 +12,11 @@ The interface uses Ela controls and shares ZeroSlack's compact panel layout. All
 4. Click **Save revision** on an original item to save its current content and an optional note. Unchanged content creates no extra revision. Choose **Current files** or a saved revision from the version list.
 5. Click **Use** (or **Use in project** in ZeroSlack) to export the selected content to a new destination. **Collect** also saves external files as a new asset; **Update** saves subsequent revisions of collected assets.
 
+Use **+** beside **Groups** to create a group in the left tree. Right-click an IP to
+add it to one or more groups or remove its membership. Right-click a group to rename
+or delete it. Empty groups persist, and group changes never move source files.
+Selecting a group before **New** puts the new IP in that group.
+
 Registered folders retain their relative file layout, including IP packages with
 `component.xml`. Hidden files/directories, links and generated build directories are
 excluded from registered working sources. Rescan refreshes definitions and their file
@@ -53,6 +58,7 @@ Library/
       .xips.json
       .xips/revisions/<uuid>.json
     references/<asset-id>.json   # references to versions in other libraries
+    groups/<group-id>.json       # group name and asset ID memberships
   uart/
     .xips.json                  # optionally collected asset
     .xips/revisions/<uuid>.json
@@ -134,7 +140,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
 and the SuiteApp SDK enabled. For an explicitly standalone release, configure
 **XIPS_ENABLE_SUITEAPP=OFF** and pass **-Standalone** to the packaging script.
-The release tag **v2.3.0** must identify HEAD.
+The release tag **v2.4.0** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell

@@ -2,6 +2,7 @@
 
 #include "library/SnapshotLibrary.h"
 #include <QPointer>
+#include <QSet>
 #include <QWidget>
 #include <functional>
 #include <optional>
@@ -11,6 +12,7 @@ class ElaLineEdit;
 class ElaPushButton;
 class ElaText;
 class ElaListView;
+class ElaTreeView;
 class ElaProgressRing;
 class ElaToolButton;
 class QStringListModel;
@@ -54,6 +56,9 @@ class BrowserPanel final : public QWidget
     void chooseLibrary();
     void addSources();
     void createAsset();
+    void createGroup();
+    void groupMenu(const QPoint &position);
+    void runGroup(std::function<GroupResult()> work, const QString &selectedAsset = {});
     void referenceAsset();
     void refreshIndexes();
     void updateAsset();
@@ -76,6 +81,8 @@ class BrowserPanel final : public QWidget
     QString m_pendingId;
     QString m_pendingRevision;
     QString m_indexTerm;
+    QString m_activeGroup;
+    QSet<QString> m_collapsedGroups;
     QStringList m_problems;
     QList<CatalogAsset> m_assets;
     CatalogAsset m_selected;
@@ -100,7 +107,8 @@ class BrowserPanel final : public QWidget
     ElaComboBox *m_indexes = nullptr;
     ElaComboBox *m_types = nullptr;
     ElaToolButton *m_filterToggle = nullptr;
-    ElaListView *m_list = nullptr;
+    ElaTreeView *m_list = nullptr;
+    ElaToolButton *m_newGroup = nullptr;
     ElaListView *m_files = nullptr;
     CatalogModel *m_model = nullptr;
     QStringListModel *m_fileModel = nullptr;
