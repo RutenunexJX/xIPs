@@ -1,4 +1,5 @@
 #include "ElaComboBox.h"
+#include "DialogDriver.h"
 #include "ElaLineEdit.h"
 #include "ElaListView.h"
 #include "ElaTreeView.h"
@@ -14,15 +15,24 @@
 #include <QContextMenuEvent>
 #include <QAbstractItemModelTester>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QFile>
 #include <QFileSystemModel>
 #include <QFontDatabase>
 #include <QMenu>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QPlainTextEdit>
+#include <QMimeData>
 #include <QStandardItemModel>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <QtTest>
+#include <memory>
 using namespace xips;
 class GuiSmokeTest : public QObject
 {
@@ -42,7 +52,196 @@ class GuiSmokeTest : public QObject
     void compactWindowKeepsActionsBesideContent();
     void elaFilePickerNavigatesAndSelects();
     void groupsCanBeCreatedAndOrganized();
+    void draggingAddsMembershipWithoutMovingSources();
+    void keyboardActionsStayWithinTheCatalog();
+    void reviewCanBeRejectedAndStandaloneReceiptSaved();
+    void damagedHistoryAndUnavailableReferencesRemainVisible();
+    void parallelReviewMakesAdoptionExplicit();
 };
+void GuiSmokeTest::parallelReviewMakesAdoptionExplicit()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition;
+    definition.name = "counter";
+    const auto created = SnapshotLibrary::create(library, definition);
+    QVERIFY(created.ok);
+    QFile manifest(created.asset.historyRoot + "/.xips/revisions/" + created.snapshot.id + ".json");
+    QVERIFY(manifest.open(QIODevice::ReadOnly));
+    auto branch = QJsonDocument::fromJson(manifest.readAll()).object();
+    manifest.close();
+    const auto branchId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    branch.insert("id", branchId);
+    ContentStore::publishJson(created.asset.historyRoot + "/.xips/revisions/" + branchId + ".json", branch);
+    BrowserPanel panel;
+    panel.show();
+    panel.setContext(library, {});
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    bool reviewed = false;
+    whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
+    {
+        auto *accept = form->findChild<ElaPushButton *>("formAccept");
+        QCOMPARE(accept->text(), QString("Adopt reviewed files"));
+        QVERIFY(accept->width() >= accept->fontMetrics().horizontalAdvance(accept->text()) + 20);
+        auto *preview = form->findChild<QPlainTextEdit *>("payloadPreview");
+        QVERIFY(preview->toPlainText().contains("rtl/counter.sv"));
+        QVERIFY(preview->toPlainText().contains("2 parallel revision heads"));
+        const QRect previewRect(preview->mapTo(form, QPoint()), preview->size());
+        for (const auto *label : form->findChildren<ElaText *>())
+            if (label->isVisible()) QVERIFY(!previewRect.intersects(QRect(label->mapTo(form, QPoint()), label->size())));
+        const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
+        if (!screenshots.isEmpty()) form->grab().save(screenshots + "/parallel-save-review.png");
+        reviewed = true;
+        accept->click();
+    });
+    panel.findChild<ElaPushButton *>("updateButton")->click();
+    QTRY_VERIFY(reviewed && !panel.isCatalogBusy());
+    auto catalog = SnapshotLibrary::scan(library);
+    QCOMPARE(SnapshotLibrary::heads(catalog.assets.first()).size(), 1);
+    const auto selected = panel.saveState().value("revision").toString();
+    const auto saved = SnapshotLibrary::verifySnapshot(catalog.assets.first(), selected);
+    QVERIFY(saved.ok);
+    QCOMPARE(saved.snapshot.parents.size(), 2);
+}
+void GuiSmokeTest::reviewCanBeRejectedAndStandaloneReceiptSaved()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition;
+    definition.name = "axi_lite";
+    definition.indexes.insert("interface", {"AXI4 Lite"});
+    const auto created = SnapshotLibrary::create(library, definition);
+    QVERIFY(created.ok);
+    BrowserPanel panel;
+    panel.resize(850, 650);
+    panel.show();
+    panel.setContext(library, {});
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
+    auto *list = panel.findChild<ElaTreeView *>("assetList");
+    search->setText("interface:\"AXI4 Lite\"");
+    QTest::qWait(160);
+    QCOMPARE(list->model()->rowCount(), 1);
+    auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
+    versions->setCurrentIndex(versions->findData(created.snapshot.id));
+    auto *take = panel.findChild<ElaPushButton *>("takeButton");
+    bool rejected = false;
+    whenVisible(&panel, "xipsForm", [&](QWidget *form)
+    {
+        QVERIFY(form->findChild<QPlainTextEdit *>("payloadPreview"));
+        qobject_cast<QDialog *>(form)->reject();
+        rejected = true;
+    });
+    take->click();
+    QTRY_VERIFY(rejected);
+    QVERIFY(!panel.isCatalogBusy());
+    const auto destination = tmp.filePath("copy.sv");
+    whenVisible(&panel, "exportDestination", [&](QWidget *field)
+    {
+        auto *edit = qobject_cast<ElaLineEdit *>(field);
+        auto *form = panel.findChild<QDialog *>("xipsForm");
+        auto *accept = form->findChild<ElaPushButton *>("formAccept");
+        edit->setText(library);
+        QVERIFY(!accept->isEnabled());
+        edit->setText(destination);
+        QVERIFY(accept->isEnabled());
+        const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
+        if (!screenshots.isEmpty())
+        {
+            QDir().mkpath(screenshots);
+            form->grab().save(screenshots + "/export-review.png");
+        }
+        accept->click();
+    });
+    take->click();
+    QTRY_VERIFY(QFileInfo::exists(destination));
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    const auto receipt = destination + ".xips-use.json";
+    for (int attempt = 0; attempt != 2; ++attempt)
+    {
+        whenVisible(&panel, "receiptDestination", [&](QWidget *field)
+        {
+            QCOMPARE(qobject_cast<ElaLineEdit *>(field)->text(), receipt);
+            panel.findChild<ElaPushButton *>("formAccept")->click();
+        });
+        QTimer::singleShot(0, &panel, [&]
+        {
+            for (auto *widget : QApplication::topLevelWidgets())
+                if (auto *menu = qobject_cast<QMenu *>(widget); menu && menu->objectName() == "xipsMoreMenu")
+                {
+                    auto *action = menu->findChild<QAction *>("saveReceiptAction");
+                    QVERIFY(action && action->isVisible() && action->isEnabled());
+                    menu->setActiveAction(action);
+                    QTest::keyClick(menu, Qt::Key_Return);
+                    return;
+                }
+            QFAIL("Receipt menu missing");
+        });
+        panel.findChild<QToolButton *>("moreButton")->click();
+        QTRY_VERIFY(!panel.isCatalogBusy());
+    }
+    QFile file(receipt);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const auto origin = QJsonDocument::fromJson(file.readAll()).object();
+    QCOMPARE(origin.value("revision").toString(), created.snapshot.id);
+    QCOMPARE(origin.value("contentHash").toString(), created.snapshot.hash);
+    QVERIFY(origin.value("sourceImmutable").toBool());
+}
+void GuiSmokeTest::damagedHistoryAndUnavailableReferencesRemainVisible()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("owner"), receiver = tmp.filePath("receiver");
+    QVERIFY(QDir().mkpath(library) && QDir().mkpath(receiver));
+    CatalogDefinition definition;
+    definition.name = "counter";
+    const auto created = SnapshotLibrary::create(library, definition);
+    QVERIFY(created.ok);
+    QVERIFY(SnapshotLibrary::addReference(created.asset, created.snapshot.id, receiver).ok);
+    QFile damaged(created.asset.historyRoot + "/.xips/revisions/damaged.json");
+    QVERIFY(damaged.open(QIODevice::WriteOnly));
+    damaged.write("{");
+    damaged.close();
+    BrowserPanel panel;
+    panel.show();
+    panel.setContext(library, {});
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
+    QVERIFY(versions->findData(created.snapshot.id) >= 0);
+    QVERIFY(!panel.findChild<ElaPushButton *>("updateButton")->isEnabled());
+    versions->setCurrentIndex(versions->findData(created.snapshot.id));
+    QVERIFY(panel.findChild<ElaPushButton *>("takeButton")->isEnabled());
+    QVERIFY(QFile::remove(library + "/counter/rtl/counter.sv"));
+    panel.refresh();
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(versions->count(), 1);
+    QVERIFY(panel.findChild<ElaPushButton *>("takeButton")->isEnabled());
+    QVERIFY(QDir().rename(library, tmp.filePath("relocated")));
+    panel.setContext(receiver, {});
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(panel.findChild<ElaTreeView *>("assetList")->model()->rowCount(), 1);
+    QCOMPARE(versions->count(), 0);
+    QVERIFY(!panel.findChild<ElaPushButton *>("takeButton")->isEnabled());
+    bool actionsChecked = false;
+    QTimer::singleShot(0, &panel, [&]
+    {
+        for (auto *widget : QApplication::topLevelWidgets())
+            if (auto *menu = qobject_cast<QMenu *>(widget); menu && menu->objectName() == "xipsMoreMenu")
+            {
+                for (const auto *name : {"removeReferenceAction", "changeReferenceAction"})
+                {
+                    const auto *action = menu->findChild<QAction *>(name);
+                    QVERIFY(action && action->isEnabled() && action->isVisible());
+                }
+                menu->close();
+                actionsChecked = true;
+                return;
+            }
+    });
+    panel.findChild<QToolButton *>("moreButton")->click();
+    QVERIFY(actionsChecked);
+}
 void GuiSmokeTest::compactPanelFiltersAndSelectsVersions()
 {
     QTemporaryDir tmp;
@@ -71,7 +270,7 @@ void GuiSmokeTest::compactPanelFiltersAndSelectsVersions()
     QVERIFY(versions);
     QVERIFY(search);
     QVERIFY(take);
-    QTRY_VERIFY(search->isEnabled());
+    QTRY_VERIFY(!panel.isCatalogBusy());
     QStringList actions;
     QTimer::singleShot(0, &panel,
                        [&]
@@ -118,8 +317,7 @@ void GuiSmokeTest::unavailableLibraryStaysUnavailable()
     const QString missing = tmp.filePath("offline");
     BrowserPanel panel;
     panel.setContext(missing, {});
-    auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
-    QTRY_VERIFY(search->isEnabled());
+    QTRY_VERIFY(!panel.isCatalogBusy());
     QVERIFY(!QFileInfo::exists(missing));
 }
 void GuiSmokeTest::selectedFolderScansAndRescansWithoutCollect()
@@ -154,7 +352,7 @@ void GuiSmokeTest::selectedFolderScansAndRescansWithoutCollect()
     QCOMPARE(list->model()->rowCount(), 1);
     QCOMPARE(versions->currentData().toString(), QString("current"));
     QCOMPARE(versions->currentText(), QString("Current files"));
-    QCOMPARE(update->text(), QString("Save…"));
+    QCOMPARE(update->text(), QString("Save revision…"));
     QCOMPARE(list->model()->index(0, 0).data().toString(), QString("UART"));
     QVERIFY(list->model()->index(0, 0).data(Qt::ToolTipRole).toString().contains("Working files"));
     QVERIFY(!QFileInfo::exists(library + "/rtl/.xips.json"));
@@ -199,9 +397,9 @@ void GuiSmokeTest::scannedFilesSaveAndSelectHistory()
     auto *update = panel.findChild<ElaPushButton *>("updateButton");
     auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
     QTRY_VERIFY(update->isEnabled());
-    QTimer::singleShot(0, &panel, [&]
+    whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
     {
-        auto *accept = panel.findChild<ElaPushButton *>("formAccept");
+        auto *accept = form->findChild<ElaPushButton *>("formAccept");
         QVERIFY(accept);
         accept->click();
     });
@@ -216,9 +414,9 @@ void GuiSmokeTest::scannedFilesSaveAndSelectHistory()
     QVERIFY(file.open(QIODevice::WriteOnly));
     file.write("second source");
     file.close();
-    QTimer::singleShot(0, &panel, [&]
+    whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
     {
-        auto *accept = panel.findChild<ElaPushButton *>("formAccept");
+        auto *accept = form->findChild<ElaPushButton *>("formAccept");
         QVERIFY(accept);
         accept->click();
     });
@@ -480,6 +678,150 @@ void GuiSmokeTest::groupsCanBeCreatedAndOrganized()
     QVERIFY(catalog.groups.first().members.isEmpty());
     QVERIFY(QFileInfo::exists(library + "/axi_lite_adapter/rtl/axi_lite_adapter.sv"));
     QVERIFY(SnapshotLibrary::verifySnapshot(created.asset, created.snapshot.id).ok);
+}
+void GuiSmokeTest::draggingAddsMembershipWithoutMovingSources()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition;
+    definition.name = "uart";
+    const auto asset = SnapshotLibrary::create(library, definition);
+    QVERIFY(asset.ok);
+    const auto bus = CatalogGroups::create(library, "Bus");
+    const auto serial = CatalogGroups::create(library, "Serial");
+    QVERIFY(bus.ok && serial.ok);
+    QVERIFY(CatalogGroups::setMember(library, bus.group.id, asset.asset.id, true).ok);
+    QFile source(library + "/uart/rtl/uart.sv");
+    QVERIFY(source.open(QIODevice::ReadOnly));
+    const auto original = source.readAll();
+    source.close();
+    BrowserPanel panel;
+    panel.resize(720, 388);
+    panel.show();
+    panel.setContext(library, {});
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    auto *tree = panel.findChild<ElaTreeView *>("assetList");
+    auto *model = static_cast<CatalogModel *>(tree->model());
+    QAbstractItemModelTester tester(model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+    const auto item = model->indexForId(asset.asset.id, bus.group.id);
+    const auto target = model->indexForId({}, serial.group.id);
+    std::unique_ptr<QMimeData> payload(model->mimeData({item}));
+    QVERIFY(model->flags(item).testFlag(Qt::ItemIsDragEnabled));
+    QVERIFY(model->flags(target).testFlag(Qt::ItemIsDropEnabled));
+    QVERIFY(model->canDropMimeData(payload.get(), Qt::CopyAction, -1, -1, target));
+    QVERIFY(!model->canDropMimeData(payload.get(), Qt::MoveAction, -1, -1, target));
+    QVERIFY(!model->canDropMimeData(payload.get(), Qt::CopyAction, -1, -1, item));
+    QVERIFY(!model->canDropMimeData(payload.get(), Qt::CopyAction, -1, -1, {}));
+    QVERIFY(!model->canDropMimeData(payload.get(), Qt::CopyAction, -1, -1, model->indexForId({}, bus.group.id)));
+    QMimeData invalid;
+    invalid.setData(model->mimeTypes().first(), QJsonDocument(QJsonObject{
+        {"catalog", tmp.filePath("another-library")}, {"assetId", asset.asset.id}}).toJson());
+    QVERIFY(!model->dropMimeData(&invalid, Qt::CopyAction, -1, -1, target));
+    tree->scrollTo(target);
+    ElaTreeView::finishExpansion(tree);
+    QCoreApplication::processEvents();
+    const auto position = tree->visualRect(target).center();
+    QDragEnterEvent enter(position, Qt::CopyAction, payload.get(), Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(tree->viewport(), &enter);
+    QVERIFY(enter.isAccepted());
+    QDragMoveEvent move(position, Qt::CopyAction, payload.get(), Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(tree->viewport(), &move);
+    QVERIFY(move.isAccepted());
+    QDropEvent drop(position, Qt::CopyAction, payload.get(), Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(tree->viewport(), &drop);
+    QVERIFY(drop.isAccepted());
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->rowCount(model->indexForId({}, bus.group.id)), 1);
+    QCOMPARE(model->rowCount(model->indexForId({}, serial.group.id)), 1);
+    QCOMPARE(panel.saveState().value("groupId").toString(), serial.group.id);
+    QCOMPARE(panel.saveState().value("assetId").toString(), asset.asset.id);
+    QVERIFY(!model->canDropMimeData(payload.get(), Qt::CopyAction, -1, -1, model->indexForId({}, serial.group.id)));
+    const auto saved = CatalogGroups::scan(library);
+    QCOMPARE(saved.groups.size(), 2);
+    for (const auto &group : saved.groups) QCOMPARE(group.members, QStringList{asset.asset.id});
+    QVERIFY(source.open(QIODevice::ReadOnly));
+    QCOMPARE(source.readAll(), original);
+    QVERIFY(SnapshotLibrary::verifySnapshot(asset.asset, asset.snapshot.id).ok);
+}
+void GuiSmokeTest::keyboardActionsStayWithinTheCatalog()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    QWidget host;
+    auto *layout = new QVBoxLayout(&host);
+    auto *outside = new ElaLineEdit(&host);
+    layout->addWidget(outside);
+    auto *panel = new BrowserPanel(&host);
+    layout->addWidget(panel);
+    host.resize(720, 460);
+    host.show();
+    host.activateWindow();
+    panel->setContext(library, {});
+    QTRY_VERIFY(!panel->isCatalogBusy());
+    auto *tree = panel->findChild<ElaTreeView *>("assetList");
+    auto *model = static_cast<CatalogModel *>(tree->model());
+    auto *search = panel->findChild<ElaLineEdit *>("assetSearch");
+    const auto focusTree = [&]
+    {
+        host.activateWindow();
+        tree->setFocus();
+        QCoreApplication::processEvents();
+        QTRY_VERIFY(host.isActiveWindow() && tree->hasFocus());
+    };
+    outside->setFocus();
+    QTRY_VERIFY(outside->hasFocus());
+    QTest::keyClick(outside, Qt::Key_F, Qt::ControlModifier);
+    QVERIFY(outside->hasFocus());
+    focusTree();
+    QTest::keyClick(tree, Qt::Key_F, Qt::ControlModifier);
+    QTRY_VERIFY(search->hasFocus());
+    search->setText("uart");
+    QTest::keyClick(search, Qt::Key_Escape);
+    QCOMPARE(search->text(), QString());
+    const auto fillForm = [&](const QString &field, const QString &text)
+    {
+        whenVisible(&host, field, [&, text](QWidget *widget)
+        {
+            auto *edit = qobject_cast<ElaLineEdit *>(widget);
+            QVERIFY(edit);
+            edit->setText(text);
+            host.findChild<ElaPushButton *>("formAccept")->click();
+        });
+    };
+    fillForm("groupName", "Work");
+    QTest::keyClick(search, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+    QTRY_VERIFY(!panel->isCatalogBusy());
+    QCOMPARE(model->groups().size(), 1);
+    const auto group = model->groups().first().id;
+    focusTree();
+    fillForm("groupName", "Data");
+    QTest::keyClick(tree, Qt::Key_F2);
+    QTRY_VERIFY(!panel->isCatalogBusy());
+    QCOMPARE(model->groups().first().name, QString("Data"));
+    focusTree();
+    fillForm("newAssetName", "fifo");
+    QTest::keyClick(tree, Qt::Key_N, Qt::ControlModifier);
+    QTRY_VERIFY(!panel->isCatalogBusy());
+    QCOMPARE(model->rowCount(model->indexForId({}, group)), 1);
+    auto *versions = panel->findChild<ElaComboBox *>("versionCombo");
+    QCOMPARE(versions->count(), 2);
+    QFile source(library + "/fifo/rtl/fifo.sv");
+    QVERIFY(source.open(QIODevice::Append));
+    source.write("\n// test revision\n");
+    source.close();
+    focusTree();
+    fillForm("revisionNote", "Keyboard save");
+    QTest::keyClick(tree, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY(!panel->isCatalogBusy());
+    QCOMPARE(versions->count(), 3);
+    QVERIFY(versions->currentText().contains("Keyboard save"));
+    QVERIFY(CatalogGroups::create(library, "Added elsewhere").ok);
+    focusTree();
+    QTest::keyClick(tree, Qt::Key_F5);
+    QTRY_VERIFY(!panel->isCatalogBusy());
+    QCOMPARE(model->groups().size(), 2);
 }
 void GuiSmokeTest::compactWindowKeepsActionsBesideContent()
 {

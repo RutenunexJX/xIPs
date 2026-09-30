@@ -6,6 +6,7 @@
 #include <QWidget>
 #include <functional>
 #include <optional>
+#include <memory>
 
 class ElaComboBox;
 class ElaLineEdit;
@@ -23,11 +24,13 @@ template <class T> class QFutureWatcher;
 namespace xips
 {
 class CatalogModel;
+class OperationControl;
 class BrowserPanel final : public QWidget
 {
     Q_OBJECT
   public:
     explicit BrowserPanel(QWidget *parent = nullptr, QObject *host = nullptr);
+    ~BrowserPanel() override;
     Q_INVOKABLE void setContext(const QString &library, const QString &workspace);
     Q_INVOKABLE void collectPaths(const QStringList &paths);
     Q_INVOKABLE void revealAsset(const QString &id);
@@ -57,12 +60,18 @@ class BrowserPanel final : public QWidget
     void addSources();
     void createAsset();
     void createGroup();
+    void renameGroup(const QString &id);
     void groupMenu(const QPoint &position);
     void runGroup(std::function<GroupResult()> work, const QString &selectedAsset = {});
     void referenceAsset();
     void refreshIndexes();
     void updateAsset();
     void exportAsset();
+    void exportPrepared(const SnapshotResult &prepared);
+    void savePrepared(const SnapshotResult &prepared, const QStringList &sources);
+    void changeReference();
+    void saveOrigin();
+    void beginOperation();
     void more();
     void detailsDialog();
     void run(const QString &message, std::function<SnapshotResult()> work,
@@ -92,6 +101,10 @@ class BrowserPanel final : public QWidget
     bool m_busy = false;
     bool m_loadingDetails = false;
     bool m_noticeError = false;
+    std::shared_ptr<OperationControl> m_operation;
+    ElaPushButton *m_cancel = nullptr;
+    QTimer *m_progressTimer = nullptr;
+    SnapshotResult m_lastExport;
     double m_horizontalRatio = 0.3;
     double m_verticalRatio = 0.28;
     std::optional<QPair<QString, QString>> m_pendingContext;

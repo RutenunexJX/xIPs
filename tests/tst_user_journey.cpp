@@ -1,4 +1,5 @@
 #include "ElaComboBox.h"
+#include "DialogDriver.h"
 #include "ElaContentDialog.h"
 #include "ElaLineEdit.h"
 #include "ElaPushButton.h"
@@ -51,21 +52,21 @@ void UserJourneyTest::collectChooseAndUsePinnedVersion()
     auto *create = panel.findChild<ElaPushButton *>("newAssetButton");
     auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
     QTRY_VERIFY(create->isEnabled());
-    QTimer::singleShot(0, &panel,
-                       [&]
+    whenVisible(&panel, "xipsForm",
+                       [&](QWidget *form)
                        {
-                           auto *form = panel.findChild<ElaContentDialog *>("xipsForm");
                            QVERIFY(form);
                            form->findChild<ElaPushButton *>("formAccept")->click();
                        });
+    whenVisible(&panel, "payloadReviewForm", [](QWidget *form)
+        { form->findChild<ElaPushButton *>("formAccept")->click(); });
     panel.collectPaths({source});
     QTRY_COMPARE(versions->count(), 1);
     QTRY_VERIFY(take->isEnabled());
     const auto firstRevision = versions->currentData().toString();
-    QTimer::singleShot(0, &panel,
-                       [&]
+    whenVisible(&panel, "xipsForm",
+                       [&](QWidget *form)
                        {
-                           auto *form = panel.findChild<ElaContentDialog *>("xipsForm");
                            QVERIFY(form);
                            form->findChild<ElaPushButton *>("formAccept")->click();
                        });

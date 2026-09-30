@@ -34,6 +34,18 @@ terms such as `category:Communication tag:serial interface:AXI`. Reference entri
 resolve their pinned UUID in the owning library; listing a project directory also
 loads its `.xips/references` catalog. Adding a reference never materializes source files.
 
+GUI and CLI share quoted-query parsing. For example, pass the query string
+`interface:"AXI4 Lite" tag:verified` to match both conditions, or `"clock domain"`
+for a phrase. Inside quotes, backslash escapes the next character. Unclosed quotes
+and empty field values report an error instead of running a partial query. Shell
+quoting must preserve the inner double quotes in the argument delivered to the CLI.
+
+Standalone users can save an optional `xips.use/v1` receipt from the More menu after
+an export. It contains assetId, name, category, revision, contentHash, sourceImmutable,
+files and a path relative to the receipt directory. It uses a new sidecar file and
+does not require a host or alter the exported payload. The host callback remains
+unchanged and continues to use its workspace-aware receipt path.
+
 Schema 1 preserves its prior behavior: resolution without --asset-version addresses the working copy.
 Saved legacy versions require explicit materialization before exposing paths.
 New integrations should use schema 3 and exact resolvedVersion/contentHash values.

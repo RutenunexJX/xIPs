@@ -309,6 +309,62 @@ class Interactions final : public QObject
         }
         QCoreApplication::processEvents();
     }
+    void busyScanKeepsBrowsingAndCanBeCancelled()
+    {
+        QTemporaryDir fixture;
+        const auto root = fixture.filePath("library");
+        QVERIFY(collect(root, "first").ok);
+        const auto last = collect(root, "last");
+        QVERIFY(last.ok);
+        BrowserPanel panel;
+        panel.show();
+        panel.setContext(root, {});
+        QTRY_VERIFY(!panel.isCatalogBusy());
+        auto *list = panel.findChild<ElaTreeView *>("assetList");
+        auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
+        auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
+        auto *take = panel.findChild<ElaPushButton *>("takeButton");
+        {
+            PoolGate gate;
+            panel.refresh();
+            QVERIFY(panel.isCatalogBusy());
+            QVERIFY(list->isEnabled() && search->isEnabled() && versions->isEnabled());
+            QVERIFY(!take->isEnabled() && !list->dragEnabled());
+            search->setText("last");
+            QTRY_COMPARE(list->model()->rowCount(), 1);
+            QCOMPARE(panel.saveState()["assetId"].toString(), last.asset.id);
+            QVERIFY(panel.isCatalogBusy());
+            QVERIFY(!take->isEnabled());
+            auto *cancel = panel.findChild<ElaPushButton *>("cancelOperation");
+            QVERIFY(cancel->isVisible() && cancel->isEnabled());
+            cancel->click();
+            QVERIFY(!cancel->isEnabled());
+        }
+        QTRY_VERIFY(!panel.isCatalogBusy());
+        QCOMPARE(list->model()->rowCount(), 1);
+        QVERIFY(take->isEnabled());
+        search->clear();
+        QTRY_COMPARE(list->model()->rowCount(), 2);
+    }
+    void pendingContextDismissesAnExportPreview()
+    {
+        QTemporaryDir fixture;
+        const auto first = collect(fixture.filePath("one"), "first");
+        const auto second = collect(fixture.filePath("two"), "second");
+        QVERIFY(first.ok && second.ok);
+        BrowserPanel panel;
+        panel.setContext(first.asset.library, {});
+        QTRY_VERIFY(!panel.isCatalogBusy());
+        {
+            PoolGate gate;
+            panel.findChild<ElaPushButton *>("takeButton")->click();
+            QVERIFY(panel.isCatalogBusy());
+            panel.setContext(second.asset.library, fixture.path());
+        }
+        QTRY_VERIFY(!panel.isCatalogBusy());
+        QCOMPARE(panel.saveState()["assetId"].toString(), second.asset.id);
+        QVERIFY(!panel.findChild<QWidget *>("exportDestination"));
+    }
     void legacyReadsKeepOnlyTheLatestSelection()
     {
         BrowserPanel panel;

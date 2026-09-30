@@ -1,5 +1,6 @@
 #include "ContentStore.h"
 #include "FileSystemUtil.h"
+#include "OperationControl.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -72,7 +73,14 @@ ContentObject ContentStore::fingerprint(const QString &source)
     const auto size = file.size();
     const auto modified = file.fileTime(QFileDevice::FileModificationTime);
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    check(hash.addData(&file) && file.error() == QFileDevice::NoError && file.pos() == size &&
+    while (!file.atEnd())
+    {
+        OperationScope::checkpoint(QStringLiteral("Reading %1").arg(QFileInfo(source).fileName()), file.pos(), size);
+        const auto data = file.read(blockSize);
+        check(!data.isEmpty() && file.error() == QFileDevice::NoError, QStringLiteral("Cannot read source: %1").arg(source));
+        hash.addData(data);
+    }
+    check(file.error() == QFileDevice::NoError && file.pos() == size &&
               file.size() == size && file.fileTime(QFileDevice::FileModificationTime) == modified,
           QStringLiteral("Source changed while reading: %1").arg(source));
     return {QString::fromLatin1(hash.result().toHex()), size};
@@ -100,6 +108,7 @@ ContentObject ContentStore::putFile(const QString &source) const
     qint64 count = 0;
     while (!input.atEnd())
     {
+        OperationScope::checkpoint(QStringLiteral("Storing %1").arg(QFileInfo(source).fileName()), count, size);
         const auto data = input.read(blockSize);
         check(input.error() == QFileDevice::NoError && !data.isEmpty(),
               QStringLiteral("Cannot read source: %1").arg(source));
@@ -142,6 +151,7 @@ void ContentStore::readObject(const ContentObject &object, QIODevice *output) co
     for (;;)
     {
         const auto header = file.read(4);
+        OperationScope::checkpoint(QStringLiteral("Verifying content"), count, object.size);
         check(header.size() == 4, QStringLiteral("Truncated content object: %1").arg(path));
         const auto length = qFromBigEndian<quint32>(header.constData());
         if (!length)
@@ -189,6 +199,7 @@ QString ContentStore::treeHash(const QMap<QString, ContentObject> &objects)
 }
 void ContentStore::publishJson(const QString &path, const QJsonObject &document)
 {
+    OperationScope::checkpoint();
     makeDirectory(QFileInfo(path).absolutePath());
     safePath(path);
     QTemporaryFile staging(path + ".pending-XXXXXX");
@@ -196,6 +207,7 @@ void ContentStore::publishJson(const QString &path, const QJsonObject &document)
     write(staging, QJsonDocument(document).toJson(QJsonDocument::Compact));
     check(staging.flush(), QStringLiteral("Cannot flush version manifest"));
     staging.close();
+    OperationScope::publish();
     check(!QFileInfo::exists(path) && staging.rename(path),
           QStringLiteral("Version manifest exists or cannot be published: %1").arg(path));
     staging.setAutoRemove(false);

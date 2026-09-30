@@ -7,15 +7,20 @@ The interface uses Ela controls and shares ZeroSlack's compact panel layout. All
 ## Everyday workflow
 
 1. Choose the catalog root once. Only explicitly created, registered or referenced entries appear; loose source files never become catalog entries automatically.
-2. Click **New** to create an IP or module. Generate a SystemVerilog source folder, or register an existing file/folder inside the root. Registering a folder associates its files automatically and saves the first revision.
-3. Assign multiple categories, tags, interfaces and purposes to one definition. Browse with **All indexes**, combine type filters with search, or use terms such as `category:Communication tag:serial interface:AXI`. Category paths support parent browsing, e.g. Communication includes Communication/UART.
-4. Click **Save revision** on an original item to save its current content and an optional note. Unchanged content creates no extra revision. Choose **Current files** or a saved revision from the version list.
-5. Click **Use** (or **Use in project** in ZeroSlack) to export the selected content to a new destination. **Collect** also saves external files as a new asset; **Update** saves subsequent revisions of collected assets.
+2. Click **New IP** to create an IP or module. Generate a SystemVerilog source folder, or register an existing file/folder inside the root. Registering a folder associates its files automatically and saves the first revision.
+3. Assign multiple categories, tags, interfaces and purposes to one definition. Browse with **All indexes**, combine type filters with search, or use terms such as `category:Communication tag:serial interface:"AXI4 Lite"`. Quote a field value or phrase containing spaces. Category paths support parent browsing, e.g. Communication includes Communication/UART.
+4. Click **Save revision** on an original item to review its file list, byte count, additions, modifications, removals and excluded paths, then save with an optional note. Unchanged content creates no extra revision unless joining parallel heads. Choose **Current files** or a saved revision from the version list.
+5. Click **Export** (or **To project** in ZeroSlack) to export the selected content to a new destination. **Collect** also saves external files as a new asset; **Update** saves subsequent revisions of collected assets.
 
-Use **+** beside **Groups** to create a group in the left tree. Right-click an IP to
+Use **+ Group** beside **Groups** to create a group in the left tree. Drag an IP onto
+a group to add membership while retaining its existing groups. Right-click an IP to
 add it to one or more groups or remove its membership. Right-click a group to rename
 or delete it. Empty groups persist, and group changes never move source files.
-Selecting a group before **New** puts the new IP in that group.
+Selecting a group before **New IP** puts the new IP in that group.
+
+While focus is in the catalog, **Ctrl+F** focuses search, **Ctrl+N** creates an IP,
+**Ctrl+Shift+N** creates a group, **Ctrl+S** saves a revision, and **F5** refreshes.
+**F2** renames the selected group in the tree; **Esc** clears the focused search field.
 
 Registered folders retain their relative file layout, including IP packages with
 `component.xml`. Hidden files/directories, links and generated build directories are
@@ -32,11 +37,50 @@ values, and **Open source folder** opens the working directory.
 catalog or project directory. The reference contains the owner location, asset ID and
 revision ID, with no source or history-object copy. New owner revisions do not advance
 existing references. Referenced definitions are read-only through the receiving catalog;
-their owner must remain available. Use **Use** when an editable materialized copy is needed.
+their owner must remain available. Use **Export** when an editable materialized copy is needed.
 
 Each saved revision describes a complete file set, while unchanged content is shared
 across revisions and assets. Editing collected asset details creates no revision.
 Project copies never update automatically.
+
+**Collect**, **Save revision** and new-format **Export** show a file review before
+writing. Export identifies whether the destination will be a new file or directory.
+If included files or bytes change after review, the operation fails safely and asks
+for another review. File changes are compared with the latest displayed saved revision;
+this is a file summary, not a source-text diff. Parallel heads are shown explicitly:
+**Adopt reviewed files** records all current heads as parents, with no text merge.
+A head arriving after the review also requires a fresh review.
+
+A damaged independent revision manifest is listed in **Issues** without hiding healthy
+saved revisions. An empty, missing or unreadable registered source keeps its healthy
+history available. Saving and metadata/deletion changes are blocked while revision
+metadata is incomplete; restore that metadata and refresh before mutating history.
+Content-object integrity is checked when a saved version is used.
+
+**More → Unregister source** hides the definition while retaining source files, history
+and group memberships. Register the same source again to recover its identity and history.
+**Remove local reference** retains the local record under `.xips/removed-references` and
+leaves its owner untouched. An unavailable reference remains selectable for
+**Relocate / change reference version**: choose the owning library, inspect its versions,
+then explicitly choose a saved revision. The asset ID must match; later owner versions
+never silently advance a reference. Malformed reference JSON is reported in Issues.
+
+After a standalone export, **More → Save export receipt** writes an optional
+`xips.use/v1` JSON sidecar containing the asset ID, revision, content digest and
+receipt-relative payload location. The proposed name is `<export destination>.xips-use.json`.
+It records the most recent export in this session and never overwrites different content.
+Current-file exports are marked `sourceImmutable: false`; this receipt records origin,
+not the continued integrity of an editable project copy.
+
+Background scans, reviews, saves and exports report their current phase and file bytes.
+Search, selection and saved-version browsing remain available against the last loaded
+catalog; mutations and drag/drop are disabled while work is active. **Cancel** is
+cooperative and stops at the next file/block checkpoint before publication. Once
+publication starts it is disabled. A cancelled save may leave unreferenced shared
+objects, but no new revision or export destination. New-source creation becomes
+non-cancellable before exposing its source folder. Legacy service I/O has coarser
+checkpoints; legacy export becomes non-cancellable before copying. Legacy export does
+not use the new file-review dialog. No global percentage or speed improvement is implied.
 
 **More** contains folder selection, rescan, saved-asset editing/deletion, and reported issues.
 Removing a new-format revision writes a deletion record; shared content remains available to other revisions.

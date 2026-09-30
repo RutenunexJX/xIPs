@@ -1,5 +1,7 @@
 #include "BrowserPanel.h"
 #include "CatalogModel.h"
+#include "library/CatalogIndex.h"
+#include "library/OperationControl.h"
 #include "UiSupport.h"
 #include "ElaFilePicker.h"
 #include "ElaApplication.h"
@@ -32,6 +34,7 @@
 #include <QResizeEvent>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QShortcut>
 #include <QSplitter>
 #include <QShowEvent>
 #include <QStringListModel>
@@ -180,6 +183,8 @@ class Form final : public ElaContentDialog
             {
                 control->setFixedHeight(30);
                 control->setFont(qApp->font());
+                if (auto *button = qobject_cast<ElaPushButton *>(control))
+                    button->setMinimumWidth(button->fontMetrics().horizontalAdvance(button->text()) + 28);
             }
         return ElaContentDialog::exec();
     }
@@ -214,6 +219,36 @@ QString versionText(const CatalogAsset &asset, const Snapshot &snapshot)
             [&](const auto &other) { return other.sequence == snapshot.sequence; }) > 1)
         label += " · " + snapshot.id.left(8);
     return label;
+}
+void previewContents(Form &form, const PayloadPreview &preview, bool exporting = false)
+{
+    form.setMinimumWidth(520);
+    form.message(QStringLiteral("%1 %2 · %3 bytes").arg(preview.files.size())
+        .arg(preview.files.size() == 1 ? QStringLiteral("file") : QStringLiteral("files")).arg(preview.bytes));
+    if (exporting)
+        form.message(preview.files.size() == 1 ? QStringLiteral("Destination: new file") : QStringLiteral("Destination: new directory"));
+    if (!preview.comparisonRevision.isEmpty())
+        form.message(QStringLiteral("Changes versus %1 · %2 unchanged files")
+            .arg(preview.comparisonRevision).arg(preview.unchanged));
+    QStringList lines;
+    const auto section = [&](const QString &title, const QStringList &items)
+    { if (!items.isEmpty()) { lines.append(title); lines.append(items); lines.append(QString()); } };
+    section(QStringLiteral("Included files"), preview.files);
+    section(QStringLiteral("Added"), preview.added);
+    section(QStringLiteral("Modified"), preview.modified);
+    section(QStringLiteral("Removed"), preview.removed);
+    section(QStringLiteral("Excluded paths and reasons"), preview.excluded);
+    if (preview.heads.size() > 1)
+    {
+        lines.prepend(QStringLiteral("%1 parallel revision heads\n%2\nSaving adopts these reviewed files with all heads as parents. Source text is not merged.\n")
+            .arg(preview.heads.size()).arg(preview.heads.join('\n')));
+    }
+    auto *files = new EnglishPlainTextEdit(&form);
+    files->setObjectName("payloadPreview");
+    files->setReadOnly(true);
+    files->setPlainText(lines.join('\n'));
+    files->setMinimumSize(360, 170);
+    form.body->addWidget(files);
 }
 QString indexTitle(const QString &kind)
 {
@@ -341,17 +376,19 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     toolbar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_search = new EnglishLineEdit(toolbar);
     m_search->setObjectName("assetSearch");
-    m_search->setPlaceholderText(QStringLiteral("Search…"));
-    m_search->setToolTip(QStringLiteral("Search names, files and indexes. Example: tag:uart interface:AXI"));
+    m_search->setPlaceholderText(QStringLiteral("Search IPs…"));
+    m_search->setToolTip(QStringLiteral("Search names, files and indexes (Ctrl+F). Esc clears the search.\nExample: tag:uart interface:AXI"));
     enableToolTip(m_search);
     m_search->setClearButtonEnabled(true);
     m_search->setAccessibleName(QStringLiteral("Search assets"));
     m_search->setMinimumWidth(96);
     m_search->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     toolbar->addWidget(m_search);
-    m_new = new ElaPushButton(QStringLiteral("New…"), toolbar);
+    m_new = new ElaPushButton(QStringLiteral("New IP…"), toolbar);
     m_new->setObjectName("newAssetButton");
-    m_new->setFixedSize(68, 30);
+    m_new->setFixedSize(82, 30);
+    m_new->setToolTip(QStringLiteral("Create an IP or module (Ctrl+N)"));
+    enableToolTip(m_new);
     m_new->setFont(qApp->font());
     primaryButton(m_new);
     toolbar->addWidget(m_new);
@@ -417,10 +454,10 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     groupHeader->addStretch();
     m_newGroup = new ElaToolButton(catalog);
     m_newGroup->setObjectName("newGroupButton");
-    m_newGroup->setText(QStringLiteral("+"));
+    m_newGroup->setText(QStringLiteral("+ Group"));
     m_newGroup->setAccessibleName(QStringLiteral("New group"));
-    m_newGroup->setToolTip(QStringLiteral("New group"));
-    m_newGroup->setFixedSize(26, 24);
+    m_newGroup->setToolTip(QStringLiteral("New group (Ctrl+Shift+N)"));
+    m_newGroup->setFixedSize(72, 24);
     enableToolTip(m_newGroup);
     groupHeader->addWidget(m_newGroup);
     catalogLayout->addLayout(groupHeader);
@@ -429,6 +466,10 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_list->setItemHeight(28);
     m_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_list->setDragDropMode(QAbstractItemView::DragDrop);
+    m_list->setDefaultDropAction(Qt::CopyAction);
+    m_list->setDropIndicatorShown(true);
+    m_list->setAutoExpandDelay(600);
     m_list->setUniformRowHeights(true);
     m_list->setHeaderHidden(true);
     m_list->setIndentation(16);
@@ -475,16 +516,17 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     auto *actions = new QHBoxLayout;
     actions->setSpacing(4);
     actions->addWidget(m_versions, 1);
-    m_take = new ElaPushButton(QStringLiteral("Use…"), m_details);
+    m_take = new ElaPushButton(QStringLiteral("Export…"), m_details);
     m_take->setObjectName("takeButton");
     primaryButton(m_take);
-    m_update = new ElaPushButton(QStringLiteral("Save…"), m_details);
+    m_update = new ElaPushButton(QStringLiteral("Save revision…"), m_details);
     m_update->setObjectName("updateButton");
     for (auto *button : {m_take, m_update})
     {
         button->setFixedHeight(30);
         button->setFont(qApp->font());
         button->setMinimumWidth(66);
+        enableToolTip(button);
     }
     actions->addWidget(m_take);
     actions->addWidget(m_update);
@@ -529,6 +571,25 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_activity->setAccessibleName(QStringLiteral("Operation in progress"));
     feedback->addWidget(m_activity);
     feedback->addWidget(m_status, 1);
+    m_cancel = new ElaPushButton(QStringLiteral("Cancel"), this);
+    m_cancel->setObjectName("cancelOperation");
+    m_cancel->setFixedHeight(24);
+    m_cancel->hide();
+    feedback->addWidget(m_cancel);
+    connect(m_cancel, &QPushButton::clicked, this, [this]
+    {
+        if (m_operation && m_operation->cancel()) notice(QStringLiteral("Cancelling before publication…"));
+        m_cancel->setEnabled(false);
+    });
+    m_progressTimer = new QTimer(this);
+    m_progressTimer->setInterval(120);
+    connect(m_progressTimer, &QTimer::timeout, this, [this]
+    {
+        if (!m_busy || !m_operation) return;
+        const auto status = m_operation->status();
+        if (!status.isEmpty() && m_operation->state.load() != OperationControl::CancelRequested) notice(status);
+        m_cancel->setEnabled(m_operation->state.load() == OperationControl::Running);
+    });
     layout->addLayout(feedback);
     m_searchTimer = new QTimer(this);
     m_searchTimer->setSingleShot(true);
@@ -541,6 +602,12 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     connect(m_new, &QPushButton::clicked, this, &BrowserPanel::createAsset);
     connect(m_newGroup, &QToolButton::clicked, this, &BrowserPanel::createGroup);
     connect(m_list, &QWidget::customContextMenuRequested, this, &BrowserPanel::groupMenu);
+    connect(m_model, &CatalogModel::groupMembershipRequested, this,
+        [this](const QString &group, const QString &asset)
+    {
+        const auto library = m_library;
+        runGroup([library, group, asset] { return CatalogGroups::setMember(library, group, asset, true); }, asset);
+    });
     connect(m_list, &QTreeView::collapsed, this, [this](const QModelIndex &index)
     {
         m_collapsedGroups.insert(m_model->groupId(index));
@@ -576,12 +643,41 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     connect(m_take, &QPushButton::clicked, this, &BrowserPanel::exportAsset);
     connect(m_update, &QPushButton::clicked, this, &BrowserPanel::updateAsset);
     connect(menu, &QToolButton::clicked, this, &BrowserPanel::more);
+    const auto shortcut = [this](const QKeySequence &keys, QWidget *scope, auto operation)
+    {
+        auto *key = new QShortcut(keys, scope);
+        key->setContext(Qt::WidgetWithChildrenShortcut);
+        key->setAutoRepeat(false);
+        connect(key, &QShortcut::activated, this, operation);
+    };
+    shortcut(QKeySequence::Find, this, [this]
+    {
+        if (!m_busy) { m_search->setFocus(); m_search->selectAll(); }
+    });
+    shortcut(QKeySequence::New, this, [this] { m_new->click(); });
+    shortcut(QKeySequence(QStringLiteral("Ctrl+Shift+N")), this, [this] { m_newGroup->click(); });
+    shortcut(QKeySequence::Save, this, [this] { m_update->click(); });
+    shortcut(QKeySequence(Qt::Key_F5), this, [this] { refresh(); });
+    shortcut(QKeySequence(Qt::Key_Escape), m_search, [this] { m_search->clear(); });
+    shortcut(QKeySequence(Qt::Key_F2), m_list, [this]
+    {
+        const auto index = m_list->currentIndex();
+        if (m_model->assetIndex(index) < 0) renameGroup(m_model->groupId(index));
+    });
     connect(m_splitter, &QSplitter::splitterMoved, this, [this] {
         (m_splitter->orientation() == Qt::Horizontal ? m_horizontalRatio : m_verticalRatio) = splitRatio();
     });
     connect(eTheme, &ElaTheme::themeModeChanged, this, [this] { applyTheme(); });
     applyTheme();
     setBusy(false);
+}
+BrowserPanel::~BrowserPanel()
+{
+    if (m_operation) m_operation->cancel();
+}
+void BrowserPanel::beginOperation()
+{
+    m_operation = std::make_shared<OperationControl>();
 }
 void BrowserPanel::applyTheme()
 {
@@ -689,6 +785,8 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
         return;
     }
     m_workspace = workspace;
+    m_take->setText(workspace.isEmpty() ? QStringLiteral("Export…") : QStringLiteral("To project…"));
+    m_take->setMinimumWidth(m_take->fontMetrics().horizontalAdvance(m_take->text()) + 28);
     m_take->setToolTip(workspace.isEmpty() ? QStringLiteral("Export the selected version")
                                          : QStringLiteral("Use the selected version in the project"));
     QString path = library;
@@ -739,6 +837,8 @@ void BrowserPanel::refresh()
     ++m_generation;
     m_pendingDetail.reset();
     m_loadingDetails = false;
+    beginOperation();
+    const auto operation = m_operation;
     setBusy(true, QStringLiteral("Scanning folder…"));
     auto *watcher = new QFutureWatcher<CatalogResult>(this);
     connect(watcher, &QFutureWatcher<CatalogResult>::finished, this,
@@ -746,6 +846,13 @@ void BrowserPanel::refresh()
             {
                 const auto result = watcher->result();
                 watcher->deleteLater();
+                if (result.cancelled)
+                {
+                    setBusy(false);
+                    notice(QStringLiteral("Scan cancelled. The previous catalog is still available."));
+                    applyPendingContext();
+                    return;
+                }
                 m_assets = result.assets;
                 m_model->setAssets(m_assets, m_library, result.groups);
                 refreshIndexes();
@@ -768,18 +875,19 @@ void BrowserPanel::refresh()
                                   "No IPs created yet. Use New to create one or register existing sources.")
                             : QStringLiteral("%1 · %2 items").arg(QFileInfo(m_library).fileName()).arg(m_assets.size()));
             });
-    watcher->setFuture(QtConcurrent::run([library] { return SnapshotLibrary::scan(library); }));
+    watcher->setFuture(QtConcurrent::run([library, operation]
+        { OperationScope scope(operation.get()); return SnapshotLibrary::scan(library); }));
 }
 void BrowserPanel::filter()
 {
-    if (m_busy)
-        return;
     m_searchTimer->stop();
     const int filterCount = int(!m_category.isEmpty()) + int(!m_indexTerm.isEmpty());
     m_filterToggle->setText(filterCount ? QStringLiteral("Filter · %1").arg(filterCount)
                                       : QStringLiteral("Filter"));
     const QString selectedId = m_pendingId.isEmpty() ? m_selected.id : m_pendingId;
-    auto terms = m_search->text().trimmed().toCaseFolded().split(' ', Qt::SkipEmptyParts);
+    QString queryError;
+    auto terms = CatalogIndex::queryTerms(m_search->text(), &queryError);
+    if (!queryError.isEmpty()) { notice(queryError, true); return; }
     if (!m_indexTerm.isEmpty()) terms.append(m_indexTerm);
     const QSignalBlocker selectionSignals(m_list->selectionModel());
     const QSignalBlocker treeSignals(m_list);
@@ -824,7 +932,7 @@ void BrowserPanel::filter()
         m_fileModel->setStringList({});
         m_pendingDetail.reset();
         m_loadingDetails = false;
-        setBusy(false);
+        updateActivity();
     }
 }
 void BrowserPanel::selectCurrent()
@@ -843,7 +951,7 @@ void BrowserPanel::selectCurrent()
             if (group.id == m_activeGroup) m_name->setText(group.name);
         const int count = m_model->rowCount(current);
         m_summary->setText(QStringLiteral("Group · %1 IPs").arg(count));
-        m_description->setText(QStringLiteral("Use New to create an IP here, or right-click an IP to add it."));
+        m_description->setText(QStringLiteral("Drag an IP onto this group, or use New IP to create one here."));
         m_description->setToolTip(m_description->text());
         m_description->setVisible(count == 0);
         const QSignalBlocker versions(m_versions);
@@ -852,7 +960,7 @@ void BrowserPanel::selectCurrent()
         m_take->hide();
         m_update->hide();
         m_fileModel->setStringList({});
-        setBusy(false);
+        updateActivity();
         return;
     }
     if (index < 0 || index >= m_assets.size())
@@ -929,6 +1037,10 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
     QStringList detail;
     QStringList indexValues;
     if (!asset.description.isEmpty()) detail.append(asset.description);
+    detail.append(asset.problems);
+    if (SnapshotLibrary::heads(asset).size() > 1)
+        detail.append(QStringLiteral("Parallel revision heads: %1. Saving adopts the reviewed file set; it does not merge source text.")
+            .arg(SnapshotLibrary::heads(asset).size()));
     for (auto it = asset.indexes.cbegin(); it != asset.indexes.cend(); ++it)
         if (!it.value().isEmpty())
         {
@@ -938,6 +1050,8 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
     indexValues.removeDuplicates();
     QStringList brief;
     if (!asset.description.isEmpty()) brief.append(asset.description);
+    if (!asset.problems.isEmpty()) brief.append(QStringLiteral("Attention: %1").arg(asset.problems.first()));
+    if (SnapshotLibrary::heads(asset).size() > 1) brief.append(QStringLiteral("%1 parallel revision heads").arg(SnapshotLibrary::heads(asset).size()));
     if (!indexValues.isEmpty()) brief.append(indexValues.join(QStringLiteral(" · ")));
     m_description->setText(brief.join('\n'));
     m_description->setToolTip(detail.join('\n'));
@@ -957,10 +1071,11 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
     if (requested >= 0)
         m_versions->setCurrentIndex(requested);
     m_pendingRevision.clear();
-    m_update->setText(asset.discovered ? QStringLiteral("Save…")
+    m_update->setText(asset.discovered ? QStringLiteral("Save revision…")
                        : asset.legacy ? QStringLiteral("Convert legacy asset")
                                       : QStringLiteral("Update"));
-    m_update->setToolTip(asset.discovered ? QStringLiteral("Save a new revision of the current files") : m_update->text());
+    m_update->setToolTip(asset.discovered ? QStringLiteral("Save a new revision of the current files (Ctrl+S)")
+                                         : m_update->text() + QStringLiteral(" (Ctrl+S)"));
     m_update->setMinimumWidth(m_update->fontMetrics().horizontalAdvance(m_update->text()) + 28);
     m_update->setVisible(asset.referencePath.isEmpty());
     selectVersion();
@@ -980,14 +1095,15 @@ void BrowserPanel::selectVersion()
     if (!m_selected.referencePath.isEmpty())
         m_summary->setText(m_summary->text() + QStringLiteral(" · Referenced"));
     m_take->setEnabled(!m_busy && !m_snapshot.id.isEmpty());
-    m_update->setEnabled(!m_busy && !m_selected.id.isEmpty() && m_selected.referencePath.isEmpty());
+    m_update->setEnabled(!m_busy && !m_selected.id.isEmpty() && m_selected.referencePath.isEmpty() &&
+                         !m_selected.historyIncomplete && m_selected.sourceProblem.isEmpty());
 }
 void BrowserPanel::setBusy(bool value, const QString &message)
 {
     m_busy = value;
     m_new->setEnabled(!value);
     m_newGroup->setEnabled(!value && !m_library.isEmpty());
-    m_indexes->setEnabled(!value);
+    m_indexes->setEnabled(true);
     if (value)
     {
         m_versions->finishPopupAnimation();
@@ -995,13 +1111,20 @@ void BrowserPanel::setBusy(bool value, const QString &message)
     }
     m_folder->setEnabled(!value);
     m_folder->setVisible(m_library.isEmpty());
-    m_filterToggle->setEnabled(!value);
-    m_search->setEnabled(!value);
-    m_filters->setEnabled(!value);
-    m_list->setEnabled(!value);
-    m_versions->setEnabled(!value);
+    m_filterToggle->setEnabled(true);
+    m_search->setEnabled(true);
+    m_filters->setEnabled(true);
+    m_list->setEnabled(true);
+    m_list->setDragEnabled(!value);
+    m_list->setAcceptDrops(!value);
+    m_versions->setEnabled(true);
     m_take->setEnabled(!value && !m_snapshot.id.isEmpty());
-    m_update->setEnabled(!value && !m_selected.id.isEmpty() && m_selected.referencePath.isEmpty());
+    m_update->setEnabled(!value && !m_selected.id.isEmpty() && m_selected.referencePath.isEmpty() &&
+                         !m_selected.historyIncomplete && m_selected.sourceProblem.isEmpty());
+    m_cancel->setVisible(value && bool(m_operation));
+    m_cancel->setEnabled(value && bool(m_operation));
+    if (value && m_operation) m_progressTimer->start();
+    else { m_progressTimer->stop(); if (!value) m_operation.reset(); }
     if (!message.isEmpty())
         notice(message);
     updateActivity();
@@ -1030,6 +1153,8 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
     ++m_generation;
     m_pendingDetail.reset();
     m_loadingDetails = false;
+    beginOperation();
+    const auto operation = m_operation;
     setBusy(true, message);
     auto *watcher = new QFutureWatcher<SnapshotResult>(this);
     connect(watcher, &QFutureWatcher<SnapshotResult>::finished, this,
@@ -1038,6 +1163,12 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
                 const auto result = watcher->result();
                 watcher->deleteLater();
                 setBusy(false);
+                if (result.cancelled)
+                {
+                    notice(result.error);
+                    applyPendingContext();
+                    return;
+                }
                 if (!result.ok)
                 {
                     QString message = result.error;
@@ -1059,7 +1190,8 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
                 }
                 applyPendingContext();
             });
-    watcher->setFuture(QtConcurrent::run(std::move(work)));
+    watcher->setFuture(QtConcurrent::run([work = std::move(work), operation]
+        { OperationScope scope(operation.get()); return work(); }));
 }
 void BrowserPanel::chooseLibrary()
 {
@@ -1206,12 +1338,11 @@ void BrowserPanel::groupMenu(const QPoint &position)
     const auto groupId = m_model->groupId(index);
     const int assetIndex = m_model->assetIndex(index);
     const auto assetId = assetIndex >= 0 ? m_assets[assetIndex].id : QString();
-    CatalogGroup group;
-    for (const auto &candidate : m_model->groups()) if (candidate.id == groupId) group = candidate;
     ElaMenu menu;
     menu.setObjectName("groupMenu");
     auto *create = menu.addAction(QStringLiteral("New group…"));
     create->setObjectName("createGroupAction");
+    create->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+N")));
     create->setEnabled(!m_library.isEmpty());
     QAction *rename = nullptr, *erase = nullptr, *remove = nullptr;
     ElaMenu *add = nullptr;
@@ -1239,6 +1370,7 @@ void BrowserPanel::groupMenu(const QPoint &position)
     {
         rename = menu.addAction(QStringLiteral("Rename group…"));
         rename->setObjectName("renameGroupAction");
+        rename->setShortcut(QKeySequence(Qt::Key_F2));
         erase = menu.addAction(QStringLiteral("Delete group"));
         erase->setObjectName("deleteGroupAction");
     }
@@ -1254,18 +1386,26 @@ void BrowserPanel::groupMenu(const QPoint &position)
         runGroup([library, groupId, assetId] { return CatalogGroups::setMember(library, groupId, assetId, false); }, assetId);
     else if (chosen && chosen == erase)
         runGroup([library, groupId] { return CatalogGroups::erase(library, groupId); });
-    else if (chosen && chosen == rename)
-    {
-        Form form(this, QStringLiteral("Rename group"), QStringLiteral("Save"));
-        auto *name = new EnglishLineEdit(&form);
-        name->setObjectName("groupName");
-        name->setMaxLength(128);
-        name->setText(group.name);
-        form.body->addWidget(name);
-        if (form.exec() != QDialog::Accepted) return;
-        const auto title = name->text();
-        runGroup([library, groupId, title] { return CatalogGroups::rename(library, groupId, title); });
-    }
+    else if (chosen && chosen == rename) renameGroup(groupId);
+}
+void BrowserPanel::renameGroup(const QString &id)
+{
+    if (m_busy || id.isEmpty()) return;
+    QString currentName;
+    for (const auto &group : m_model->groups()) if (group.id == id) currentName = group.name;
+    if (currentName.isEmpty()) return;
+    Form form(this, QStringLiteral("Rename group"), QStringLiteral("Save"));
+    auto *name = new EnglishLineEdit(&form);
+    name->setObjectName("groupName");
+    name->setMaxLength(128);
+    name->setText(currentName);
+    name->selectAll();
+    form.body->addWidget(name);
+    connect(name, &QLineEdit::textChanged, &form,
+        [&] { form.acceptButton->setEnabled(!name->text().trimmed().isEmpty()); });
+    if (form.exec() != QDialog::Accepted) return;
+    const auto title = name->text(), library = m_library;
+    runGroup([library, id, title] { return CatalogGroups::rename(library, id, title); });
 }
 void BrowserPanel::createAsset()
 {
@@ -1401,7 +1541,18 @@ void BrowserPanel::collectPaths(const QStringList &paths)
     const QString library = m_library, title = name->text(),
                   type = category->currentData().toString();
     run(QStringLiteral("Collecting files…"), [library, paths, title, type]
-        { return SnapshotLibrary::collect(library, paths, title, type); });
+        { return SnapshotLibrary::previewCollect(paths, type); },
+        [this, library, paths, title, type](const auto &prepared)
+    {
+        if (m_pendingContext) { applyPendingContext(); return; }
+        Form review(this, QStringLiteral("Review collection"), QStringLiteral("Collect reviewed files"));
+        review.setObjectName("payloadReviewForm");
+        previewContents(review, prepared.preview);
+        if (review.exec() != QDialog::Accepted) return;
+        const auto expected = prepared.preview;
+        run(QStringLiteral("Collecting reviewed files…"), [library, paths, title, type, expected]
+            { return SnapshotLibrary::collect(library, paths, title, type, {}, &expected); });
+    });
 }
 void BrowserPanel::updateAsset()
 {
@@ -1410,22 +1561,8 @@ void BrowserPanel::updateAsset()
     const auto asset = m_selected;
     if (asset.discovered)
     {
-        Form form(this, QStringLiteral("Save %1").arg(asset.name), QStringLiteral("Save revision"));
-        auto *note = new EnglishLineEdit(&form);
-        note->setObjectName("revisionNote");
-        note->setPlaceholderText(QStringLiteral("Note (optional)"));
-        form.body->addWidget(note);
-        if (form.exec() != QDialog::Accepted)
-            return;
-        const auto text = note->text();
-        run(QStringLiteral("Saving revision…"),
-            [asset, text] { return SnapshotLibrary::saveCurrent(asset, text); },
-            [this](const auto &result)
-            {
-                m_pendingId = result.asset.id;
-                m_pendingRevision = result.snapshot.id;
-                refresh();
-            });
+        run(QStringLiteral("Reviewing working files…"), [asset] { return SnapshotLibrary::previewSave(asset); },
+            [this](const auto &prepared) { if (m_pendingContext) { applyPendingContext(); return; } savePrepared(prepared, {}); });
         return;
     }
     if (asset.legacy)
@@ -1457,9 +1594,20 @@ void BrowserPanel::updateAsset()
     const auto paths = pickSources();
     if (paths.isEmpty())
         return;
-    Form form(this, QStringLiteral("Update %1").arg(asset.name), QStringLiteral("Save revision"));
-    form.message(QStringLiteral("Saves a revision. Existing revisions stay unchanged. "
-                                "Identical content is skipped."));
+    run(QStringLiteral("Reviewing update…"), [asset, paths] { return SnapshotLibrary::previewSave(asset, paths); },
+        [this, paths](const auto &prepared) { if (m_pendingContext) { applyPendingContext(); return; } savePrepared(prepared, paths); });
+}
+void BrowserPanel::savePrepared(const SnapshotResult &prepared, const QStringList &paths)
+{
+    const auto asset = prepared.asset;
+    const auto expected = prepared.preview;
+    Form form(this, QStringLiteral("Save %1").arg(asset.name), expected.heads.size() > 1
+        ? QStringLiteral("Adopt reviewed files") : QStringLiteral("Save revision"));
+    form.setObjectName("payloadReviewForm");
+    previewContents(form, expected);
+    form.message(expected.heads.size() > 1
+        ? QStringLiteral("Creates a revision joining these parents. Existing revisions stay unchanged.")
+        : QStringLiteral("Saves a revision. Existing revisions stay unchanged. Identical content is skipped."));
     auto *note = new EnglishLineEdit(&form);
     note->setObjectName("revisionNote");
     note->setPlaceholderText(QStringLiteral("Note (optional), e.g. verified on board"));
@@ -1469,15 +1617,19 @@ void BrowserPanel::updateAsset()
     const auto text = note->text();
     run(
         QStringLiteral("Saving revision…"),
-        [asset, paths, text] { return SnapshotLibrary::update(asset, paths, text); },
+        [asset, paths, text, expected] { return asset.discovered
+            ? SnapshotLibrary::saveCurrent(asset, text, &expected)
+            : SnapshotLibrary::update(asset, paths, text, &expected); },
         [this](const auto &result)
         {
+            m_pendingRevision = result.snapshot.id;
             showDetails(result.asset);
             if (result.unchanged)
                 notice(QStringLiteral("Content unchanged. No revision created."));
             else
             {
                 m_pendingId = result.asset.id;
+                m_pendingRevision = result.snapshot.id;
                 refresh();
             }
         });
@@ -1488,9 +1640,24 @@ void BrowserPanel::exportAsset()
         return;
     const auto asset = m_selected;
     const auto snapshot = m_snapshot;
+    if (asset.legacy)
+    {
+        SnapshotResult prepared; prepared.asset = asset; prepared.snapshot = snapshot;
+        exportPrepared(prepared);
+        return;
+    }
+    run(QStringLiteral("Reviewing export…"), [asset, snapshot] { return SnapshotLibrary::previewExport(asset, snapshot.id); },
+        [this](const auto &prepared) { if (m_pendingContext) { applyPendingContext(); return; } exportPrepared(prepared); });
+}
+void BrowserPanel::exportPrepared(const SnapshotResult &prepared)
+{
+    const auto asset = prepared.asset;
+    const auto snapshot = prepared.snapshot;
+    const auto expected = prepared.preview;
     const QString workspace = m_workspace;
     Form form(this, QStringLiteral("Use %1 · %2").arg(asset.name, versionText(asset, snapshot)),
               QStringLiteral("Use"));
+    if (!asset.legacy) previewContents(form, expected, true);
     auto *destination = new EnglishLineEdit(&form);
     destination->setObjectName("exportDestination");
     const QString suggested = snapshot.files.size() == 1
@@ -1545,8 +1712,8 @@ void BrowserPanel::exportAsset()
         }
     }
     run(
-        QStringLiteral("Copying selected revision…"), [asset, snapshot, target]
-        { return SnapshotLibrary::exportSnapshot(asset, snapshot.id, target); },
+        QStringLiteral("Copying selected revision…"), [asset, snapshot, target, expected]
+        { return SnapshotLibrary::exportSnapshot(asset, snapshot.id, target, asset.legacy ? nullptr : &expected); },
         [this, workspace](const auto &result)
         {
             const QVariantMap provenance{{"schema", "xips.use/v1"},
@@ -1575,9 +1742,64 @@ void BrowserPanel::exportAsset()
                     return;
                 }
             }
-            notice(QStringLiteral("Created %1 from %2")
-                       .arg(result.exportedPath, versionText(result.asset, result.snapshot)));
+            m_lastExport = result;
+            notice(QStringLiteral("Created %1 from %2").arg(result.exportedPath, versionText(result.asset, result.snapshot))
+                + (m_host ? QString() : QStringLiteral(". Save its origin from More → Save export receipt.")));
         });
+}
+void BrowserPanel::saveOrigin()
+{
+    if (m_busy || !m_lastExport.ok || m_host) return;
+    const auto exported = m_lastExport;
+    Form form(this, QStringLiteral("Save export receipt"), QStringLiteral("Save receipt"));
+    auto *path = new EnglishLineEdit(&form);
+    path->setObjectName("receiptDestination");
+    path->setText(exported.exportedPath + QStringLiteral(".xips-use.json"));
+    form.body->addWidget(path);
+    form.message(QStringLiteral("Records this exported asset, exact revision, digest and relative payload location. Existing files are never replaced."));
+    if (form.exec() != QDialog::Accepted) return;
+    const auto destination = path->text().trimmed();
+    run(QStringLiteral("Saving origin receipt…"), [exported, destination] { return SnapshotLibrary::saveReceipt(exported, destination); },
+        [this](const auto &result) { notice(QStringLiteral("Receipt saved: %1").arg(result.exportedPath)); });
+}
+void BrowserPanel::changeReference()
+{
+    if (m_busy || m_selected.referencePath.isEmpty()) return;
+    const auto reference = m_selected;
+    Form form(this, QStringLiteral("Locate reference owner"), QStringLiteral("Inspect versions"));
+    auto *owner = new EnglishLineEdit(&form);
+    owner->setObjectName("referenceOwner");
+    owner->setText(QDir(QFileInfo(reference.referencePath).absolutePath()).absoluteFilePath(reference.referenceRecord.value("library").toString()));
+    form.body->addWidget(owner);
+    auto *browse = new ElaPushButton(QStringLiteral("Browse…"), &form);
+    form.body->addWidget(browse);
+    connect(browse, &QPushButton::clicked, &form, [&]
+    {
+        const auto path = ElaFilePicker::getExistingDirectory(&form, QStringLiteral("Owning library"), owner->text());
+        if (!path.isEmpty()) owner->setText(path);
+    });
+    form.message(QStringLiteral("The selected owner must contain asset ID %1. Only this local reference will change.").arg(reference.id));
+    if (form.exec() != QDialog::Accepted) return;
+    const auto library = owner->text().trimmed();
+    run(QStringLiteral("Inspecting owner revisions…"), [reference, library] { return SnapshotLibrary::referenceTarget(reference, library); },
+        [this, reference, library](const auto &result)
+    {
+        if (m_pendingContext) { applyPendingContext(); return; }
+        Form confirm(this, QStringLiteral("Change pinned reference"), QStringLiteral("Use selected revision"));
+        confirm.message(QStringLiteral("Current revision: %1\nOwner: %2").arg(reference.pinnedRevision, library));
+        auto *versions = new ElaComboBox(&confirm);
+        versions->setObjectName("replacementRevision");
+        for (auto it = result.asset.snapshots.crbegin(); it != result.asset.snapshots.crend(); ++it)
+            if (!it->objects.isEmpty()) versions->addItem(versionText(result.asset, *it) + " · " + it->id.left(8), it->id);
+        const int pinned = versions->findData(reference.pinnedRevision);
+        if (pinned >= 0) versions->setCurrentIndex(pinned);
+        confirm.body->addWidget(versions);
+        confirm.acceptButton->setEnabled(versions->count() > 0);
+        if (confirm.exec() != QDialog::Accepted) return;
+        const auto revision = versions->currentData().toString();
+        run(QStringLiteral("Updating local reference…"), [reference, library, revision]
+            { return SnapshotLibrary::changeReference(reference, library, revision); });
+    });
 }
 void BrowserPanel::detailsDialog()
 {
@@ -1612,6 +1834,7 @@ void BrowserPanel::more()
     choose->setToolTip(QDir::toNativeSeparators(m_library));
     auto *refreshAction = menu.addAction(QStringLiteral("Refresh"));
     refreshAction->setObjectName("refreshAction");
+    refreshAction->setShortcut(QKeySequence(Qt::Key_F5));
     auto *collect = menu.addAction(QStringLiteral("Collect files…"));
     collect->setEnabled(!m_busy);
     menu.addSeparator();
@@ -1625,6 +1848,23 @@ void BrowserPanel::more()
     auto *editAction = menu.addAction(QStringLiteral("Edit asset details…"));
     auto *deleteVersion = menu.addAction(QStringLiteral("Delete selected revision…"));
     auto *deleteAsset = menu.addAction(QStringLiteral("Delete asset…"));
+    auto *unregister = menu.addAction(QStringLiteral("Unregister source…"));
+    unregister->setObjectName("unregisterSourceAction");
+    unregister->setVisible(m_selected.discovered && m_selected.referencePath.isEmpty());
+    unregister->setEnabled(!m_busy && !m_selected.historyRoot.isEmpty() && !m_selected.historyIncomplete);
+    auto *removeReference = menu.addAction(QStringLiteral("Remove local reference…"));
+    removeReference->setObjectName("removeReferenceAction");
+    auto *changeReferenceAction = menu.addAction(QStringLiteral("Relocate / change reference version…"));
+    changeReferenceAction->setObjectName("changeReferenceAction");
+    for (auto *action : {removeReference, changeReferenceAction})
+    {
+        action->setVisible(!m_selected.referencePath.isEmpty());
+        action->setEnabled(!m_busy);
+    }
+    auto *receipt = menu.addAction(QStringLiteral("Save export receipt…"));
+    receipt->setObjectName("saveReceiptAction");
+    receipt->setVisible(!m_host && m_lastExport.ok);
+    receipt->setEnabled(!m_busy);
     menu.addSeparator();
     auto *problems = menu.addAction(QStringLiteral("Issues (%1)").arg(m_problems.size()));
     problems->setVisible(!m_problems.isEmpty());
@@ -1638,11 +1878,13 @@ void BrowserPanel::more()
     refreshAction->setEnabled(!m_busy && !m_library.isEmpty());
     for (auto *action : {openSource, reference, editAction, deleteVersion, deleteAsset})
         action->setVisible(!m_selected.id.isEmpty());
-    editAction->setEnabled(!m_busy && !m_selected.id.isEmpty() && !m_selected.legacy && m_selected.referencePath.isEmpty());
+    editAction->setEnabled(!m_busy && !m_selected.id.isEmpty() && !m_selected.legacy && m_selected.referencePath.isEmpty() && !m_selected.historyIncomplete);
     deleteVersion->setEnabled(!m_busy && !m_selected.legacy && !m_selected.discovered && m_selected.snapshots.size() > 1 &&
                               !m_snapshot.id.isEmpty());
     deleteAsset->setEnabled(!m_busy && !m_selected.id.isEmpty() && !m_selected.discovered && m_selected.referencePath.isEmpty());
     deleteVersion->setEnabled(deleteVersion->isEnabled() && m_selected.referencePath.isEmpty());
+    deleteVersion->setEnabled(deleteVersion->isEnabled() && !m_selected.historyIncomplete);
+    deleteAsset->setEnabled(deleteAsset->isEnabled() && !m_selected.historyIncomplete);
     const auto *anchor = findChild<ElaToolButton *>("moreButton");
     const auto *action = executeMenu(menu, this, anchor->mapToGlobal(QPoint(0, anchor->height())));
     if (action == choose)
@@ -1661,6 +1903,22 @@ void BrowserPanel::more()
         detailsDialog();
     else if (action == reference)
         referenceAsset();
+    else if (action == receipt)
+        saveOrigin();
+    else if (action == changeReferenceAction)
+        changeReference();
+    else if (action == unregister || action == removeReference)
+    {
+        const auto asset = m_selected;
+        const bool source = action == unregister;
+        Form form(this, source ? QStringLiteral("Unregister source") : QStringLiteral("Remove local reference"),
+                  source ? QStringLiteral("Unregister") : QStringLiteral("Remove reference"));
+        form.message(source ? QStringLiteral("Hide this source from the catalog. Working files and saved history are retained. Registering the same source again restores its identity and history.")
+                            : QStringLiteral("Remove only this receiving catalog's reference. Its owner and project copies remain unchanged. The local reference record is retained for recovery."));
+        if (form.exec() != QDialog::Accepted) return;
+        run(QStringLiteral("Updating catalog membership…"), [asset, source]
+            { return source ? SnapshotLibrary::unregisterSource(asset) : SnapshotLibrary::removeReference(asset); });
+    }
     else if (action == theme)
     {
         const bool dark = eTheme->getThemeMode() != ElaThemeType::Dark;

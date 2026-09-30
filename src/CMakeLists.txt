@@ -14,6 +14,7 @@ add_library(xips_core STATIC
     library/SnapshotLibrary.h
     library/ContentStore.cpp
     library/ContentStore.h
+    library/OperationControl.h
     library/CatalogIndex.cpp
     library/CatalogIndex.h
     library/CatalogGroups.cpp

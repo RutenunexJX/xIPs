@@ -19,5 +19,6 @@ class CatalogIndex
                                                     const QStringList &terms);
     static QString searchText(const CatalogAsset &asset);
     static bool matches(const CatalogAsset &asset, const QStringList &terms);
+    static QStringList queryTerms(const QString &query, QString *error = nullptr);
 };
 }

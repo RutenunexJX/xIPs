@@ -40,6 +40,10 @@ an individual source does not silently reassign its existing history.
 are retained. Categories are module, ip, artifact or other. New writes require
 schema 3; this change does not migrate existing libraries.
 
+Registered source metadata can include `registered: false`. Scans omit that registration
+but retain all source/history/group records. Registering the same source reactivates
+its existing identity. References can still read its saved history.
+
 Index values are many-to-many metadata, independent of physical directories.
 SQLite stores normalized facet rows and rebuilds them from these definitions.
 Field search combines category/tag/interface/purpose terms with AND; category paths
@@ -58,6 +62,12 @@ Reading reloads the owning definition and validates its identity and pinned revi
 Missing owners or versions are reported as catalog issues. Referenced entries cannot
 edit, save or delete their owner through the receiving catalog. Existing reference
 files are never silently replaced when adding another reference.
+
+An unavailable owner/version retains a selectable placeholder when the reference JSON
+has a valid schema and asset ID. Malformed JSON is reported in Issues. Explicit relocation
+and version changes verify the exact owner ID, saved content and unchanged original
+reference record before atomic replacement. Removal renames only that record into
+`.xips/removed-references/<unique-id>.json`; it does not modify the owner or its objects.
 
 ## Independent revision manifests
 
@@ -90,6 +100,13 @@ Sequence numbers are display labels. Concurrent revisions retain unique UUIDs ev
 when their sequence numbers match. Numeric selectors reject ambiguity; project
 receipts always pin the UUID. A later save records all known heads as parents and
 captures the supplied source content; it does not merge source text.
+
+Schema 3 independent manifests are parsed separately. Invalid manifests/deletion records
+mark history incomplete and report their paths while retaining other readable revisions.
+Even an asset with no healthy manifests remains visible. Incomplete history blocks saves,
+definition edits and deletion/unregistration; export of a healthy selected revision is
+still allowed and verifies its content. Inline schema 2 and legacy manifest parsing are
+unchanged. Empty or unavailable working sources are reported separately from saved history.
 
 ## Catalog groups
 
@@ -131,6 +148,18 @@ fails safely while synchronization is incomplete.
 Export streams verified content into a temporary destination, then publishes the
 result. Existing destinations and original files are never overwritten. Saved
 history remains exportable after an original source is removed.
+
+GUI previews bind included paths and SHA-256/size fingerprints to the subsequent
+save/export. Saves also bind the parent-head set; exports recheck copied bytes before
+publishing the new file/directory. Exclusions and per-file changes are explanatory
+preview data, not a source-text merge. These checks do not replace the existing
+local lock or make cloud synchronization transactional.
+
+Workers use an `OperationControl`: cancellation and entry to publication compete via
+one atomic state transition. Directory enumeration and content blocks check cancellation.
+After publication begins, cancellation is rejected through completion. Local cache rebuilds
+are disposable. Group metadata actions and legacy service internals are not fully
+interruptible; no unsafe interruption or rollback of a published result is attempted.
 
 ## Deletion and retention
 

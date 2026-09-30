@@ -250,11 +250,11 @@ int main(int argc, char *argv[])
         record.manifest.name = entry.name;
         record.manifest.description = entry.description;
         record.manifest.tags = entry.tags;
-        record.manifest.version = entry.snapshots.last().id;
+        record.manifest.version = entry.snapshots.isEmpty() ? QString() : entry.snapshots.last().id;
         record.manifest.rawObject.insert("category", entry.category);
         record.assetRoot = entry.root;
         record.manifestPath = entry.root + "/.xips.json";
-        record.files = entry.snapshots.last().files;
+        record.files = entry.snapshots.isEmpty() ? QStringList{} : entry.snapshots.last().files;
         record.fileCount = record.files.size();
         scan.assets.append(record);
         modern.insert(entry.id.toCaseFolded(), entry);
@@ -268,8 +268,9 @@ int main(int argc, char *argv[])
 
     if (action == QStringLiteral("list"))
     {
-        const QString query = xips::json::normalizeSearchText(parser.value(queryOption));
-        const QStringList terms = query.split(u' ', Qt::SkipEmptyParts);
+        QString queryError;
+        const QStringList terms = xips::CatalogIndex::queryTerms(parser.value(queryOption), &queryError);
+        if (!queryError.isEmpty()) return fail(action, queryError);
         QJsonArray assets;
         for (const xips::AssetRecord &asset : scan.assets)
         {
@@ -339,6 +340,7 @@ int main(int argc, char *argv[])
     if (modern.contains(identity))
     {
         const auto entry = modern.value(identity);
+        if (entry.snapshots.isEmpty()) return fail(action, QStringLiteral("No healthy revisions are available."), 3, index.problems);
         const QString revision = parser.value(versionOption).trimmed().isEmpty()
                                      ? entry.snapshots.last().id
                                      : parser.value(versionOption).trimmed();

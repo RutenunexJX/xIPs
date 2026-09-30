@@ -44,6 +44,11 @@ struct CatalogAsset
     QMap<QString, QStringList> indexes;
     QString referencePath;
     QString pinnedRevision;
+    QStringList problems;
+    bool historyIncomplete = false;
+    QString sourceProblem;
+    QString referenceLibrary;
+    QJsonObject referenceRecord;
 };
 
 struct CatalogDefinition
@@ -57,20 +62,39 @@ struct CatalogDefinition
 
 struct CatalogResult
 {
+    bool cancelled = false;
     QList<CatalogAsset> assets;
     QStringList problems;
     QList<CatalogGroup> groups;
 };
 
+struct PayloadPreview
+{
+    QString assetId;
+    QString revision;
+    QString comparisonRevision;
+    QStringList files;
+    QMap<QString, ContentObject> objects;
+    QStringList added;
+    QStringList modified;
+    QStringList removed;
+    QStringList excluded;
+    QStringList heads;
+    qint64 bytes = 0;
+    qsizetype unchanged = 0;
+};
+
 struct SnapshotResult
 {
     bool ok = false;
+    bool cancelled = false;
     bool unchanged = false;
     QString error;
     QString retainedPath;
     CatalogAsset asset;
     Snapshot snapshot;
     QString exportedPath;
+    PayloadPreview preview;
 };
 
 class SnapshotLibrary
@@ -84,18 +108,29 @@ class SnapshotLibrary
     static SnapshotResult setDefinition(const CatalogAsset &asset, const CatalogDefinition &definition);
     static SnapshotResult addReference(const CatalogAsset &asset, const QString &revision,
                                        const QString &destinationLibrary);
-    static SnapshotResult saveCurrent(const CatalogAsset &asset, const QString &note = {});
+    static SnapshotResult saveCurrent(const CatalogAsset &asset, const QString &note = {},
+                                      const PayloadPreview *expected = nullptr);
+    static SnapshotResult previewSave(const CatalogAsset &asset, const QStringList &sources = {});
+    static SnapshotResult previewCollect(const QStringList &sources, const QString &category);
+    static SnapshotResult previewExport(const CatalogAsset &asset, const QString &revision);
+    static QStringList heads(const CatalogAsset &asset);
+    static SnapshotResult unregisterSource(const CatalogAsset &asset);
+    static SnapshotResult removeReference(const CatalogAsset &asset);
+    static SnapshotResult referenceTarget(const CatalogAsset &reference, const QString &ownerLibrary);
+    static SnapshotResult changeReference(const CatalogAsset &reference, const QString &ownerLibrary,
+                                          const QString &revision);
+    static SnapshotResult saveReceipt(const SnapshotResult &exported, const QString &destination);
     static SnapshotResult describe(const CatalogAsset &asset);
     static SnapshotResult verifySnapshot(const CatalogAsset &asset, const QString &revision);
     static SnapshotResult collect(const QString &library, const QStringList &sources,
                                   const QString &name, const QString &category,
-                                  const QString &note = {});
+                                  const QString &note = {}, const PayloadPreview *expected = nullptr);
     static SnapshotResult update(const CatalogAsset &asset, const QStringList &sources,
-                                 const QString &note = {});
+                                 const QString &note = {}, const PayloadPreview *expected = nullptr);
     static SnapshotResult edit(const CatalogAsset &asset, const QString &name,
                                const QString &category, const QString &description);
     static SnapshotResult exportSnapshot(const CatalogAsset &asset, const QString &revision,
-                                         const QString &destination);
+                                         const QString &destination, const PayloadPreview *expected = nullptr);
     static SnapshotResult eraseSnapshot(const CatalogAsset &asset, const QString &revision,
                                         bool permanent = false);
     static SnapshotResult eraseAsset(const CatalogAsset &asset, bool permanent = false);

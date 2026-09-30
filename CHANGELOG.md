@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.5.0 — 2026-09-30
+
+- Keep healthy saved revisions accessible when another independent manifest is damaged or a registered working source is empty/unavailable; block unsafe history mutations and show the affected paths.
+- Review file sets, byte counts, exclusions and file-level changes before collection, saving and new-format export; recheck reviewed content and destination shape before publication.
+- Add source unregistration, retained local-reference removal, and explicit owner relocation/version selection with identity and stale-record checks.
+- Offer standalone export-origin JSON receipts and shared GUI/CLI quoted field queries.
+- Show parallel heads and require explicit adoption of reviewed files, with fresh review if the parent set changes.
+- Report background phases and per-file bytes, allow browsing during work, and support cooperative cancellation before publication.
+- Drag an IP onto a group to add membership, preserving other groups and source locations.
+- Add catalog-scoped search, create, save, refresh and group-rename shortcuts, with hints in tooltips and menus.
+- Clarify the compact toolbar labels: New IP, + Group, Export and Save revision.
+
 ## 2.4.0 — 2026-09-30
 
 - Organize the left Ela tree with persistent groups: create, rename, delete, and add/remove IP memberships without moving source files; one IP can appear in multiple groups.

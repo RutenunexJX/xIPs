@@ -2,6 +2,9 @@
 #include "library/CatalogIndex.h"
 #include <QFont>
 #include <QHash>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMimeData>
 #include <QSet>
 #include <QSize>
 #include <algorithm>
@@ -43,7 +46,7 @@ QVariant CatalogModel::data(const QModelIndex &index, int role) const
     {
         const auto &group = m_groups[value->group];
         if (role == Qt::DisplayRole) return QStringLiteral("%1 · %2").arg(group.name).arg(value->children.size());
-        if (role == Qt::ToolTipRole) return QStringLiteral("Group: %1\nRight-click to manage this group.").arg(group.name);
+        if (role == Qt::ToolTipRole) return QStringLiteral("%1\nDrop an IP here to add it. F2 to rename.").arg(group.name);
         if (role == Qt::FontRole) { QFont font; font.setBold(true); return font; }
         return {};
     }
@@ -56,6 +59,56 @@ QVariant CatalogModel::data(const QModelIndex &index, int role) const
     default: return {};
     }
 }
+Qt::ItemFlags CatalogModel::flags(const QModelIndex &index) const
+{
+    const auto *value = node(index);
+    if (!value) return Qt::NoItemFlags;
+    return QAbstractItemModel::flags(index) |
+        (value->asset < 0 ? Qt::ItemIsDropEnabled : Qt::ItemIsDragEnabled);
+}
+QStringList CatalogModel::mimeTypes() const
+{
+    return {QStringLiteral("application/x-xips-catalog-item")};
+}
+QMimeData *CatalogModel::mimeData(const QModelIndexList &indexes) const
+{
+    auto *data = new QMimeData;
+    for (const auto &index : indexes)
+        if (const int asset = assetIndex(index); asset >= 0)
+        {
+            data->setData(mimeTypes().first(), QJsonDocument(QJsonObject{
+                {"catalog", m_library}, {"assetId", m_rows[asset].id}}).toJson(QJsonDocument::Compact));
+            break;
+        }
+    return data;
+}
+QString CatalogModel::droppedAsset(const QMimeData *data) const
+{
+    if (!data || !data->hasFormat(mimeTypes().first())) return {};
+    const auto bytes = data->data(mimeTypes().first());
+    if (bytes.size() > 16384) return {};
+    const auto object = QJsonDocument::fromJson(bytes).object();
+    if (m_library.isEmpty() || object.value("catalog").toString() != m_library) return {};
+    const auto id = object.value("assetId").toString();
+    for (const auto &asset : m_rows)
+        if (asset.id == id) return id;
+    return {};
+}
+bool CatalogModel::canDropMimeData(const QMimeData *data, Qt::DropAction action, int row, int column,
+                                  const QModelIndex &parent) const
+{
+    const auto *target = node(parent);
+    if (action != Qt::CopyAction || row != -1 || column > 0 || !target || target->asset >= 0) return false;
+    const auto id = droppedAsset(data);
+    return !id.isEmpty() && !m_groups[target->group].members.contains(id, Qt::CaseInsensitive);
+}
+bool CatalogModel::dropMimeData(const QMimeData *data, Qt::DropAction action, int row, int column,
+                               const QModelIndex &parent)
+{
+    if (!canDropMimeData(data, action, row, column, parent)) return false;
+    emit groupMembershipRequested(groupId(parent), droppedAsset(data));
+    return true;
+}
 void CatalogModel::setAssets(const QList<CatalogAsset> &assets, const QString &library,
                              const QList<CatalogGroup> &groups)
 {
@@ -67,6 +120,7 @@ void CatalogModel::setAssets(const QList<CatalogAsset> &assets, const QString &l
         secondary += !asset.referencePath.isEmpty() ? QStringLiteral(" · Referenced")
             : asset.discovered ? QStringLiteral(" · Working files")
             : asset.legacy ? QStringLiteral(" · Legacy")
+            : asset.snapshots.isEmpty() ? QStringLiteral(" · Unavailable")
             : QStringLiteral(" · %1").arg(SnapshotLibrary::revisionLabel(asset.snapshots.last()));
         if (!asset.description.isEmpty())
             secondary += " · " + asset.description.simplified();

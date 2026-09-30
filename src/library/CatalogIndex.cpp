@@ -104,6 +104,37 @@ bool CatalogIndex::matches(const CatalogAsset &asset, const QStringList &terms)
     }
     return true;
 }
+QStringList CatalogIndex::queryTerms(const QString &query, QString *error)
+{
+    if (error) error->clear();
+    QStringList terms;
+    QString token;
+    bool quoted = false, escaped = false;
+    for (const auto character : query)
+    {
+        if (escaped) { token += character; escaped = false; }
+        else if (quoted && character == '\\') escaped = true;
+        else if (character == '"') quoted = !quoted;
+        else if (!quoted && character.isSpace())
+        {
+            if (!token.isEmpty()) { terms.append(token.toCaseFolded()); token.clear(); }
+        }
+        else token += character;
+    }
+    if (quoted || escaped)
+    {
+        if (error) *error = QStringLiteral("Close the quoted search value, for example interface:\"AXI4 Lite\".");
+        return {};
+    }
+    if (!token.isEmpty()) terms.append(token.toCaseFolded());
+    for (const auto &term : terms)
+        if (!indexKind(term).isEmpty() && term.endsWith(':'))
+        {
+            if (error) *error = QStringLiteral("Add a value after the search field.");
+            return {};
+        }
+    return terms;
+}
 QString CatalogIndex::generation(const QList<CatalogAsset> &assets)
 {
     QCryptographicHash hash(QCryptographicHash::Sha256);
