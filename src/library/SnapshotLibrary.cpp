@@ -1002,6 +1002,87 @@ SnapshotResult SnapshotLibrary::verifySnapshot(const CatalogAsset &asset, const 
             verifySaved(result.asset, result.snapshot);
         });
 }
+SnapshotResult SnapshotLibrary::prepareFile(const CatalogAsset &asset, const QString &revision,
+                                            const QString &relative, const QString &cacheRoot)
+{
+    return operation([&](auto &result)
+    {
+        require(!relative.isEmpty() && !QDir::isAbsolutePath(relative) &&
+                    QDir::cleanPath(relative) == relative && relative != "." && relative != ".." &&
+                    !relative.startsWith("../") && !relative.contains('\\') && !relative.contains(':'),
+                QStringLiteral("Invalid file path: %1").arg(relative));
+        result.asset = resolveAsset(asset);
+        require(result.asset.id == asset.id, QStringLiteral("The asset identity has changed."));
+        QString source;
+        if (result.asset.legacy)
+        {
+            const auto plan = AssetLibraryService().copyPlan(legacyRecord(result.asset),
+                revision == "working" ? QString() : revision);
+            require(plan.ok(), plan.error);
+            result.snapshot = {revision, {}, {}, plan.payloadFingerprint, plan.files};
+            source = child(plan.sourceRoot, relative);
+        }
+        else
+        {
+            result.snapshot = selected(result.asset, revision);
+            source = child(revision == "current" ? sourceRoot(result.asset)
+                                                   : revisionRoot(result.asset, result.snapshot), relative);
+        }
+        require(result.snapshot.files.contains(relative),
+                QStringLiteral("File is no longer in this version. Refresh the catalog: %1").arg(relative));
+        if (revision == "current" || (result.asset.legacy && revision == "working"))
+        {
+            safePath(source);
+            require(QFileInfo(source).isFile() && QFileInfo(source).isReadable(),
+                    QStringLiteral("File unavailable: %1").arg(source));
+            result.exportedPath = absolute(source);
+            return;
+        }
+        ContentObject object;
+        if (!result.snapshot.objects.isEmpty())
+            object = result.snapshot.objects.value(relative);
+        else
+        {
+            if (!result.asset.legacy) verifySaved(result.asset, result.snapshot);
+            object = ContentStore::fingerprint(source);
+        }
+        require(!cacheRoot.isEmpty() && QDir::isAbsolutePath(cacheRoot) &&
+                    !files::isWithin(cacheRoot, result.asset.library),
+                QStringLiteral("File previews require a local cache outside the library."));
+        const auto key = QCryptographicHash::hash((result.asset.library + '\n' + asset.id + '\n' +
+            result.snapshot.id + '\n' + relative + '\n' + object.hash).toUtf8(), QCryptographicHash::Sha256).toHex();
+        const auto directory = child(cacheRoot, QString::fromLatin1(key));
+        ContentStore::makeDirectory(directory);
+        const auto destination = child(directory, QFileInfo(relative).fileName());
+        safePath(destination);
+        QLockFile lock(child(directory, ".open.lock"));
+        require(lock.tryLock(1000), QStringLiteral("This file is already being prepared. Try again."));
+        bool cached = QFileInfo::exists(destination);
+        if (cached && ContentStore::fingerprint(destination) != object)
+        {
+            require(QFile::setPermissions(destination, QFile::ReadOwner | QFile::WriteOwner) &&
+                        QFile::remove(destination), QStringLiteral("Cannot replace cached file: %1").arg(destination));
+            cached = false;
+        }
+        if (!cached)
+        {
+            QTemporaryDir staging(child(directory, ".pending-XXXXXX"));
+            require(staging.isValid(), QStringLiteral("Cannot prepare file preview"));
+            const auto staged = child(staging.path(), QFileInfo(relative).fileName());
+            if (!result.snapshot.objects.isEmpty())
+                ContentStore(result.asset.library).materialize(object, staged);
+            else
+                require(QFile::copy(source, staged), QStringLiteral("Cannot copy saved file: %1").arg(relative));
+            require(ContentStore::fingerprint(staged) == object,
+                    QStringLiteral("Saved file content changed: %1").arg(relative));
+            OperationScope::checkpoint();
+            require(QFile::rename(staged, destination), QStringLiteral("Cannot publish file preview"));
+        }
+        require(QFile::setPermissions(destination, QFile::ReadOwner | QFile::ReadUser | QFile::ReadGroup | QFile::ReadOther),
+                QStringLiteral("Cannot make the saved file read-only: %1").arg(destination));
+        result.exportedPath = absolute(destination);
+    });
+}
 SnapshotResult SnapshotLibrary::collect(const QString &library, const QStringList &sources,
                                         const QString &name, const QString &category,
                                         const QString &note, const PayloadPreview *expected)

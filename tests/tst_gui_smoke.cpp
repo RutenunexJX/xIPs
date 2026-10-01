@@ -1,3 +1,4 @@
+#include "RevisionDriver.h"
 #include "ElaComboBox.h"
 #include "DialogDriver.h"
 #include "ElaLineEdit.h"
@@ -15,6 +16,7 @@
 #include <QContextMenuEvent>
 #include <QAbstractItemModelTester>
 #include <QDir>
+#include <QDesktopServices>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
@@ -27,6 +29,7 @@
 #include <QPlainTextEdit>
 #include <QMimeData>
 #include <QStandardItemModel>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
@@ -34,12 +37,23 @@
 #include <QtTest>
 #include <memory>
 using namespace xips;
+class FileOpenCapture : public QObject
+{
+    Q_OBJECT
+  public:
+    QList<QUrl> urls;
+    FileOpenCapture() { QDesktopServices::setUrlHandler("file", this, "open"); }
+    ~FileOpenCapture() override { QDesktopServices::unsetUrlHandler("file"); }
+  public slots:
+    void open(const QUrl &url) { urls.append(url); }
+};
 class GuiSmokeTest : public QObject
 {
     Q_OBJECT
   private slots:
     void initTestCase()
     {
+        QStandardPaths::setTestModeEnabled(true);
         QFontDatabase::addApplicationFont(
             QDir(qEnvironmentVariable("WINDIR")).filePath("Fonts/segoeui.ttf"));
         initializeEla();
@@ -57,7 +71,82 @@ class GuiSmokeTest : public QObject
     void reviewCanBeRejectedAndStandaloneReceiptSaved();
     void damagedHistoryAndUnavailableReferencesRemainVisible();
     void parallelReviewMakesAdoptionExplicit();
+    void doubleClickAndEnterOpenTheSelectedVersion();
 };
+void GuiSmokeTest::doubleClickAndEnterOpenTheSelectedVersion()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library with spaces");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition;
+    definition.name = "counter";
+    const auto created = SnapshotLibrary::create(library, definition);
+    QVERIFY(created.ok);
+    const auto original = library + "/counter/rtl/counter.sv";
+    QFile source(original);
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    source.write("module changed; endmodule\n");
+    source.close();
+    FileOpenCapture opened;
+    BrowserPanel panel;
+    panel.resize(720, 420);
+    panel.show();
+    panel.setContext(library, {});
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    auto *files = panel.findChild<ElaListView *>("fileList");
+    auto *versions = panel.findChild<ElaTableView *>("revisionTable");
+    auto *archive = panel.findChild<QToolButton *>("updateButton");
+    QAbstractItemModelTester tableCheck(versions->model(), QAbstractItemModelTester::FailureReportingMode::QtTest);
+    QCOMPARE(versions->model()->headerData(1, Qt::Horizontal).toString(), QString("Status"));
+    QCOMPARE(versions->model()->rowCount(), 2);
+    QCOMPARE(versions->model()->index(0, 1).data().toString(), QString("Editing"));
+    QCOMPARE(versions->model()->index(1, 1).data().toString(), QString("Archived"));
+    QVERIFY(versions->model()->index(1, 1).data(Qt::AccessibleTextRole).toString().contains("read-only"));
+    QVERIFY(archive->isEnabled());
+    for (int row = 0; row < 2; ++row)
+    {
+        QVERIFY(versions->viewport()->rect().contains(versions->visualRect(versions->model()->index(row, 1))));
+        QVERIFY(!(versions->model()->flags(versions->model()->index(row, 1)) & Qt::ItemIsEditable));
+    }
+    QCOMPARE(versions->currentIndex().data(Qt::UserRole).toString(), QString("current"));
+    const auto position = files->visualRect(files->model()->index(0, 0)).center();
+    QTest::mouseClick(files->viewport(), Qt::LeftButton, Qt::NoModifier, position);
+    QTest::mouseDClick(files->viewport(), Qt::LeftButton, Qt::NoModifier, position);
+    QTRY_COMPARE(opened.urls.size(), 1);
+    QCOMPARE(QFileInfo(opened.urls.last().toLocalFile()).absoluteFilePath(), QFileInfo(original).absoluteFilePath());
+    QVERIFY(source.open(QIODevice::ReadOnly));
+    QCOMPARE(source.readAll(), QByteArray("module changed; endmodule\n"));
+    source.close();
+    versions->setCurrentIndex(revisionIndex(versions, created.snapshot.id));
+    QVERIFY(!archive->isEnabled());
+    QCOMPARE(panel.findChild<QToolButton *>("openFileButton")->text(), QString("Open read-only"));
+    panel.activateWindow();
+    files->setFocus();
+    QTRY_VERIFY(panel.isActiveWindow() && files->hasFocus());
+    QTest::keyClick(files, Qt::Key_Return);
+    QTRY_VERIFY2(opened.urls.size() == 2, qPrintable(panel.findChild<ElaText *>("browserNotice")->toolTip()));
+    const auto copy = opened.urls.last().toLocalFile();
+    QVERIFY(copy != original);
+    QVERIFY(!QFileInfo(copy).permissions().testFlag(QFile::WriteOwner));
+    QFile saved(copy);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QVERIFY(saved.readAll().contains("module counter"));
+    saved.close();
+    panel.findChild<QToolButton *>("openFileButton")->click();
+    QTRY_COMPARE(opened.urls.size(), 3);
+    QCOMPARE(opened.urls.last().toLocalFile(), copy);
+    panel.findChild<QToolButton *>("openSourceButton")->click();
+    QCOMPARE(opened.urls.size(), 4);
+    QCOMPARE(QFileInfo(opened.urls.last().toLocalFile()).absoluteFilePath(), QFileInfo(library + "/counter").absoluteFilePath());
+    versions->setCurrentIndex(revisionIndex(versions, "current"));
+    QVERIFY(archive->isEnabled());
+    QCOMPARE(panel.findChild<QToolButton *>("openFileButton")->text(), QString("Edit file"));
+    QVERIFY(QFile::remove(original));
+    panel.findChild<QToolButton *>("openFileButton")->click();
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(opened.urls.size(), 4);
+    QVERIFY(panel.findChild<ElaText *>("browserNotice")->property("error").toBool());
+}
 void GuiSmokeTest::parallelReviewMakesAdoptionExplicit()
 {
     QTemporaryDir tmp;
@@ -95,7 +184,7 @@ void GuiSmokeTest::parallelReviewMakesAdoptionExplicit()
         reviewed = true;
         accept->click();
     });
-    panel.findChild<ElaPushButton *>("updateButton")->click();
+    panel.findChild<QToolButton *>("updateButton")->click();
     QTRY_VERIFY(reviewed && !panel.isCatalogBusy());
     auto catalog = SnapshotLibrary::scan(library);
     QCOMPARE(SnapshotLibrary::heads(catalog.assets.first()).size(), 1);
@@ -124,8 +213,8 @@ void GuiSmokeTest::reviewCanBeRejectedAndStandaloneReceiptSaved()
     search->setText("interface:\"AXI4 Lite\"");
     QTest::qWait(160);
     QCOMPARE(list->model()->rowCount(), 1);
-    auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
-    versions->setCurrentIndex(versions->findData(created.snapshot.id));
+    auto *versions = panel.findChild<ElaTableView *>("revisionTable");
+    versions->setCurrentIndex(revisionIndex(versions, created.snapshot.id));
     auto *take = panel.findChild<ElaPushButton *>("takeButton");
     bool rejected = false;
     whenVisible(&panel, "xipsForm", [&](QWidget *form)
@@ -166,20 +255,9 @@ void GuiSmokeTest::reviewCanBeRejectedAndStandaloneReceiptSaved()
             QCOMPARE(qobject_cast<ElaLineEdit *>(field)->text(), receipt);
             panel.findChild<ElaPushButton *>("formAccept")->click();
         });
-        QTimer::singleShot(0, &panel, [&]
-        {
-            for (auto *widget : QApplication::topLevelWidgets())
-                if (auto *menu = qobject_cast<QMenu *>(widget); menu && menu->objectName() == "xipsMoreMenu")
-                {
-                    auto *action = menu->findChild<QAction *>("saveReceiptAction");
-                    QVERIFY(action && action->isVisible() && action->isEnabled());
-                    menu->setActiveAction(action);
-                    QTest::keyClick(menu, Qt::Key_Return);
-                    return;
-                }
-            QFAIL("Receipt menu missing");
-        });
-        panel.findChild<QToolButton *>("moreButton")->click();
+        auto *receiptButton = panel.findChild<QToolButton *>("saveReceiptButton");
+        QVERIFY(receiptButton && receiptButton->isVisible() && receiptButton->isEnabled());
+        receiptButton->click();
         QTRY_VERIFY(!panel.isCatalogBusy());
     }
     QFile file(receipt);
@@ -207,40 +285,27 @@ void GuiSmokeTest::damagedHistoryAndUnavailableReferencesRemainVisible()
     panel.show();
     panel.setContext(library, {});
     QTRY_VERIFY(!panel.isCatalogBusy());
-    auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
-    QVERIFY(versions->findData(created.snapshot.id) >= 0);
-    QVERIFY(!panel.findChild<ElaPushButton *>("updateButton")->isEnabled());
-    versions->setCurrentIndex(versions->findData(created.snapshot.id));
+    auto *versions = panel.findChild<ElaTableView *>("revisionTable");
+    QVERIFY(revisionIndex(versions, created.snapshot.id).row() >= 0);
+    QVERIFY(!panel.findChild<QToolButton *>("updateButton")->isEnabled());
+    versions->setCurrentIndex(revisionIndex(versions, created.snapshot.id));
     QVERIFY(panel.findChild<ElaPushButton *>("takeButton")->isEnabled());
     QVERIFY(QFile::remove(library + "/counter/rtl/counter.sv"));
     panel.refresh();
     QTRY_VERIFY(!panel.isCatalogBusy());
-    QCOMPARE(versions->count(), 1);
+    QCOMPARE(versions->model()->rowCount(), 1);
     QVERIFY(panel.findChild<ElaPushButton *>("takeButton")->isEnabled());
     QVERIFY(QDir().rename(library, tmp.filePath("relocated")));
     panel.setContext(receiver, {});
     QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(panel.findChild<ElaTreeView *>("assetList")->model()->rowCount(), 1);
-    QCOMPARE(versions->count(), 0);
+    QCOMPARE(versions->model()->rowCount(), 0);
     QVERIFY(!panel.findChild<ElaPushButton *>("takeButton")->isEnabled());
-    bool actionsChecked = false;
-    QTimer::singleShot(0, &panel, [&]
+    for (const auto *name : {"removeSourceButton", "changeReferenceButton"})
     {
-        for (auto *widget : QApplication::topLevelWidgets())
-            if (auto *menu = qobject_cast<QMenu *>(widget); menu && menu->objectName() == "xipsMoreMenu")
-            {
-                for (const auto *name : {"removeReferenceAction", "changeReferenceAction"})
-                {
-                    const auto *action = menu->findChild<QAction *>(name);
-                    QVERIFY(action && action->isEnabled() && action->isVisible());
-                }
-                menu->close();
-                actionsChecked = true;
-                return;
-            }
-    });
-    panel.findChild<QToolButton *>("moreButton")->click();
-    QVERIFY(actionsChecked);
+        const auto *button = panel.findChild<QToolButton *>(name);
+        QVERIFY(button && button->isEnabled() && button->isVisible());
+    }
 }
 void GuiSmokeTest::compactPanelFiltersAndSelectsVersions()
 {
@@ -263,7 +328,7 @@ void GuiSmokeTest::compactPanelFiltersAndSelectsVersions()
     panel.show();
     panel.setContext(tmp.filePath("library"), {});
     auto *list = panel.findChild<ElaTreeView *>("assetList");
-    auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
+    auto *versions = panel.findChild<ElaTableView *>("revisionTable");
     auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
     auto *take = panel.findChild<ElaPushButton *>("takeButton");
     QVERIFY(list);
@@ -288,17 +353,17 @@ void GuiSmokeTest::compactPanelFiltersAndSelectsVersions()
     QApplication::sendEvent(search, &context);
     QTRY_COMPARE(actions,
              QStringList({"Undo", "Redo", "Cut", "Copy", "Paste", "Delete", "Select all"}));
-    QTRY_COMPARE(versions->count(), 2);
-    QCOMPARE(versions->currentData().toString(), updated.snapshot.id);
+    QTRY_COMPARE(versions->model()->rowCount(), 2);
+    QCOMPARE(versions->currentIndex().data(Qt::UserRole).toString(), updated.snapshot.id);
     QVERIFY(take->isEnabled());
-    versions->setCurrentIndex(1);
+    versions->selectRow(1);
     QCOMPARE(panel.saveState().value("revision").toString(), asset.snapshot.id);
     search->setText("missing");
     QTRY_COMPARE(list->model()->rowCount(), 0);
     QVERIFY(!take->isEnabled());
     search->setText("uart.sv");
     QTRY_COMPARE(list->model()->rowCount(), 1);
-    QTRY_COMPARE(versions->count(), 2);
+    QTRY_COMPARE(versions->model()->rowCount(), 2);
     const QString screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
     if (!screenshots.isEmpty())
     {
@@ -332,15 +397,15 @@ void GuiSmokeTest::selectedFolderScansAndRescansWithoutCollect()
     BrowserPanel panel;
     panel.resize(850, 600);
     panel.show();
-    auto *folder = panel.findChild<ElaPushButton *>("folderButton");
+    auto *folder = panel.findChild<QToolButton *>("folderButton");
     auto *list = panel.findChild<ElaTreeView *>("assetList");
-    auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
-    auto *update = panel.findChild<ElaPushButton *>("updateButton");
+    auto *versions = panel.findChild<ElaTableView *>("revisionTable");
+    auto *update = panel.findChild<QToolButton *>("updateButton");
     QVERIFY(folder);
     QVERIFY(folder->isVisible());
     panel.setContext(library, {});
     QTRY_VERIFY(!panel.isCatalogBusy());
-    QVERIFY(!folder->isVisible());
+    QVERIFY(folder->isVisible());
     QCOMPARE(list->model()->rowCount(), 0);
     CatalogDefinition definition;
     definition.name = "UART";
@@ -350,9 +415,9 @@ void GuiSmokeTest::selectedFolderScansAndRescansWithoutCollect()
     panel.refresh();
     QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(list->model()->rowCount(), 1);
-    QCOMPARE(versions->currentData().toString(), QString("current"));
-    QCOMPARE(versions->currentText(), QString("Current files"));
-    QCOMPARE(update->text(), QString("Save revision…"));
+    QCOMPARE(versions->currentIndex().data(Qt::UserRole).toString(), QString("current"));
+    QCOMPARE(versions->currentIndex().siblingAtColumn(0).data().toString(), QString("Working"));
+    QCOMPARE(update->text(), QString("Archive…"));
     QCOMPARE(list->model()->index(0, 0).data().toString(), QString("UART"));
     QVERIFY(list->model()->index(0, 0).data(Qt::ToolTipRole).toString().contains("Working files"));
     QVERIFY(!QFileInfo::exists(library + "/rtl/.xips.json"));
@@ -376,7 +441,7 @@ void GuiSmokeTest::selectedFolderScansAndRescansWithoutCollect()
     panel.refresh();
     QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(list->model()->rowCount(), 1);
-    QCOMPARE(versions->currentData().toString(), created.snapshot.id);
+    QCOMPARE(versions->currentIndex().data(Qt::UserRole).toString(), created.snapshot.id);
 }
 void GuiSmokeTest::scannedFilesSaveAndSelectHistory()
 {
@@ -394,8 +459,8 @@ void GuiSmokeTest::scannedFilesSaveAndSelectHistory()
     BrowserPanel panel;
     panel.setContext(library, {});
     panel.show();
-    auto *update = panel.findChild<ElaPushButton *>("updateButton");
-    auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
+    auto *update = panel.findChild<QToolButton *>("updateButton");
+    auto *versions = panel.findChild<ElaTableView *>("revisionTable");
     QTRY_VERIFY(update->isEnabled());
     whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
     {
@@ -404,16 +469,19 @@ void GuiSmokeTest::scannedFilesSaveAndSelectHistory()
         accept->click();
     });
     update->click();
-    QTRY_COMPARE(versions->count(), 2);
-    QTRY_VERIFY(update->isEnabled());
-    QVERIFY(versions->currentData().toString() != "current");
-    QVERIFY(versions->currentText().startsWith("rev1"));
-    const auto first = versions->currentData().toString();
+    QTRY_COMPARE(versions->model()->rowCount(), 2);
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QVERIFY(!update->isEnabled());
+    QVERIFY(versions->currentIndex().data(Qt::UserRole).toString() != "current");
+    QVERIFY(versions->currentIndex().siblingAtColumn(0).data().toString().startsWith("rev1"));
+    const auto first = versions->currentIndex().data(Qt::UserRole).toString();
     const auto asset = SnapshotLibrary::scan(library).assets.first();
     QVERIFY(SnapshotLibrary::verifySnapshot(asset, first).ok);
     QVERIFY(file.open(QIODevice::WriteOnly));
     file.write("second source");
     file.close();
+    versions->setCurrentIndex(revisionIndex(versions, "current"));
+    QVERIFY(update->isEnabled());
     whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
     {
         auto *accept = form->findChild<ElaPushButton *>("formAccept");
@@ -421,9 +489,9 @@ void GuiSmokeTest::scannedFilesSaveAndSelectHistory()
         accept->click();
     });
     update->click();
-    QTRY_COMPARE(versions->count(), 3);
-    QVERIFY(versions->currentText().startsWith("rev2"));
-    versions->setCurrentIndex(versions->findData(first));
+    QTRY_COMPARE(versions->model()->rowCount(), 3);
+    QVERIFY(versions->currentIndex().siblingAtColumn(0).data().toString().startsWith("rev2"));
+    versions->setCurrentIndex(revisionIndex(versions, first));
     QCOMPARE(panel.saveState().value("revision").toString(), first);
     QVERIFY(!QFileInfo::exists(library + "/.xips.json"));
 }
@@ -492,7 +560,7 @@ void GuiSmokeTest::newIpSupportsFacetBrowsingAndProjectReferences()
     QCOMPARE(list->model()->rowCount(), 1);
     indexes->setCurrentIndex(indexes->findData("category:Diagnostics"));
     QCOMPARE(list->model()->rowCount(), 1);
-    QCOMPARE(filters->text(), QString("Filter · 2"));
+    QCOMPARE(filters->accessibleName(), QString("Filter · 2 active"));
     panel.findChild<QToolButton *>("clearFiltersButton")->click();
     QCOMPARE(types->currentIndex(), 0);
     QCOMPARE(indexes->currentIndex(), 0);
@@ -505,25 +573,12 @@ void GuiSmokeTest::newIpSupportsFacetBrowsingAndProjectReferences()
     QTRY_COMPARE(list->model()->rowCount(), 0);
     search->clear();
     QTRY_COMPARE(list->model()->rowCount(), 1);
-    QTimer::singleShot(0, &panel, [&]
+    whenVisible(&panel, "referenceDestination", [&](QWidget *field)
     {
-        QMenu *menu = nullptr;
-        for (auto *widget : QApplication::topLevelWidgets())
-            if (widget->objectName() == "xipsMoreMenu") menu = qobject_cast<QMenu *>(widget);
-        QVERIFY(menu);
-        auto *action = menu->findChild<QAction *>("referenceAction");
-        QVERIFY(action && action->isEnabled());
-        menu->setActiveAction(action);
-        QTimer::singleShot(25, &panel, [&]
-        {
-            auto *target = panel.findChild<ElaLineEdit *>("referenceDestination");
-            QVERIFY(target);
-            QCOMPARE(target->text(), project);
-            panel.findChild<ElaPushButton *>("formAccept")->click();
-        });
-        QTest::keyClick(menu, Qt::Key_Return);
+        QCOMPARE(qobject_cast<ElaLineEdit *>(field)->text(), project);
+        panel.findChild<ElaPushButton *>("formAccept")->click();
     });
-    panel.findChild<QToolButton *>("moreButton")->click();
+    panel.findChild<QToolButton *>("referenceButton")->click();
     QTRY_VERIFY(create->isEnabled());
     const auto referenced = SnapshotLibrary::scan(project);
     QCOMPARE(referenced.assets.size(), 1);
@@ -805,8 +860,8 @@ void GuiSmokeTest::keyboardActionsStayWithinTheCatalog()
     QTest::keyClick(tree, Qt::Key_N, Qt::ControlModifier);
     QTRY_VERIFY(!panel->isCatalogBusy());
     QCOMPARE(model->rowCount(model->indexForId({}, group)), 1);
-    auto *versions = panel->findChild<ElaComboBox *>("versionCombo");
-    QCOMPARE(versions->count(), 2);
+    auto *versions = panel->findChild<ElaTableView *>("revisionTable");
+    QCOMPARE(versions->model()->rowCount(), 2);
     QFile source(library + "/fifo/rtl/fifo.sv");
     QVERIFY(source.open(QIODevice::Append));
     source.write("\n// test revision\n");
@@ -815,8 +870,8 @@ void GuiSmokeTest::keyboardActionsStayWithinTheCatalog()
     fillForm("revisionNote", "Keyboard save");
     QTest::keyClick(tree, Qt::Key_S, Qt::ControlModifier);
     QTRY_VERIFY(!panel->isCatalogBusy());
-    QCOMPARE(versions->count(), 3);
-    QVERIFY(versions->currentText().contains("Keyboard save"));
+    QCOMPARE(versions->model()->rowCount(), 3);
+    QVERIFY(versions->currentIndex().data(Qt::ToolTipRole).toString().contains("Keyboard save"));
     QVERIFY(CatalogGroups::create(library, "Added elsewhere").ok);
     focusTree();
     QTest::keyClick(tree, Qt::Key_F5);
@@ -830,7 +885,16 @@ void GuiSmokeTest::compactWindowKeepsActionsBesideContent()
     QVERIFY(QDir().mkpath(library));
     CatalogDefinition definition;
     definition.name = "axi_lite_adapter";
-    QVERIFY(SnapshotLibrary::create(library, definition).ok);
+    const auto created = SnapshotLibrary::create(library, definition);
+    QVERIFY(created.ok);
+    QFile source(library + "/axi_lite_adapter/rtl/axi_lite_adapter.sv");
+    QVERIFY(source.open(QIODevice::Append));
+    source.write("\n// second archived revision\n");
+    source.close();
+    QVERIFY(SnapshotLibrary::saveCurrent(created.asset, "Second revision").ok);
+    const auto group = CatalogGroups::create(library, "AXI");
+    QVERIFY(group.ok);
+    QVERIFY(CatalogGroups::setMember(library, group.group.id, created.asset.id, true).ok);
     MainWindow window(library);
     QCOMPARE(window.size(), QSize(720, 420));
     window.show();
@@ -842,22 +906,38 @@ void GuiSmokeTest::compactWindowKeepsActionsBesideContent()
     QVERIFY2(top <= window.getAppBarHeight() + 2, "Title bar space must only be reserved once");
     auto *toolbar = panel->findChild<ElaToolBar *>("catalogToolbar");
     QVERIFY(toolbar);
-    QVERIFY(toolbar->height() <= 40);
-    for (const auto &name : {"assetSearch", "newAssetButton", "filterButton", "moreButton"})
+    QVERIFY(toolbar->height() <= 48);
+    for (const auto &name : {"assetSearch", "newAssetButton", "filterButton", "collectButton"})
     {
         auto *control = toolbar->findChild<QWidget *>(name);
         QVERIFY(control && control->isVisible());
         QVERIFY(toolbar->rect().contains(control->geometry()));
     }
-    auto *versions = panel->findChild<ElaComboBox *>("versionCombo");
+    auto *versions = panel->findChild<ElaTableView *>("revisionTable");
+    QCOMPARE(versions->model()->columnCount(), 2);
+    QCOMPARE(versions->model()->rowCount(), 3);
+    const auto contentTop = versions->mapTo(panel, QPoint()).y();
     for (const auto &name : {"takeButton", "updateButton"})
     {
-        auto *button = panel->findChild<ElaPushButton *>(name);
+        auto *button = panel->findChild<QAbstractButton *>(name);
         QVERIFY(button->isVisible());
-        QCOMPARE(button->geometry().center().y(), versions->geometry().center().y());
-        QVERIFY(button->mapTo(panel, QPoint()).y() < 120);
+        QVERIFY(button->mapTo(panel, QPoint(0, button->height())).y() <= contentTop);
     }
+    QCOMPARE(panel->findChild<ElaPushButton *>("takeButton")->text(), QString("Copy to project"));
     QVERIFY(panel->findChild<ElaListView *>("fileList")->height() <= 32);
+    QVERIFY(!panel->findChild<QToolButton *>("moreButton"));
+    QList<QRect> actionRects;
+    for (const auto *name : {"folderButton", "refreshButton", "themeButton", "openFileButton", "takeButton", "updateButton",
+                             "openSourceButton", "referenceButton", "editAssetButton", "removeSourceButton"})
+    {
+        auto *button = panel->findChild<QWidget *>(name);
+        QVERIFY2(button && button->isVisible(), name);
+        const QRect rect(button->mapTo(panel, QPoint()), button->size());
+        QVERIFY2(panel->rect().contains(rect), name);
+        for (const auto &other : actionRects) QVERIFY2(!other.intersects(rect), name);
+        actionRects.append(rect);
+    }
+    QVERIFY(!panel->findChild<QWidget *>("operationFeedback")->isVisible());
     const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
     if (!screenshots.isEmpty())
     {
@@ -869,6 +949,12 @@ void GuiSmokeTest::compactWindowKeepsActionsBesideContent()
             QCoreApplication::processEvents();
             window.grab().save(screenshots + (mode == ElaThemeType::Light
                 ? "/compact-window-light.png" : "/compact-window-dark.png"));
+            window.resize(1000, 600);
+            QCoreApplication::processEvents();
+            window.grab().save(screenshots + (mode == ElaThemeType::Light
+                ? "/window-light.png" : "/window-dark.png"));
+            window.resize(720, 420);
+            QCoreApplication::processEvents();
         }
         eTheme->setThemeMode(previousMode);
     }

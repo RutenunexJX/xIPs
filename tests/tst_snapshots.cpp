@@ -53,7 +53,56 @@ class SnapshotTest : public QObject
     void catalogDefinitionsSupportMultipleIndexes();
     void referencesPinOneDefinitionAcrossLibrariesAndProjects();
     void groupsPersistWithoutChangingSourcesOrHistory();
+    void opensOriginalsAndReadOnlySavedFiles();
 };
+void SnapshotTest::opensOriginalsAndReadOnlySavedFiles()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library"), cache = tmp.filePath("cache");
+    const auto folder = library + QString::fromUtf8("/原始 source");
+    const auto original = folder + "/rtl/serial port.sv";
+    put(original, "module original; endmodule\n");
+    CatalogDefinition definition;
+    definition.name = "serial";
+    definition.source = folder;
+    const auto created = SnapshotLibrary::create(library, definition);
+    QVERIFY2(created.ok, qPrintable(created.error));
+    const auto file = QStringLiteral("rtl/serial port.sv");
+    put(original, "module changed; endmodule\n");
+    const auto current = SnapshotLibrary::prepareFile(created.asset, "current", file, cache);
+    QVERIFY2(current.ok, qPrintable(current.error));
+    QCOMPARE(current.exportedPath, QFileInfo(original).absoluteFilePath());
+    QVERIFY(!QFileInfo::exists(cache));
+    const auto saved = SnapshotLibrary::prepareFile(created.asset, created.snapshot.id, file, cache);
+    QVERIFY2(saved.ok, qPrintable(saved.error));
+    QVERIFY(saved.exportedPath.startsWith(cache + '/'));
+    QCOMPARE(get(saved.exportedPath), QByteArray("module original; endmodule\n"));
+    QVERIFY(!QFileInfo(saved.exportedPath).permissions().testFlag(QFile::WriteOwner));
+    QCOMPARE(get(original), QByteArray("module changed; endmodule\n"));
+    QVERIFY(QFile::setPermissions(saved.exportedPath, QFile::ReadOwner | QFile::WriteOwner));
+    put(saved.exportedPath, "modified cache");
+    const auto reopened = SnapshotLibrary::prepareFile(created.asset, created.snapshot.id, file, cache);
+    QVERIFY2(reopened.ok, qPrintable(reopened.error));
+    QCOMPARE(reopened.exportedPath, saved.exportedPath);
+    QCOMPARE(get(reopened.exportedPath), QByteArray("module original; endmodule\n"));
+    QVERIFY(!SnapshotLibrary::prepareFile(created.asset, created.snapshot.id, "../outside.sv", cache).ok);
+    QVERIFY(!SnapshotLibrary::prepareFile(created.asset, created.snapshot.id, ".xips.json", cache).ok);
+    QVERIFY(!SnapshotLibrary::prepareFile(created.asset, created.snapshot.id, file, library + "/cache").ok);
+    QVERIFY(QDir().mkpath(tmp.filePath("receiver")));
+    const auto reference = SnapshotLibrary::addReference(created.asset, created.snapshot.id, tmp.filePath("receiver"));
+    QVERIFY2(reference.ok, qPrintable(reference.error));
+    const auto references = SnapshotLibrary::scan(tmp.filePath("receiver"));
+    QCOMPARE(references.assets.size(), 1);
+    const auto pinned = SnapshotLibrary::prepareFile(references.assets.first(), created.snapshot.id, file, cache);
+    QVERIFY2(pinned.ok, qPrintable(pinned.error));
+    QCOMPARE(get(pinned.exportedPath), QByteArray("module original; endmodule\n"));
+    QVERIFY(QFile::remove(original));
+    QVERIFY(!SnapshotLibrary::prepareFile(created.asset, "current", file, cache).ok);
+    QVERIFY(SnapshotLibrary::prepareFile(created.asset, created.snapshot.id, file, cache).ok);
+    const auto object = created.snapshot.objects.value(file);
+    put(ContentStore(library).objectPath(object.hash), "damaged object");
+    QVERIFY(!SnapshotLibrary::prepareFile(created.asset, created.snapshot.id, file, tmp.filePath("fresh-cache")).ok);
+}
 void SnapshotTest::linearVersionsAndPinnedCopies()
 {
     QTemporaryDir tmp;

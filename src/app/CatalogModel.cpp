@@ -1,4 +1,5 @@
 #include "CatalogModel.h"
+#include "UiSupport.h"
 #include "library/CatalogIndex.h"
 #include <QFont>
 #include <QHash>
@@ -45,9 +46,10 @@ QVariant CatalogModel::data(const QModelIndex &index, int role) const
     if (value->asset < 0)
     {
         const auto &group = m_groups[value->group];
-        if (role == Qt::DisplayRole) return QStringLiteral("%1 · %2").arg(group.name).arg(value->children.size());
-        if (role == Qt::ToolTipRole) return QStringLiteral("%1\nDrop an IP here to add it. F2 to rename.").arg(group.name);
-        if (role == Qt::FontRole) { QFont font; font.setBold(true); return font; }
+        if (role == Qt::DisplayRole) return group.name;
+        if (role == Qt::ToolTipRole) return QStringLiteral("%1 · %2 IPs\nDrop an IP here to add it. F2 to rename.")
+            .arg(group.name).arg(value->children.size());
+        if (role == Qt::DecorationRole) return uiIcon(UiIcon::Folder);
         return {};
     }
     const auto &row = m_rows[value->asset];

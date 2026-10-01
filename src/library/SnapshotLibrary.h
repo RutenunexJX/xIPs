@@ -122,6 +122,9 @@ class SnapshotLibrary
     static SnapshotResult saveReceipt(const SnapshotResult &exported, const QString &destination);
     static SnapshotResult describe(const CatalogAsset &asset);
     static SnapshotResult verifySnapshot(const CatalogAsset &asset, const QString &revision);
+    // Current files remain in place; saved files are verified into a read-only local cache.
+    static SnapshotResult prepareFile(const CatalogAsset &asset, const QString &revision,
+                                      const QString &relative, const QString &cacheRoot);
     static SnapshotResult collect(const QString &library, const QStringList &sources,
                                   const QString &name, const QString &category,
                                   const QString &note = {}, const PayloadPreview *expected = nullptr);

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.6.0 — 2026-10-01
+
+- Simplify the Ela browser with a tinted group sidebar, a two-column revision list, subtle file/revision selection, and visible outline actions. Put Copy to project beside the IP name; retain error/progress feedback while hiding repeated idle statistics.
+- Show working and archived revisions together in an Ela table with a Status column; make edit/archive actions available on the working copy and open archived content read-only.
+- Open files by double-click, Enter or the visible Open file button: current sources open in place; saved and referenced revisions open as verified read-only local copies.
+- Replace the More menu with visible library controls and compact contextual asset/group actions, including source folders, references, editing and removal.
+
 ## 2.5.0 — 2026-09-30
 
 - Keep healthy saved revisions accessible when another independent manifest is damaged or a registered working source is empty/unavailable; block unsafe history mutations and show the affected paths.

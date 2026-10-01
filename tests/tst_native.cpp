@@ -1,3 +1,4 @@
+#include "RevisionDriver.h"
 #include "ElaApplication.h"
 #include "library/SnapshotLibrary.h"
 #include "xips/BrowserApi.h"
@@ -48,9 +49,9 @@ class NativeTest final : public QObject
         const QVariantMap state{
             {"assetId", asset.asset.id}, {"revision", asset.snapshot.id}, {"query", "counter"}};
         QVERIFY(QMetaObject::invokeMethod(panel.get(), "restoreState", Q_ARG(QVariantMap, state)));
-        auto *versions = panel->findChild<QComboBox *>("versionCombo");
+        auto *versions = panel->findChild<ElaTableView *>("revisionTable");
         QVERIFY(versions);
-        QTRY_COMPARE(versions->count(), 1);
+        QTRY_COMPARE(versions->model()->rowCount(), 1);
         QVariantMap restored;
         QVERIFY(QMetaObject::invokeMethod(panel.get(), "saveState",
                                           Q_RETURN_ARG(QVariantMap, restored)));

@@ -1,3 +1,4 @@
+#include "RevisionDriver.h"
 #include "app/BrowserPanel.h"
 #include "app/UiSupport.h"
 #include "ElaComboBox.h"
@@ -322,7 +323,7 @@ class Interactions final : public QObject
         QTRY_VERIFY(!panel.isCatalogBusy());
         auto *list = panel.findChild<ElaTreeView *>("assetList");
         auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
-        auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
+        auto *versions = panel.findChild<ElaTableView *>("revisionTable");
         auto *take = panel.findChild<ElaPushButton *>("takeButton");
         {
             PoolGate gate;
@@ -371,9 +372,9 @@ class Interactions final : public QObject
         panel.setContext(QString::fromUtf8(XIPS_EXAMPLE_LIBRARY), {});
         QTRY_VERIFY(!panel.isCatalogBusy());
         auto *list = panel.findChild<ElaTreeView *>("assetList");
-        auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
+        auto *versions = panel.findChild<ElaTableView *>("revisionTable");
         QVERIFY(list->model()->rowCount() >= 2);
-        QTRY_VERIFY(versions->count() > 0);
+        QTRY_VERIFY(versions->model()->rowCount() > 0);
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         QString selectedId;
         {
@@ -385,7 +386,7 @@ class Interactions final : public QObject
         }
         QTRY_VERIFY(!panel.saveState()["revision"].toString().isEmpty());
         QCOMPARE(panel.saveState()["assetId"].toString(), selectedId);
-        QVERIFY(versions->count() > 0);
+        QVERIFY(versions->model()->rowCount() > 0);
     }
     void formClosesWhenEmbeddedOwnerDies()
     {
@@ -440,9 +441,10 @@ class Interactions final : public QObject
                 auto *view = panel.findChild<QAbstractItemView *>(name);
                 const auto pixels = view->viewport()->grab().toImage();
                 const auto actual = pixels.pixelColor(pixels.width() / 2, pixels.height() / 2);
-                QVERIFY(qAbs(actual.red() - expected.red()) <= 1);
-                QVERIFY(qAbs(actual.green() - expected.green()) <= 1);
-                QVERIFY(qAbs(actual.blue() - expected.blue()) <= 1);
+                const auto viewBackground = view->palette().color(QPalette::Base);
+                QVERIFY(qAbs(actual.red() - viewBackground.red()) <= 1);
+                QVERIFY(qAbs(actual.green() - viewBackground.green()) <= 1);
+                QVERIFY(qAbs(actual.blue() - viewBackground.blue()) <= 1);
             }
         }
     }

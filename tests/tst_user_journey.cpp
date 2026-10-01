@@ -1,3 +1,4 @@
+#include "RevisionDriver.h"
 #include "ElaComboBox.h"
 #include "DialogDriver.h"
 #include "ElaContentDialog.h"
@@ -50,7 +51,7 @@ void UserJourneyTest::collectChooseAndUsePinnedVersion()
     panel.setContext(library, workspace);
     auto *take = panel.findChild<ElaPushButton *>("takeButton");
     auto *create = panel.findChild<ElaPushButton *>("newAssetButton");
-    auto *versions = panel.findChild<ElaComboBox *>("versionCombo");
+    auto *versions = panel.findChild<ElaTableView *>("revisionTable");
     QTRY_VERIFY(create->isEnabled());
     whenVisible(&panel, "xipsForm",
                        [&](QWidget *form)
@@ -61,9 +62,9 @@ void UserJourneyTest::collectChooseAndUsePinnedVersion()
     whenVisible(&panel, "payloadReviewForm", [](QWidget *form)
         { form->findChild<ElaPushButton *>("formAccept")->click(); });
     panel.collectPaths({source});
-    QTRY_COMPARE(versions->count(), 1);
+    QTRY_COMPARE(versions->model()->rowCount(), 1);
     QTRY_VERIFY(take->isEnabled());
-    const auto firstRevision = versions->currentData().toString();
+    const auto firstRevision = versions->currentIndex().data(Qt::UserRole).toString();
     whenVisible(&panel, "xipsForm",
                        [&](QWidget *form)
                        {
@@ -85,7 +86,7 @@ void UserJourneyTest::collectChooseAndUsePinnedVersion()
     QVERIFY(SnapshotLibrary::update(catalog.assets.first(), {source}, "verified").ok);
     QTRY_VERIFY(create->isEnabled());
     panel.refresh();
-    QTRY_COMPARE(versions->count(), 2);
+    QTRY_COMPARE(versions->model()->rowCount(), 2);
     QVERIFY(project.open(QIODevice::ReadOnly));
     QCOMPARE(project.readAll(), QByteArray("first version"));
     QCOMPARE(host.receipt.value("revision").toString(), firstRevision);

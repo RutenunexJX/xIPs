@@ -9,10 +9,16 @@ The interface uses Ela controls and shares ZeroSlack's compact panel layout. All
 1. Choose the catalog root once. Only explicitly created, registered or referenced entries appear; loose source files never become catalog entries automatically.
 2. Click **New IP** to create an IP or module. Generate a SystemVerilog source folder, or register an existing file/folder inside the root. Registering a folder associates its files automatically and saves the first revision.
 3. Assign multiple categories, tags, interfaces and purposes to one definition. Browse with **All indexes**, combine type filters with search, or use terms such as `category:Communication tag:serial interface:"AXI4 Lite"`. Quote a field value or phrase containing spaces. Category paths support parent browsing, e.g. Communication includes Communication/UART.
-4. Click **Save revision** on an original item to review its file list, byte count, additions, modifications, removals and excluded paths, then save with an optional note. Unchanged content creates no extra revision unless joining parallel heads. Choose **Current files** or a saved revision from the version list.
-5. Click **Export** (or **To project** in ZeroSlack) to export the selected content to a new destination. **Collect** also saves external files as a new asset; **Update** saves subsequent revisions of collected assets.
+4. Use the archive/revision action (**Ctrl+S**) to review the file list, byte count, changes and excluded paths, then save with an optional note. For registered working sources, select **Working** before archiving. Unchanged content creates no extra revision unless joining parallel heads.
+5. Click **Copy to project** to copy the selected version to a new destination. The resulting files are independent editable copies. **Collect** also saves external files as a new asset; the revision action saves subsequent versions of collected assets.
 
-Use **+ Group** beside **Groups** to create a group in the left tree. Drag an IP onto
+The compact revision table shows **Version** and **Status** together: **Editing** for
+working sources and **Archived** with a lock for saved revisions. Double-click a file,
+press **Enter**, or use its open action to edit the original working file or open a
+verified read-only copy of an archived file. Secondary actions remain visible as
+outline icons with tooltips; errors and operation progress appear when needed.
+
+Use **New group** beside **Groups** to create a group in the left tree. Drag an IP onto
 a group to add membership while retaining its existing groups. Right-click an IP to
 add it to one or more groups or remove its membership. Right-click a group to rename
 or delete it. Empty groups persist, and group changes never move source files.
@@ -184,7 +190,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
 and the SuiteApp SDK enabled. For an explicitly standalone release, configure
 **XIPS_ENABLE_SUITEAPP=OFF** and pass **-Standalone** to the packaging script.
-The release tag **v2.4.0** must identify HEAD.
+The release tag **v2.6.0** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell
@@ -195,7 +201,7 @@ The script includes Qt/Ela dependencies, the icon, notices, **build-info.json**,
 **xips-capabilities.json**, replayable Ela patches, and **SHA256SUMS.txt**.
 The package records its exact clean source commit and Ela source/DLL fingerprints.
 The formal delivery is the runnable directory
-**E:/PinloomRoot/AppPackage/AppSuite/Apps/xIPs/**. Each application has its own
+**D:/PinloomRoot/AppPackage/AppSuite/Apps/xIPs/**. Each application has its own
 directory under **Apps/**. Deploy the prepared directory there, preserve the other
 applications, and update the suite manifest and checksum inventory.
 Do not create ZIP archives or backups of the old formal package. **build/packages/xIPs** is only
