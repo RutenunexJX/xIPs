@@ -47,8 +47,11 @@ struct CatalogAsset
     QStringList problems;
     bool historyIncomplete = false;
     QString sourceProblem;
+    QStringList workingFiles;
     QString referenceLibrary;
     QJsonObject referenceRecord;
+    // Retain ancestry through removed revisions without exposing them as versions.
+    QMap<QString, QStringList> deletedRevisionParents;
 };
 
 struct CatalogDefinition
@@ -111,6 +114,10 @@ class SnapshotLibrary
     static SnapshotResult saveCurrent(const CatalogAsset &asset, const QString &note = {},
                                       const PayloadPreview *expected = nullptr);
     static SnapshotResult previewSave(const CatalogAsset &asset, const QStringList &sources = {});
+    static SnapshotResult importFiles(const CatalogAsset &asset, const QStringList &sources);
+    static SnapshotResult previewSelected(const CatalogAsset &asset, const QStringList &files);
+    static SnapshotResult saveSelected(const CatalogAsset &asset, const QStringList &files,
+                                       const QString &note = {}, const PayloadPreview *expected = nullptr);
     static SnapshotResult previewCollect(const QStringList &sources, const QString &category);
     static SnapshotResult previewExport(const CatalogAsset &asset, const QString &revision);
     static QStringList heads(const CatalogAsset &asset);

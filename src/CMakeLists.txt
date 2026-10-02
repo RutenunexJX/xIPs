@@ -42,6 +42,8 @@ add_library(xips_app STATIC
     app/CatalogModel.h
     app/UiSupport.cpp
     app/UiSupport.h
+    app/WorkingFilesModel.cpp
+    app/WorkingFilesModel.h
 )
 target_include_directories(xips_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xips_app

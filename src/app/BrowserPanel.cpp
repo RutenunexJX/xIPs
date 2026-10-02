@@ -1,5 +1,6 @@
 #include "BrowserPanel.h"
 #include "CatalogModel.h"
+#include "WorkingFilesModel.h"
 #include "library/CatalogIndex.h"
 #include "library/OperationControl.h"
 #include "UiSupport.h"
@@ -12,6 +13,8 @@
 #include "ElaListView.h"
 #include "ElaTreeView.h"
 #include "ElaTableView.h"
+#include "ElaTabWidget.h"
+#include "ElaCheckBox.h"
 #include "ElaMenu.h"
 #include "ElaPlainTextEdit.h"
 #include "ElaProgressRing.h"
@@ -26,6 +29,7 @@
 #include <QDir>
 #include <QDesktopServices>
 #include <QDragEnterEvent>
+#include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QFormLayout>
 #include <QFutureWatcher>
@@ -524,6 +528,10 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     enableToolTip(m_name);
     identity->addWidget(m_name, 1);
+    m_update = actionButton(m_details, "updateButton", UiIcon::Archive, QStringLiteral("Create version"));
+    m_update->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_update->setFixedWidth(132);
+    identity->addWidget(m_update);
     m_take = new ElaPushButton(QStringLiteral("Copy to project"), m_details);
     m_take->setObjectName("takeButton");
     m_take->setFont(qApp->font());
@@ -558,7 +566,102 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_renameGroup = actionButton(assetActions, "renameGroupButton", UiIcon::Edit, QStringLiteral("Rename group"));
     m_deleteGroup = actionButton(assetActions, "deleteGroupButton", UiIcon::Trash, QStringLiteral("Delete group"));
     details->addWidget(assetActions);
-    m_versionSection = new QWidget(m_details);
+    m_groupItems = new ElaListView(m_details);
+    m_groupItems->setObjectName("groupMembers");
+    m_groupItems->setAccessibleName(QStringLiteral("IPs and modules in this group"));
+    m_groupItems->setItemHeight(28);
+    m_groupItems->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_groupItems->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_groupItems->setUniformItemSizes(true);
+    m_groupItems->setIsTransparent(true);
+    m_groupItems->setFrameShape(QFrame::NoFrame);
+    m_groupItems->setModel(m_model);
+    m_groupItems->setItemDelegate(detailDelegate(false, m_groupItems));
+    enableSmoothScrolling(m_groupItems);
+    enableToolTip(m_groupItems);
+    details->addWidget(m_groupItems, 1);
+    const auto openGroupMember = [this](const QModelIndex &index)
+    {
+        if (m_model->assetIndex(index) < 0) return;
+        m_list->expand(index.parent());
+        ElaTreeView::finishExpansion(m_list);
+        m_list->setCurrentIndex(index);
+        m_list->scrollTo(index);
+        m_list->setFocus();
+    };
+    connect(m_groupItems, &QAbstractItemView::clicked, this, openGroupMember);
+    connect(m_groupItems, &QAbstractItemView::activated, this, openGroupMember);
+    m_pages = new ElaTabWidget(m_details);
+    m_pages->setObjectName("assetPages");
+    m_pages->setTabSize(QSize(116, 28));
+    m_pages->setTabsClosable(false);
+    m_pages->setMovable(false);
+    m_pages->setIsTabTransparent(true);
+    m_pages->setIsContainerAcceptDrops(false);
+    details->addWidget(m_pages, 1);
+    m_workingPage = new QWidget(m_pages);
+    m_workingPage->setObjectName("workingPage");
+    m_workingPage->setAcceptDrops(true);
+    m_workingPage->installEventFilter(this);
+    auto *workingLayout = new QVBoxLayout(m_workingPage);
+    workingLayout->setContentsMargins(0, 4, 0, 0);
+    workingLayout->setSpacing(4);
+    auto *workingActions = new QHBoxLayout;
+    workingActions->setSpacing(4);
+    m_addFiles = actionButton(m_workingPage, "addFilesButton", UiIcon::Add, QStringLiteral("Add files"));
+    m_addFolder = actionButton(m_workingPage, "addFolderButton", UiIcon::FolderPlus, QStringLiteral("Add folder"));
+    for (auto *button : {m_addFiles, m_addFolder})
+    {
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setFixedWidth(button->fontMetrics().horizontalAdvance(button->text()) + 34);
+        workingActions->addWidget(button);
+    }
+    workingActions->addStretch();
+    m_checkAll = new ElaCheckBox(QStringLiteral("All"), m_workingPage);
+    m_checkAll->setObjectName("checkAllFiles");
+    workingActions->addWidget(m_checkAll);
+    m_openWorking = actionButton(m_workingPage, "openWorkingButton", UiIcon::Open, QStringLiteral("Edit file"),
+        QStringLiteral("Open the original file (double-click or Enter)"));
+    workingActions->addWidget(m_openWorking);
+    workingLayout->addLayout(workingActions);
+    m_workingEmpty = new ElaText(QStringLiteral("Add files or a folder to begin."), 12, m_workingPage);
+    m_workingEmpty->setObjectName("workingEmpty");
+    m_workingEmpty->setWordWrap(true);
+    m_workingEmpty->setAcceptDrops(true);
+    m_workingEmpty->installEventFilter(this);
+    workingLayout->addWidget(m_workingEmpty);
+    m_workingFiles = new ElaTreeView(m_workingPage);
+    m_workingFiles->setObjectName("workingFiles");
+    m_workingFiles->setAccessibleName(QStringLiteral("Files to include in the next version"));
+    m_workingFiles->setNativeItemContent(true);
+    m_workingFiles->setItemHeight(28);
+    m_workingFiles->setHeaderHidden(true);
+    m_workingFiles->setUniformRowHeights(true);
+    m_workingFiles->setIndentation(16);
+    m_workingFiles->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_workingFiles->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_workingFiles->setFrameShape(QFrame::NoFrame);
+    m_workingFiles->setDragDropMode(QAbstractItemView::DropOnly);
+    m_workingFiles->setDropIndicatorShown(false);
+    m_workingFiles->setAcceptDrops(true);
+    m_workingFiles->installEventFilter(this);
+    m_workingFiles->viewport()->setAcceptDrops(true);
+    m_workingFiles->viewport()->installEventFilter(this);
+    m_workingModel = new WorkingFilesModel(this);
+    m_workingFiles->setModel(m_workingModel);
+    enableSmoothScrolling(m_workingFiles);
+    enableToolTip(m_workingFiles);
+    workingLayout->addWidget(m_workingFiles, 1);
+    m_pages->addTab(m_workingPage, QStringLiteral("Working files"));
+    m_historyPage = new QWidget(m_pages);
+    auto *historyLayout = new QVBoxLayout(m_historyPage);
+    historyLayout->setContentsMargins(0, 4, 0, 0);
+    historyLayout->setSpacing(4);
+    m_historyEmpty = new ElaText(QStringLiteral("No saved versions."), 12, m_historyPage);
+    m_historyEmpty->setObjectName("historyEmpty");
+    historyLayout->addWidget(m_historyEmpty);
+    m_pages->addTab(m_historyPage, QStringLiteral("Versions"));
+    m_versionSection = new QWidget(m_historyPage);
     m_versionSection->setObjectName("versionSection");
     auto *versionLayout = new QVBoxLayout(m_versionSection);
     versionLayout->setContentsMargins(0, 4, 0, 0);
@@ -570,9 +673,9 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     versionLabel->setFixedWidth(104);
     versionHeader->addWidget(versionLabel);
     versionHeader->addWidget(new ElaText(QStringLiteral("Status"), 12, m_versionSection), 1);
-    m_update = actionButton(m_versionSection, "updateButton", UiIcon::Archive, QStringLiteral("Archive"));
-    m_deleteRevision = actionButton(m_versionSection, "deleteRevisionButton", UiIcon::Trash, QStringLiteral("Delete revision"));
-    versionHeader->addWidget(m_update);
+    m_deleteRevision = actionButton(m_versionSection, "deleteRevisionButton", UiIcon::Trash, QStringLiteral("Delete version"));
+    m_deleteRevision->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_deleteRevision->setFixedWidth(m_deleteRevision->fontMetrics().horizontalAdvance(m_deleteRevision->text()) + 34);
     versionHeader->addWidget(m_deleteRevision);
     versionLayout->addLayout(versionHeader);
     m_versions = new ElaTableView(m_versionSection);
@@ -603,8 +706,8 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     enableSmoothScrolling(m_versions);
     enableToolTip(m_versions);
     versionLayout->addWidget(m_versions);
-    details->addWidget(m_versionSection);
-    m_fileSection = new QWidget(m_details);
+    historyLayout->addWidget(m_versionSection);
+    m_fileSection = new QWidget(m_historyPage);
     m_fileSection->setObjectName("fileSection");
     auto *fileLayout = new QVBoxLayout(m_fileSection);
     fileLayout->setContentsMargins(0, 4, 0, 0);
@@ -642,8 +745,8 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     connect(m_files->selectionModel(), &QItemSelectionModel::currentChanged, this, [this]
         { m_openFile->setEnabled(!m_busy && m_files->currentIndex().isValid()); });
     fileLayout->addWidget(m_files, 1);
-    details->addWidget(m_fileSection, 1);
-    details->addStretch();
+    historyLayout->addWidget(m_fileSection, 1);
+    historyLayout->addStretch();
     m_splitter->setStretchFactor(0, 1);
     m_splitter->setStretchFactor(1, 1);
     layout->addWidget(m_splitter, 1);
@@ -706,6 +809,22 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     connect(m_list->selectionModel(), &QItemSelectionModel::currentChanged, this,
             &BrowserPanel::selectCurrent);
     connect(m_versions->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &BrowserPanel::selectVersion);
+    connect(m_pages, &QTabWidget::currentChanged, this, [this] { updateActions(); });
+    connect(m_workingModel, &WorkingFilesModel::checkedFilesChanged, this, &BrowserPanel::rememberChecks);
+    connect(m_checkAll, &QCheckBox::clicked, this, [this](bool checked) { m_workingModel->checkAll(checked); });
+    connect(m_workingFiles->selectionModel(), &QItemSelectionModel::currentChanged, this, [this] { updateActions(); });
+    connect(m_workingFiles, &QAbstractItemView::doubleClicked, this, [this] { openFile(); });
+    connect(m_openWorking, &QToolButton::clicked, this, &BrowserPanel::openFile);
+    connect(m_addFiles, &QToolButton::clicked, this, [this]
+    {
+        const auto paths = ElaFilePicker::getOpenFileNames(this, QStringLiteral("Add files"), m_workspace);
+        if (!paths.isEmpty()) importWorkingFiles(paths);
+    });
+    connect(m_addFolder, &QToolButton::clicked, this, [this]
+    {
+        const auto path = ElaFilePicker::getExistingDirectory(this, QStringLiteral("Add folder"), m_workspace);
+        if (!path.isEmpty()) importWorkingFiles({path});
+    });
     connect(m_new, &QPushButton::clicked, this, &BrowserPanel::createAsset);
     connect(m_newGroup, &QToolButton::clicked, this, &BrowserPanel::createGroup);
     connect(m_list, &QWidget::customContextMenuRequested, this, &BrowserPanel::groupMenu);
@@ -790,6 +909,8 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     shortcut(QKeySequence(Qt::Key_Escape), m_search, [this] { m_search->clear(); });
     shortcut(QKeySequence(Qt::Key_Return), m_files, [this] { openFile(); });
     shortcut(QKeySequence(Qt::Key_Enter), m_files, [this] { openFile(); });
+    shortcut(QKeySequence(Qt::Key_Return), m_workingFiles, [this] { openFile(); });
+    shortcut(QKeySequence(Qt::Key_Enter), m_workingFiles, [this] { openFile(); });
     shortcut(QKeySequence(Qt::Key_F2), m_list, [this]
     {
         const auto index = m_list->currentIndex();
@@ -841,7 +962,9 @@ void BrowserPanel::applyTheme()
         "QSplitter#assetSplitter::handle, QWidget#libraryDivider { background: %2; } "
         "QWidget#versionSection, QWidget#fileSection { border-top: 1px solid %2; }")
         .arg(background.name(), border.name(), sidebar.name()));
-    for (auto *view : {static_cast<QAbstractItemView *>(m_list), static_cast<QAbstractItemView *>(m_files),
+    for (auto *view : {static_cast<QAbstractItemView *>(m_list), static_cast<QAbstractItemView *>(m_groupItems),
+                       static_cast<QAbstractItemView *>(m_files),
+                       static_cast<QAbstractItemView *>(m_workingFiles),
                        static_cast<QAbstractItemView *>(m_versions)})
     {
         auto viewPalette = p;
@@ -903,23 +1026,42 @@ void BrowserPanel::hideEvent(QHideEvent *event)
 }
 void BrowserPanel::dragEnterEvent(QDragEnterEvent *event)
 {
-    const auto urls = event->mimeData()->urls();
-    if (!m_busy && !urls.isEmpty() &&
-        std::all_of(urls.cbegin(), urls.cend(), [](const QUrl &url) { return url.isLocalFile(); }))
-        event->acceptProposedAction();
+    handleFileDrop(event, overWorkingPage(event->position().toPoint()), false);
+}
+void BrowserPanel::dragMoveEvent(QDragMoveEvent *event)
+{
+    handleFileDrop(event, overWorkingPage(event->position().toPoint()), false);
 }
 void BrowserPanel::dropEvent(QDropEvent *event)
 {
-    if (m_busy)
-        return;
+    handleFileDrop(event, overWorkingPage(event->position().toPoint()), true);
+}
+bool BrowserPanel::overWorkingPage(const QPoint &position) const
+{
+    return m_workingPage->isVisible() &&
+        m_workingPage->rect().contains(m_workingPage->mapFrom(this, position));
+}
+void BrowserPanel::handleFileDrop(QDropEvent *event, bool working, bool import)
+{
+    event->ignore();
+    if (m_busy || !event->possibleActions().testFlag(Qt::CopyAction) ||
+        (working && (m_pages->currentIndex() != 0 || !m_addFiles->isEnabled()))) return;
     QStringList paths;
     for (const auto &url : event->mimeData()->urls())
-        if (url.isLocalFile())
-            paths.append(url.toLocalFile());
-    event->acceptProposedAction();
-    if (m_library.isEmpty())
-        chooseLibrary();
-    collectPaths(paths);
+    {
+        if (!url.isLocalFile() || url.toLocalFile().isEmpty()) return;
+        paths.append(url.toLocalFile());
+    }
+    if (paths.isEmpty()) return;
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+    if (!import) return;
+    if (working) importWorkingFiles(paths);
+    else
+    {
+        if (m_library.isEmpty()) chooseLibrary();
+        collectPaths(paths);
+    }
 }
 void BrowserPanel::setContext(const QString &library, const QString &workspace)
 {
@@ -952,6 +1094,31 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
     ++m_generation;
     filter();
     refresh();
+}
+bool BrowserPanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_workingPage || watched == m_workingEmpty || watched == m_workingFiles ||
+        watched == m_workingFiles->viewport())
+    {
+        if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove || event->type() == QEvent::Drop)
+        {
+            handleFileDrop(static_cast<QDropEvent *>(event), true, event->type() == QEvent::Drop);
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+void BrowserPanel::importWorkingFiles(const QStringList &paths)
+{
+    if (m_busy || paths.isEmpty() || !m_addFiles->isEnabled()) return;
+    const auto asset = m_selected;
+    run(QStringLiteral("Adding files…"), [asset, paths] { return SnapshotLibrary::importFiles(asset, paths); },
+        [this](const auto &result)
+    {
+        m_pendingId = result.asset.id;
+        m_pendingRevision = QStringLiteral("current");
+        refresh();
+    });
 }
 bool BrowserPanel::applyPendingContext()
 {
@@ -1090,9 +1257,14 @@ void BrowserPanel::selectCurrent()
             if (group.id == m_activeGroup) m_name->setText(group.name);
         const int count = m_model->rowCount(current);
         m_name->setToolTip(QStringLiteral("Group · %1 IPs").arg(count));
-        m_description->setText(QStringLiteral("Drag an IP onto this group, or use New IP to create one here."));
+        const bool filtered = !m_search->text().trimmed().isEmpty() || !m_category.isEmpty() || !m_indexTerm.isEmpty();
+        m_description->setText(filtered
+            ? QStringLiteral("No matching IPs or modules in this group. Clear search or filters to show all.")
+            : QStringLiteral("Drag an IP onto this group, or use New IP to create one here."));
         m_description->setToolTip(m_description->text());
         m_description->setVisible(count == 0);
+        m_groupItems->setRootIndex(current);
+        m_groupItems->setCurrentIndex({});
         const QSignalBlocker versions(m_versions->selectionModel());
         m_versionModel->removeRows(0, m_versionModel->rowCount());
         m_take->hide();
@@ -1172,7 +1344,11 @@ void BrowserPanel::readLegacyDetails(const CatalogAsset &asset)
 }
 void BrowserPanel::showDetails(const CatalogAsset &asset)
 {
+    const auto previousRevision = m_snapshot.id;
+    const bool sameAsset = m_displayedAsset == m_library + '\n' + asset.id;
+    const auto requestedRevision = m_pendingRevision;
     m_selected = asset;
+    m_displayedAsset = workingKey();
     m_name->setText(asset.name);
     QStringList detail;
     detail.append(SnapshotLibrary::categoryLabel(asset.category));
@@ -1199,8 +1375,9 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
     for (auto it = asset.snapshots.crbegin(); it != asset.snapshots.crend(); ++it)
     {
         const bool editing = it->id == "current" || (asset.legacy && it->id == "working");
-        const QString label = editing ? QStringLiteral("Working") : versionText(asset, *it);
-        const QString status = editing ? QStringLiteral("Editing") : QStringLiteral("Archived");
+        if (editing) continue;
+        const QString label = versionText(asset, *it);
+        const QString status = QStringLiteral("Archived");
         const auto saved = it->created.isValid() ? it->created.toLocalTime().toString("yyyy-MM-dd HH:mm") : QString();
         const auto tooltip = QStringList{label, editing ? status : QStringLiteral("Archived · Read-only"),
             QStringLiteral("%1 files").arg(it->files.size()), saved, it->note, it->id}.join('\n');
@@ -1215,7 +1392,8 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
             item->setToolTip(tooltip);
             row.append(item);
         }
-        if (it->id == m_pendingRevision) requested = m_versionModel->rowCount();
+        if (it->id == (requestedRevision.isEmpty() && sameAsset ? previousRevision : requestedRevision))
+            requested = m_versionModel->rowCount();
         m_versionModel->appendRow(row);
     }
     m_versions->setMaximumHeight(qBound(1, m_versionModel->rowCount(), 6) * 28);
@@ -1223,14 +1401,46 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
     m_versions->setCurrentIndex(m_versionModel->index(requested, 0));
     m_versions->scrollTo(m_versions->currentIndex());
     m_pendingRevision.clear();
-    m_update->setText(asset.discovered ? QStringLiteral("Archive…")
+    m_update->setText(asset.discovered ? QStringLiteral("Create version")
                        : asset.legacy ? QStringLiteral("Convert legacy asset")
                                       : QStringLiteral("New revision…"));
-    m_update->setToolTip(asset.discovered ? QStringLiteral("Select Editing to archive the working files as a read-only revision (Ctrl+S)")
+    m_update->setFixedWidth(m_update->fontMetrics().horizontalAdvance(m_update->text()) + 34);
+    m_update->setToolTip(asset.discovered ? QStringLiteral("Create a version from the checked files (Ctrl+S)")
                                          : QStringLiteral("Create a new revision; existing archived files remain read-only (Ctrl+S)"));
     m_update->setAccessibleName(m_update->text());
     m_update->setVisible(asset.referencePath.isEmpty());
+    auto files = asset.workingFiles;
+    if (asset.legacy)
+        for (const auto &snapshot : asset.snapshots)
+            if (snapshot.id == "working") files = snapshot.files;
+    auto checked = m_checkedFiles.value(workingKey());
+    checked.intersect(QSet<QString>(files.cbegin(), files.cend()));
+    m_workingModel->setFiles(files, checked, asset.discovered && asset.referencePath.isEmpty());
+    m_workingFiles->expandAll();
+    ElaTreeView::finishExpansion(m_workingFiles);
+    rememberChecks();
+    const bool hasWorking = (asset.discovered || asset.legacy) && asset.referencePath.isEmpty();
+    m_pages->setTabVisible(0, hasWorking);
+    if (!hasWorking || (!requestedRevision.isEmpty() && requestedRevision != "current" && requestedRevision != "working"))
+        m_pages->setCurrentIndex(1);
+    else if (!sameAsset || requestedRevision == "current" || requestedRevision == "working")
+        m_pages->setCurrentIndex(0);
     selectVersion();
+}
+QString BrowserPanel::workingKey() const
+{
+    return m_library + '\n' + m_selected.id;
+}
+void BrowserPanel::rememberChecks()
+{
+    if (m_selected.id.isEmpty()) return;
+    const auto files = m_workingModel->checkedFiles();
+    m_checkedFiles.insert(workingKey(), QSet<QString>(files.cbegin(), files.cend()));
+    const QSignalBlocker blocker(m_checkAll);
+    m_checkAll->setCheckState(files.isEmpty() ? Qt::Unchecked
+        : files.size() == m_workingModel->fileCount() ? Qt::Checked : Qt::PartiallyChecked);
+    m_checkAll->setToolTip(QStringLiteral("%1 of %2 files checked").arg(files.size()).arg(m_workingModel->fileCount()));
+    updateActions();
 }
 void BrowserPanel::selectVersion()
 {
@@ -1248,10 +1458,6 @@ void BrowserPanel::selectVersion()
         : QStringLiteral("Double-click or press Enter to open a read-only copy of this revision"));
     m_files->setMaximumHeight(qMax(1, qMin(1000, int(m_snapshot.files.size()))) * 28);
     m_fileSection->setMaximumHeight(m_files->maximumHeight() + 36);
-    m_take->setEnabled(!m_busy && !m_snapshot.id.isEmpty());
-    m_update->setEnabled(!m_busy && !m_selected.id.isEmpty() && m_selected.referencePath.isEmpty() &&
-                         (!m_selected.discovered || editing) &&
-                         !m_selected.historyIncomplete && m_selected.sourceProblem.isEmpty());
     updateActions();
 }
 void BrowserPanel::setBusy(bool value, const QString &message)
@@ -1269,9 +1475,6 @@ void BrowserPanel::setBusy(bool value, const QString &message)
     m_list->setAcceptDrops(!value);
     m_versions->setEnabled(true);
     m_take->setEnabled(!value && !m_snapshot.id.isEmpty());
-    m_update->setEnabled(!value && !m_selected.id.isEmpty() && m_selected.referencePath.isEmpty() &&
-                         (!m_selected.discovered || m_snapshot.id == "current") &&
-                         !m_selected.historyIncomplete && m_selected.sourceProblem.isEmpty());
     m_cancel->setVisible(value && bool(m_operation));
     m_cancel->setEnabled(value && bool(m_operation));
     if (value && m_operation) m_progressTimer->start();
@@ -1578,7 +1781,7 @@ void BrowserPanel::createAsset()
     form.body->addWidget(type);
     auto *mode = new ElaComboBox(&form);
     mode->setObjectName("newAssetMode");
-    mode->addItem(QStringLiteral("Create HDL source folder"), "new");
+    mode->addItem(QStringLiteral("Empty IP / module"), "new");
     mode->addItem(QStringLiteral("Register existing folder"), "folder");
     mode->addItem(QStringLiteral("Register existing file"), "file");
     form.body->addWidget(mode);
@@ -1711,14 +1914,14 @@ void BrowserPanel::collectPaths(const QStringList &paths)
 }
 void BrowserPanel::updateAsset()
 {
-    if (m_busy || m_selected.id.isEmpty())
-        return;
-    if (m_selected.discovered && m_snapshot.id != "current")
+    if (m_busy || m_selected.id.isEmpty() || !m_update->isEnabled())
         return;
     const auto asset = m_selected;
     if (asset.discovered)
     {
-        run(QStringLiteral("Reviewing working files…"), [asset] { return SnapshotLibrary::previewSave(asset); },
+        const auto files = m_workingModel->checkedFiles();
+        if (files.isEmpty()) return;
+        run(QStringLiteral("Reviewing checked files…"), [asset, files] { return SnapshotLibrary::previewSelected(asset, files); },
             [this](const auto &prepared) { if (m_pendingContext) { applyPendingContext(); return; } savePrepared(prepared, {}); });
         return;
     }
@@ -1758,13 +1961,26 @@ void BrowserPanel::savePrepared(const SnapshotResult &prepared, const QStringLis
 {
     const auto asset = prepared.asset;
     const auto expected = prepared.preview;
-    Form form(this, QStringLiteral("Archive %1").arg(asset.name), expected.heads.size() > 1
-        ? QStringLiteral("Adopt reviewed files") : QStringLiteral("Archive revision"));
+    Form form(this, QStringLiteral("Create version · %1").arg(asset.name), expected.heads.size() > 1
+        ? QStringLiteral("Adopt reviewed files") : QStringLiteral("Create version"));
     form.setObjectName("payloadReviewForm");
-    previewContents(form, expected);
-    form.message(expected.heads.size() > 1
-        ? QStringLiteral("Creates a revision joining these parents. Existing revisions stay unchanged.")
-        : QStringLiteral("Creates a read-only archived revision. Working files remain editable. Identical content is skipped."));
+    if (asset.discovered)
+    {
+        form.message(QStringLiteral("%1 checked files").arg(expected.files.size()));
+        auto *files = new EnglishPlainTextEdit(&form);
+        files->setObjectName("payloadPreview");
+        files->setReadOnly(true);
+        files->setPlainText(expected.files.join('\n'));
+        files->setMinimumSize(360, 120);
+        form.body->addWidget(files);
+        if (expected.heads.size() > 1)
+        {
+            form.setMinimumWidth(520);
+            files->appendPlainText(QStringLiteral("\n%1 parallel revision heads\n%2\nAdopts these files with all heads as parents; source text is not merged.")
+                .arg(expected.heads.size()).arg(expected.heads.join('\n')));
+        }
+    }
+    else previewContents(form, expected);
     auto *note = new EnglishLineEdit(&form);
     note->setObjectName("revisionNote");
     note->setPlaceholderText(QStringLiteral("Note (optional), e.g. verified on board"));
@@ -1775,7 +1991,7 @@ void BrowserPanel::savePrepared(const SnapshotResult &prepared, const QStringLis
     run(
         QStringLiteral("Saving revision…"),
         [asset, paths, text, expected] { return asset.discovered
-            ? SnapshotLibrary::saveCurrent(asset, text, &expected)
+            ? SnapshotLibrary::saveSelected(asset, expected.files, text, &expected)
             : SnapshotLibrary::update(asset, paths, text, &expected); },
         [this](const auto &result)
         {
@@ -1988,6 +2204,28 @@ void BrowserPanel::updateActions()
     const bool asset = !m_selected.id.isEmpty();
     const bool reference = !m_selected.referencePath.isEmpty();
     const bool group = !asset && !m_activeGroup.isEmpty();
+    const bool working = asset && m_pages->currentIndex() == 0;
+    const bool editable = asset && m_selected.discovered && !reference && !m_busy && !m_loadingDetails &&
+        !m_selected.historyIncomplete && m_selected.sourceProblem.isEmpty();
+    m_pages->setVisible(asset);
+    m_addFiles->setEnabled(editable && m_selected.sourceIsDirectory);
+    m_addFolder->setEnabled(m_addFiles->isEnabled());
+    m_addFiles->setVisible(m_selected.discovered && m_selected.sourceIsDirectory);
+    m_addFolder->setVisible(m_selected.discovered && m_selected.sourceIsDirectory);
+    m_workingFiles->setEnabled(!m_busy && !m_loadingDetails);
+    m_checkAll->setVisible(m_selected.discovered);
+    m_checkAll->setEnabled(editable && m_workingModel->fileCount() > 0);
+    m_workingEmpty->setVisible(m_workingModel->fileCount() == 0);
+    m_workingEmpty->setText(m_selected.sourceProblem.isEmpty() ? QStringLiteral("Drop files or folders here, or use Add files / Add folder.")
+        : m_selected.sourceProblem);
+    m_openWorking->setEnabled(!m_busy && !m_loadingDetails && m_workingFiles->currentIndex().data(Qt::UserRole + 1).toBool());
+    m_historyEmpty->setVisible(m_versionModel->rowCount() == 0);
+    m_update->setVisible(asset && !reference);
+    m_update->setEnabled(!m_busy && !m_loadingDetails && asset && !reference &&
+        !m_selected.historyIncomplete && m_selected.sourceProblem.isEmpty() &&
+        (!m_selected.discovered || !m_workingModel->checkedFiles().isEmpty()));
+    m_take->setVisible(asset && !working && !m_snapshot.id.isEmpty());
+    m_take->setEnabled(!m_busy && !m_snapshot.id.isEmpty());
     m_collect->setEnabled(!m_busy);
     m_refresh->setEnabled(!m_busy && !m_library.isEmpty());
     m_folder->setToolTip(m_library.isEmpty() ? QStringLiteral("Choose the folder for your IP catalog")
@@ -2014,13 +2252,16 @@ void BrowserPanel::updateActions()
     m_edit->setEnabled(!m_busy && !m_selected.historyIncomplete);
     m_remove->setEnabled(!m_busy && (reference || (!m_selected.historyRoot.isEmpty() && !m_selected.historyIncomplete)));
     m_changeReference->setEnabled(!m_busy);
-    m_deleteRevision->setEnabled(!m_busy && !m_selected.historyIncomplete && m_selected.snapshots.size() > 1 && !m_snapshot.id.isEmpty());
+    m_deleteRevision->setEnabled(!m_busy && !m_loadingDetails && asset && !reference && !m_selected.legacy &&
+        !m_selected.historyIncomplete && !m_snapshot.id.isEmpty());
     m_deleteAsset->setEnabled(!m_busy && !m_selected.historyIncomplete);
     m_renameGroup->setEnabled(!m_busy);
     m_deleteGroup->setEnabled(!m_busy);
-    m_versionSection->setVisible(asset);
-    m_fileSection->setVisible(asset);
-    m_deleteRevision->setVisible(asset && !reference && !m_selected.legacy && !m_selected.discovered);
+    m_versionSection->setVisible(asset && m_versionModel->rowCount() > 0);
+    m_fileSection->setVisible(asset && !m_snapshot.id.isEmpty());
+    m_groupItems->setVisible(group && m_groupItems->rootIndex().isValid() &&
+        m_model->rowCount(m_groupItems->rootIndex()) > 0);
+    m_deleteRevision->setVisible(asset && !reference && !m_selected.legacy);
     const QList<QPair<ElaToolButton *, bool>> controls{
         {m_openFolder, asset && m_selected.discovered},
         {m_reference, asset}, {m_edit, asset && !m_selected.legacy && !reference},
@@ -2046,10 +2287,14 @@ void BrowserPanel::updateActions()
 }
 void BrowserPanel::openFile()
 {
-    if (m_busy || m_loadingDetails || !m_files->currentIndex().isValid() || m_snapshot.id.isEmpty()) return;
+    if (m_busy || m_loadingDetails) return;
+    const bool working = m_pages->currentIndex() == 0;
+    if (working ? !m_workingFiles->currentIndex().data(Qt::UserRole + 1).toBool()
+                : (!m_files->currentIndex().isValid() || m_snapshot.id.isEmpty())) return;
     const auto asset = m_selected;
-    const auto revision = m_snapshot.id;
-    const auto file = m_files->currentIndex().data().toString();
+    const auto revision = working ? (asset.legacy ? QStringLiteral("working") : QStringLiteral("current")) : m_snapshot.id;
+    const auto file = working ? m_workingFiles->currentIndex().data(Qt::UserRole).toString()
+                              : m_files->currentIndex().data().toString();
     QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation);
 #ifdef XIPS_ENABLE_TEST_HOOKS
     if (qEnvironmentVariableIsSet("XIPS_TEST_CACHE_ROOT"))
@@ -2096,14 +2341,14 @@ void BrowserPanel::deleteAsset(bool whole)
     if (m_busy || !(whole ? m_deleteAsset : m_deleteRevision)->isEnabled()) return;
     const auto asset = m_selected;
     const auto snapshot = m_snapshot;
-    const bool shared = !snapshot.objects.isEmpty();
-    Form form(this, whole ? QStringLiteral("Delete asset") : QStringLiteral("Delete revision"),
-              shared && !whole ? QStringLiteral("Remove revision") : QStringLiteral("Move to Recycle Bin"));
+    Form form(this, whole ? QStringLiteral("Delete asset") : QStringLiteral("Delete version"),
+              whole ? QStringLiteral("Move to Recycle Bin") : QStringLiteral("Delete version"));
+    form.setObjectName(whole ? "deleteAssetForm" : "deleteRevisionForm");
     form.message(whole ? QStringLiteral("Move %1 and all its revisions to the Recycle Bin? Existing project copies stay unchanged.").arg(asset.name)
-                       : shared ? QStringLiteral("Remove %1, %2 from the version list? Shared history content is retained.").arg(asset.name, SnapshotLibrary::revisionLabel(snapshot))
-                       : QStringLiteral("Move %1, rev%2 to the Recycle Bin? Other revisions and project copies stay unchanged.").arg(asset.name, snapshot.id));
+                       : QStringLiteral("Delete %1, %2?\n\nThe IP, working files, groups and other versions are kept. Shared history content is retained.")
+                           .arg(asset.name, versionText(asset, snapshot)));
     if (form.exec() != QDialog::Accepted) return;
-    run(shared && !whole ? QStringLiteral("Removing revision…") : QStringLiteral("Moving to Recycle Bin…"),
+    run(whole ? QStringLiteral("Moving to Recycle Bin…") : QStringLiteral("Deleting version…"),
         [asset, snapshot, whole]
         { return whole ? SnapshotLibrary::eraseAsset(asset) : SnapshotLibrary::eraseSnapshot(asset, snapshot.id); });
 }
@@ -2141,7 +2386,8 @@ QVariantMap BrowserPanel::saveState() const
             {"assetId", m_selected.id},
             {"groupId", m_activeGroup},
             {"collapsedGroups", QStringList(m_collapsedGroups.values())},
-            {"revision", m_snapshot.id},
+            {"revision", m_pages->currentIndex() == 0
+                ? (m_selected.legacy ? QStringLiteral("working") : QStringLiteral("current")) : m_snapshot.id},
             {"horizontalRatio", m_splitter->orientation() == Qt::Horizontal ? splitRatio() : m_horizontalRatio},
             {"verticalRatio", m_splitter->orientation() == Qt::Vertical ? splitRatio() : m_verticalRatio}};
 }

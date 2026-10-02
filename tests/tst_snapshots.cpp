@@ -1,3 +1,4 @@
+#include "CatalogFixture.h"
 #include "library/AssetLibraryService.h"
 #include "library/SnapshotLibrary.h"
 #include "library/CatalogIndex.h"
@@ -65,7 +66,7 @@ void SnapshotTest::opensOriginalsAndReadOnlySavedFiles()
     CatalogDefinition definition;
     definition.name = "serial";
     definition.source = folder;
-    const auto created = SnapshotLibrary::create(library, definition);
+    const auto created = savedCatalogFixture(library, definition);
     QVERIFY2(created.ok, qPrintable(created.error));
     const auto file = QStringLiteral("rtl/serial port.sv");
     put(original, "module changed; endmodule\n");
@@ -304,7 +305,7 @@ void SnapshotTest::ipPackagesStayTogetherAndSkipGeneratedFiles()
     definition.name = "UART";
     definition.category = "ip";
     definition.source = package;
-    QVERIFY(SnapshotLibrary::create(library, definition).ok);
+    QVERIFY(savedCatalogFixture(library, definition).ok);
     const auto scanned = SnapshotLibrary::scan(library);
     QVERIFY(scanned.problems.isEmpty());
     QCOMPARE(scanned.assets.size(), 1);
@@ -332,7 +333,7 @@ void SnapshotTest::originalFilesRemainReadOnlyUntilExplicitExport()
     CatalogDefinition definition;
     definition.name = "source";
     definition.source = source;
-    QVERIFY(SnapshotLibrary::create(library, definition).ok);
+    QVERIFY(savedCatalogFixture(library, definition).ok);
     const auto catalog = SnapshotLibrary::scan(library);
     QCOMPARE(catalog.assets.size(), 1);
     const auto asset = catalog.assets.first();
@@ -401,7 +402,7 @@ void SnapshotTest::sourceHistorySurvivesRelocationAndMissingOriginal()
     CatalogDefinition definition;
     definition.name = "source";
     definition.source = library + "/rtl/source.sv";
-    auto saved = SnapshotLibrary::create(library, definition);
+    auto saved = savedCatalogFixture(library, definition);
     QVERIFY2(saved.ok, qPrintable(saved.error));
     QVERIFY(!QFileInfo::exists(library + "/rtl/.xips.json"));
     QCOMPARE(get(library + "/rtl/source.sv"), QByteArray("first"));
@@ -479,7 +480,7 @@ void SnapshotTest::localIndexCanBeRebuilt()
     CatalogDefinition definition;
     definition.name = "UART";
     definition.source = library + "/uart.sv";
-    QVERIFY(SnapshotLibrary::create(library, definition).ok);
+    QVERIFY(savedCatalogFixture(library, definition).ok);
     auto catalog = SnapshotLibrary::scan(library);
     const auto index = CatalogIndex::path(library);
     QVERIFY(!index.isEmpty() && !index.startsWith(library));
@@ -515,7 +516,7 @@ void SnapshotTest::catalogDefinitionsSupportMultipleIndexes()
     definition.indexes = {{"category", {"Communication/UART", "Control"}},
                           {"tag", {"serial", "debug"}}, {"interface", {"AXI", "UART"}},
                           {"purpose", {"telemetry"}}};
-    auto created = SnapshotLibrary::create(library, definition);
+    auto created = savedCatalogFixture(library, definition);
     QVERIFY2(created.ok, qPrintable(created.error));
     QVERIFY(get(created.asset.root + "/rtl/uart_core.sv").contains("module uart_core"));
     auto catalog = SnapshotLibrary::scan(library);
@@ -534,7 +535,7 @@ void SnapshotTest::catalogDefinitionsSupportMultipleIndexes()
     QVERIFY(matches.has_value());
     QCOMPARE(matches->size(), 1);
     definition.source = created.asset.root;
-    QVERIFY(!SnapshotLibrary::create(library, definition).ok);
+    QVERIFY(!savedCatalogFixture(library, definition).ok);
     definition.indexes["category"] = {"Updated"};
     const auto edited = SnapshotLibrary::setDefinition(created.asset, definition);
     QVERIFY2(edited.ok, qPrintable(edited.error));
@@ -551,9 +552,9 @@ void SnapshotTest::referencesPinOneDefinitionAcrossLibrariesAndProjects()
     CatalogDefinition definition;
     definition.name = "timer_core";
     definition.indexes = {{"category", {"Timing", "Control"}}, {"interface", {"AXI"}}};
-    const auto created = SnapshotLibrary::create(owner, definition);
+    const auto created = savedCatalogFixture(owner, definition);
     QVERIFY2(created.ok, qPrintable(created.error));
-    const auto independent = SnapshotLibrary::create(other, definition);
+    const auto independent = savedCatalogFixture(other, definition);
     QVERIFY2(independent.ok, qPrintable(independent.error));
     QVERIFY(independent.asset.id != created.asset.id);
     const auto referenced = SnapshotLibrary::addReference(created.asset, created.snapshot.id, other);
@@ -598,7 +599,7 @@ void SnapshotTest::groupsPersistWithoutChangingSourcesOrHistory()
     QCOMPARE(SnapshotLibrary::scan(library).groups.size(), 2);
     CatalogDefinition definition;
     definition.name = "axi_bridge";
-    const auto asset = SnapshotLibrary::create(library, definition);
+    const auto asset = savedCatalogFixture(library, definition);
     QVERIFY(asset.ok);
     const auto source = library + "/axi_bridge/rtl/axi_bridge.sv";
     const auto original = get(source);

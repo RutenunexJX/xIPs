@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.7.0 — 2026-10-03
+
+- Delete any archived version from the visible Versions action, including the last, while retaining the IP, working files, groups, immutable history and shared content. Preserve revision numbering and ancestry through deletions, and reject stale targets or incomplete synchronized history.
+- Accept copied file/folder drops throughout Working files, including the empty area and tree rows, using the same import checks as Add files / Add folder without automatically saving a version.
+- Keep checked, unchecked and partial file checkboxes visible in both themes on native Windows/high-DPI displays, using Ela indicator colors with Qt item layout and input handling. Update the everyday workflow documentation for empty creation and checked-file versions.
+- Create empty IP/module workspaces without templates or automatic revisions. Add files/folders or drop them into the workspace, check an exact file set, and explicitly create immutable versions; separate working files from saved history and preserve checks across refreshes.
+- Show a selected group's IPs and modules in the detail pane, including when the tree group is collapsed; open an item with a click or Enter and keep search/filter results in sync.
+
 ## 2.6.0 — 2026-10-01
 
 - Simplify the Ela browser with a tinted group sidebar, a two-column revision list, subtle file/revision selection, and visible outline actions. Put Copy to project beside the IP name; retain error/progress feedback while hiding repeated idle statistics.

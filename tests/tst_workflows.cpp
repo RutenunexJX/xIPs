@@ -1,9 +1,11 @@
+#include "CatalogFixture.h"
 #include "library/CatalogIndex.h"
 #include "library/OperationControl.h"
 #include "library/SnapshotLibrary.h"
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QLockFile>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -28,7 +30,7 @@ SnapshotResult create(const QString &library)
     QDir().mkpath(library);
     CatalogDefinition d;
     d.name = "counter";
-    return SnapshotLibrary::create(library, d);
+    return savedCatalogFixture(library, d);
 }
 } // namespace
 class WorkflowTest : public QObject
@@ -37,6 +39,94 @@ class WorkflowTest : public QObject
     QTemporaryDir cache;
   private slots:
     void initTestCase() { qputenv("XIPS_TEST_CACHE_ROOT", cache.path().toUtf8()); }
+    void emptyWorkspaceImportsAndExactVersions()
+    {
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library");
+        QVERIFY(QDir().mkpath(library));
+        CatalogDefinition definition; definition.name = "empty_ip"; definition.category = "ip";
+        const auto created = SnapshotLibrary::create(library, definition);
+        QVERIFY2(created.ok, qPrintable(created.error));
+        QVERIFY(created.snapshot.id.isEmpty());
+        QVERIFY(created.asset.snapshots.isEmpty());
+        QVERIFY(created.asset.workingFiles.isEmpty());
+        QCOMPARE(QDir(created.asset.root).entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot).size(), 0);
+        auto scan = SnapshotLibrary::scan(library);
+        QCOMPARE(scan.assets.size(), 1);
+        QVERIFY(scan.problems.isEmpty());
+        QVERIFY(scan.assets.first().snapshots.isEmpty());
+        QCOMPARE(scan.assets.first().id, created.asset.id);
+        QProcess reopened;
+        reopened.start(QString::fromUtf8(XIPS_CLI_PATH), {"--action", "list", "--library", library});
+        QVERIFY(reopened.waitForFinished());
+        QCOMPARE(reopened.exitCode(), 0);
+        const auto reloaded = QJsonDocument::fromJson(reopened.readAllStandardOutput()).object()
+            .value("data").toObject().value("assets").toArray();
+        QCOMPARE(reloaded.size(), 1);
+        QCOMPARE(reloaded.first().toObject().value("id").toString(), created.asset.id);
+        QVERIFY(reloaded.first().toObject().value("version").toString().isEmpty());
+        QVERIFY(!SnapshotLibrary::previewSelected(created.asset, {}).ok);
+        QVERIFY(!SnapshotLibrary::saveSelected(created.asset, {}).ok);
+        const auto source = tmp.filePath("external");
+        put(source + "/rtl/top.sv", "module original; endmodule");
+        put(source + "/rtl/nested/helper.sv", "helper");
+        put(source + "/rtl/unused.sv", "unused");
+        put(source + "/notes.txt", "notes");
+        const auto imported = SnapshotLibrary::importFiles(created.asset, {source + "/rtl", source + "/notes.txt"});
+        QVERIFY2(imported.ok, qPrintable(imported.error));
+        QCOMPARE(imported.asset.workingFiles.size(), 4);
+        QCOMPARE(SnapshotLibrary::heads(imported.asset).size(), 0);
+        QCOMPARE(get(created.asset.root + "/rtl/nested/helper.sv"), QByteArray("helper"));
+        const auto duplicate = SnapshotLibrary::importFiles(imported.asset, {source + "/rtl", source + "/notes.txt"});
+        QVERIFY(duplicate.ok && duplicate.unchanged);
+        put(source + "/notes.txt", "conflict");
+        put(source + "/aaa_new.txt", "must not be published");
+        auto rejected = SnapshotLibrary::importFiles(imported.asset, {source + "/aaa_new.txt", source + "/notes.txt"});
+        QVERIFY(!rejected.ok);
+        QVERIFY(!QFileInfo::exists(created.asset.root + "/aaa_new.txt"));
+        QCOMPARE(get(created.asset.root + "/notes.txt"), QByteArray("notes"));
+        OperationControl cancellation; QVERIFY(cancellation.cancel());
+        {
+            OperationScope scope(&cancellation);
+            QVERIFY(SnapshotLibrary::importFiles(imported.asset, {source + "/aaa_new.txt"}).cancelled);
+        }
+        QVERIFY(!QFileInfo::exists(created.asset.root + "/aaa_new.txt"));
+        const QStringList checked{"notes.txt", "rtl/nested/helper.sv"};
+        const auto preview = SnapshotLibrary::previewSelected(imported.asset, checked);
+        QVERIFY2(preview.ok, qPrintable(preview.error));
+        QVERIFY(!SnapshotLibrary::saveSelected(imported.asset, {"rtl/top.sv"}, {}, &preview.preview).ok);
+        QVERIFY(!SnapshotLibrary::saveSelected(imported.asset, {"../escape"}).ok);
+        put(created.asset.root + "/notes.txt", "changed after review");
+        QVERIFY(!SnapshotLibrary::saveSelected(imported.asset, checked, {}, &preview.preview).ok);
+        put(created.asset.root + "/notes.txt", "notes");
+        const auto first = SnapshotLibrary::saveSelected(imported.asset, checked, "selected subset", &preview.preview);
+        QVERIFY2(first.ok, qPrintable(first.error));
+        QCOMPARE(first.snapshot.sequence, 1);
+        QCOMPARE(first.snapshot.files, checked);
+        QVERIFY(SnapshotLibrary::exportSnapshot(first.asset, first.snapshot.id, tmp.filePath("copy1")).ok);
+        QCOMPARE(get(tmp.filePath("copy1/rtl/nested/helper.sv")), QByteArray("helper"));
+        QVERIFY(!QFileInfo::exists(tmp.filePath("copy1/rtl/top.sv")));
+        const auto firstManifest = first.asset.historyRoot + "/.xips/revisions/" + first.snapshot.id + ".json";
+        const auto originalManifest = get(firstManifest);
+        const auto beforeChange = SnapshotLibrary::previewSelected(first.asset, checked);
+        put(created.asset.root + "/notes.txt", "second notes");
+        const auto second = SnapshotLibrary::saveSelected(first.asset, checked);
+        QVERIFY2(second.ok, qPrintable(second.error));
+        QCOMPARE(second.snapshot.sequence, 2);
+        QCOMPARE(second.snapshot.files, checked);
+        QCOMPARE(get(firstManifest), originalManifest);
+        QVERIFY(!SnapshotLibrary::saveSelected(first.asset, checked, {}, &beforeChange.preview).ok);
+        QVERIFY(SnapshotLibrary::exportSnapshot(first.asset, first.snapshot.id, tmp.filePath("old")).ok);
+        QCOMPARE(get(tmp.filePath("old/notes.txt")), QByteArray("notes"));
+        QCOMPARE(get(source + "/rtl/top.sv"), QByteArray("module original; endmodule"));
+        QCOMPARE(get(source + "/notes.txt"), QByteArray("conflict"));
+        QVERIFY(QFile::remove(created.asset.root + "/notes.txt"));
+        QVERIFY(!SnapshotLibrary::saveSelected(second.asset, checked).ok);
+        const auto metadataRoot = created.asset.historyRoot;
+        CatalogDefinition invalid; invalid.name = "invalid"; invalid.source = metadataRoot;
+        QVERIFY(!SnapshotLibrary::create(library, invalid).ok);
+        QCOMPARE(SnapshotLibrary::scan(library).assets.size(), 1);
+    }
     void damagedRevisionAndEmptySourceKeepHealthyHistory()
     {
         QTemporaryDir tmp;
@@ -218,6 +308,177 @@ class WorkflowTest : public QObject
         QVERIFY(cli.waitForFinished());
         QCOMPARE(cli.exitCode(), 0);
         QVERIFY(cli.readAllStandardOutput().contains("counter"));
+    }
+    void archivedVersionDeletion_data()
+    {
+        QTest::addColumn<QString>("kind");
+        for (const auto &kind : {"managed", "linked-file", "linked-folder", "registered-history", "collected"})
+            QTest::newRow(kind) << QString::fromLatin1(kind);
+    }
+    void archivedVersionDeletion()
+    {
+        QFETCH(QString, kind);
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library");
+        QVERIFY(QDir().mkpath(library));
+        CatalogDefinition definition; definition.name = "delete_versions";
+        definition.description = "preserved metadata";
+        definition.indexes.insert("interface", {"AXI"});
+        QString source;
+        SnapshotResult first;
+        if (kind == "collected")
+        {
+            source = tmp.filePath("external/top.sv"); put(source, "first");
+            first = SnapshotLibrary::collect(library, {source}, definition.name, definition.category);
+        }
+        else if (kind == "registered-history")
+        {
+            first = savedCatalogFixture(library, definition);
+            QVERIFY2(first.ok, qPrintable(first.error));
+            source = first.asset.root + '/' + first.snapshot.files.first();
+        }
+        else
+        {
+            if (kind.startsWith("linked"))
+            {
+                source = library + "/original/top.sv"; put(source, "first");
+                definition.source = kind == "linked-file" ? source : QFileInfo(source).absolutePath();
+            }
+            auto created = SnapshotLibrary::create(library, definition);
+            QVERIFY2(created.ok, qPrintable(created.error));
+            if (source.isEmpty()) { source = created.asset.root + "/rtl/top.sv"; put(source, "first"); }
+            first = SnapshotLibrary::saveCurrent(created.asset);
+        }
+        QVERIFY2(first.ok, qPrintable(first.error));
+        const auto save = [&](const CatalogAsset &asset, const PayloadPreview *preview = nullptr)
+        { return asset.discovered ? SnapshotLibrary::saveCurrent(asset, {}, preview)
+                                  : SnapshotLibrary::update(asset, {source}, {}, preview); };
+        const auto root = first.asset.discovered ? first.asset.historyRoot : first.asset.root;
+        const auto definitionBytes = get(root + "/.xips.json");
+        const auto group = CatalogGroups::create(library, "AXI"); QVERIFY(group.ok);
+        QVERIFY(CatalogGroups::setMember(library, group.group.id, first.asset.id, true).ok);
+        const auto groups = CatalogGroups::scan(library).groups;
+        auto shared = SnapshotLibrary::collect(library, {source}, "shared_content", "module");
+        QVERIFY(shared.ok);
+        put(source, "second"); const auto second = save(first.asset); QVERIFY(second.ok);
+        put(source, "third"); const auto third = save(second.asset); QVERIFY(third.ok);
+        const auto tombstone = root + "/.xips/deleted-revisions/" + second.snapshot.id + ".json";
+        OperationControl cancel; QVERIFY(cancel.cancel());
+        { OperationScope scope(&cancel); QVERIFY(SnapshotLibrary::eraseSnapshot(third.asset, second.snapshot.id).cancelled); }
+        QVERIFY(!QFileInfo::exists(tombstone));
+        QLockFile lock(library + "/.xips-library.lock"); QVERIFY(lock.tryLock());
+        QVERIFY(!SnapshotLibrary::eraseSnapshot(third.asset, second.snapshot.id).ok); lock.unlock();
+        QVERIFY(!QFileInfo::exists(tombstone));
+        // A stale asset handle must resolve the exact requested version from fresh history.
+        auto removed = SnapshotLibrary::eraseSnapshot(first.asset, second.snapshot.id);
+        QVERIFY2(removed.ok, qPrintable(removed.error));
+        QCOMPARE(SnapshotLibrary::heads(removed.asset), QStringList{third.snapshot.id});
+        QVERIFY(QFileInfo::exists(tombstone));
+        QVERIFY(!SnapshotLibrary::eraseSnapshot(third.asset, second.snapshot.id).ok);
+        QVERIFY(!SnapshotLibrary::exportSnapshot(third.asset, second.snapshot.id, tmp.filePath("deleted.sv")).ok);
+        QVERIFY(!QFileInfo::exists(tmp.filePath("deleted.sv")));
+        QVERIFY(SnapshotLibrary::verifySnapshot(third.asset, first.snapshot.id).ok);
+        QVERIFY(SnapshotLibrary::verifySnapshot(third.asset, third.snapshot.id).ok);
+        for (const auto &object : second.snapshot.objects) ContentStore(library).verify(object);
+        removed = SnapshotLibrary::eraseSnapshot(third.asset, third.snapshot.id); QVERIFY(removed.ok);
+        QCOMPARE(SnapshotLibrary::heads(removed.asset), QStringList{first.snapshot.id});
+        put(source, "fourth"); const auto fourth = save(first.asset); QVERIFY2(fourth.ok, qPrintable(fourth.error));
+        QCOMPARE(fourth.snapshot.sequence, 4);
+        QVERIFY(fourth.snapshot.id != second.snapshot.id && fourth.snapshot.id != third.snapshot.id);
+        QVERIFY(SnapshotLibrary::eraseSnapshot(first.asset, first.snapshot.id).ok);
+        removed = SnapshotLibrary::eraseSnapshot(fourth.asset, fourth.snapshot.id);
+        QVERIFY2(removed.ok, qPrintable(removed.error));
+        QVERIFY(!removed.asset.historyIncomplete);
+        QVERIFY(SnapshotLibrary::heads(removed.asset).isEmpty());
+        QCOMPARE(removed.asset.nextSequence, 5);
+        const auto reopened = SnapshotLibrary::scan(library);
+        QVERIFY2(reopened.problems.isEmpty(), qPrintable(reopened.problems.join('\n')));
+        QCOMPARE(reopened.assets.size(), 2);
+        for (const auto &asset : reopened.assets)
+            if (asset.id == first.asset.id)
+            {
+                QVERIFY(!asset.historyIncomplete);
+                QVERIFY(SnapshotLibrary::heads(asset).isEmpty());
+                QVERIFY(std::none_of(asset.snapshots.cbegin(), asset.snapshots.cend(),
+                    [](const auto &version) { return version.id != "current"; }));
+            }
+        QCOMPARE(get(root + "/.xips.json"), definitionBytes);
+        QCOMPARE(CatalogGroups::scan(library).groups, groups);
+        QCOMPARE(get(source), QByteArray("fourth"));
+        QVERIFY(SnapshotLibrary::verifySnapshot(shared.asset, shared.snapshot.id).ok);
+        QProcess cli; cli.start(QString::fromUtf8(XIPS_CLI_PATH), {"--action", "list", "--library", library});
+        QVERIFY(cli.waitForFinished()); QCOMPARE(cli.exitCode(), 0);
+        QVERIFY(cli.readAllStandardOutput().contains("delete_versions"));
+        const auto preview = SnapshotLibrary::previewSave(first.asset, first.asset.discovered ? QStringList{} : QStringList{source});
+        QVERIFY2(preview.ok, qPrintable(preview.error)); QVERIFY(preview.preview.heads.isEmpty());
+        const auto fifth = save(first.asset, &preview.preview);
+        QVERIFY2(fifth.ok, qPrintable(fifth.error));
+        QCOMPARE(fifth.snapshot.sequence, 5); QVERIFY(fifth.snapshot.parents.isEmpty());
+        QCOMPARE(SnapshotLibrary::heads(fifth.asset), QStringList{fifth.snapshot.id});
+        QCOMPARE(get(root + "/.xips.json"), definitionBytes);
+    }
+    void deletionProtectsReferencesAndIncompleteSync()
+    {
+        QTemporaryDir tmp;
+        auto first = create(tmp.filePath("owner")); QVERIFY(first.ok);
+        const auto receiver = tmp.filePath("receiver"); QVERIFY(QDir().mkpath(receiver));
+        const auto reference = SnapshotLibrary::addReference(first.asset, first.snapshot.id, receiver);
+        QVERIFY2(reference.ok, qPrintable(reference.error));
+        const auto ref = SnapshotLibrary::scan(receiver).assets.first();
+        const auto record = get(ref.referencePath);
+        QVERIFY(!SnapshotLibrary::eraseSnapshot(ref, first.snapshot.id).ok);
+        QCOMPARE(get(ref.referencePath), record);
+        const auto root = first.asset.historyRoot;
+        const auto manifest = root + "/.xips/revisions/" + first.snapshot.id + ".json";
+        const auto manifestBytes = get(manifest);
+        QVERIFY(SnapshotLibrary::eraseSnapshot(first.asset, first.snapshot.id).ok);
+        // A deleted owner version leaves the receiving record intact and unavailable.
+        const auto unavailable = SnapshotLibrary::scan(receiver);
+        QCOMPARE(unavailable.assets.size(), 1); QVERIFY(!unavailable.problems.isEmpty());
+        QCOMPARE(get(ref.referencePath), record);
+        QVERIFY(!SnapshotLibrary::verifySnapshot(ref, first.snapshot.id).ok);
+        const auto tombstone = root + "/.xips/deleted-revisions/" + first.snapshot.id + ".json";
+        const auto deletedBytes = get(tombstone);
+        auto corrupted = QJsonDocument::fromJson(deletedBytes).object(); corrupted.insert("assetId", "wrong owner");
+        put(tombstone, QJsonDocument(corrupted).toJson());
+        auto described = SnapshotLibrary::describe(first.asset); QVERIFY(described.ok);
+        QVERIFY(described.asset.historyIncomplete);
+        QVERIFY(!SnapshotLibrary::saveCurrent(first.asset).ok);
+        QVERIFY(!SnapshotLibrary::eraseSnapshot(first.asset, first.snapshot.id).ok);
+        put(tombstone, deletedBytes);
+        QVERIFY(QFile::remove(manifest)); // Simulate the tombstone arriving before its manifest.
+        described = SnapshotLibrary::describe(first.asset); QVERIFY(described.ok);
+        QVERIFY(described.asset.historyIncomplete);
+        QVERIFY(!SnapshotLibrary::saveCurrent(first.asset).ok);
+        put(manifest, manifestBytes);
+        described = SnapshotLibrary::describe(first.asset); QVERIFY(described.ok);
+        QVERIFY(!described.asset.historyIncomplete); QVERIFY(SnapshotLibrary::heads(described.asset).isEmpty());
+        const auto next = SnapshotLibrary::saveCurrent(first.asset);
+        QVERIFY2(next.ok, qPrintable(next.error)); QCOMPARE(next.snapshot.sequence, 2);
+        QVERIFY(!SnapshotLibrary::verifySnapshot(ref, first.snapshot.id).ok);
+    }
+    void deletionKeepsParallelAncestry()
+    {
+        QTemporaryDir tmp;
+        auto first = create(tmp.filePath("library")); QVERIFY(first.ok);
+        const auto source = first.asset.root + '/' + first.snapshot.files.first();
+        put(source, "second"); const auto second = SnapshotLibrary::saveCurrent(first.asset); QVERIFY(second.ok);
+        put(source, "third"); const auto third = SnapshotLibrary::saveCurrent(first.asset); QVERIFY(third.ok);
+        const auto root = first.asset.historyRoot;
+        auto branch = QJsonDocument::fromJson(get(root + "/.xips/revisions/" + second.snapshot.id + ".json")).object();
+        const auto branchId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        branch.insert("id", branchId);
+        ContentStore::publishJson(root + "/.xips/revisions/" + branchId + ".json", branch);
+        auto removed = SnapshotLibrary::eraseSnapshot(first.asset, second.snapshot.id); QVERIFY(removed.ok);
+        auto heads = SnapshotLibrary::heads(removed.asset); heads.sort();
+        auto expected = QStringList{third.snapshot.id, branchId}; expected.sort(); QCOMPARE(heads, expected);
+        const auto preview = SnapshotLibrary::previewSave(first.asset); QVERIFY(preview.ok);
+        removed = SnapshotLibrary::eraseSnapshot(first.asset, branchId); QVERIFY(removed.ok);
+        QCOMPARE(SnapshotLibrary::heads(removed.asset), QStringList{third.snapshot.id});
+        QVERIFY(!SnapshotLibrary::saveCurrent(first.asset, {}, &preview.preview).ok);
+        put(source, "fourth"); const auto fourth = SnapshotLibrary::saveCurrent(first.asset);
+        QVERIFY(fourth.ok); QCOMPARE(fourth.snapshot.sequence, 4);
+        QCOMPARE(fourth.snapshot.parents, QStringList{third.snapshot.id});
     }
     void parallelHeadsRequireReviewAgain()
     {

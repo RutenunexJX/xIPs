@@ -328,5 +328,14 @@ the visible popup without adding padding again. The patch SHA-256 is
 `e69b815ba035831e2a84484acb0c46f957c83f346fff230a8c2b3034d4a44046`.
 Only ElaComboBox.cpp changes; the p27 public ABI, MIT and font OFL text are unchanged.
 
+Apply `patches/31-xips-native-tree-checkbox.patch` after patch 30.
+Native-content ElaTreeView items retain Qt's layout, focus, model roles and hit
+testing, but their checkbox primitive uses Ela theme colors and vector check/dash
+marks. Windows at 200% scale previously rendered checked/partial indicators
+invisible in the light theme even after animations settled. Native light/dark
+rendering and actual checkbox clicks/Space toggles are covered by the xIPs GUI
+regression. This private drawing change preserves the p27 public ABI. Patch SHA-256:
+`cdaac7814d29a8074509481b6cb6f99d4bce21a5eb42eaadbb022505b42a51c4`.
+
 Both `LICENSE` (ElaWidgetTools) and `Font/FontAwesome-LICENSE.txt` must
 accompany redistributed binaries.

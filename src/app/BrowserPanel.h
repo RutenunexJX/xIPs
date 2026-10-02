@@ -2,6 +2,7 @@
 
 #include "library/SnapshotLibrary.h"
 #include <QPointer>
+#include <QHash>
 #include <QSet>
 #include <QWidget>
 #include <functional>
@@ -18,6 +19,8 @@ class ElaTableView;
 class ElaProgressRing;
 class ElaToolButton;
 class ElaFlowLayout;
+class ElaTabWidget;
+class ElaCheckBox;
 class QStringListModel;
 class QStandardItemModel;
 class QSplitter;
@@ -28,6 +31,7 @@ namespace xips
 {
 class CatalogModel;
 class OperationControl;
+class WorkingFilesModel;
 class BrowserPanel final : public QWidget
 {
     Q_OBJECT
@@ -36,6 +40,7 @@ class BrowserPanel final : public QWidget
     ~BrowserPanel() override;
     Q_INVOKABLE void setContext(const QString &library, const QString &workspace);
     Q_INVOKABLE void collectPaths(const QStringList &paths);
+    Q_INVOKABLE void importWorkingFiles(const QStringList &paths);
     Q_INVOKABLE void revealAsset(const QString &id);
     Q_INVOKABLE QVariantMap saveState() const;
     Q_INVOKABLE void restoreState(const QVariantMap &state);
@@ -49,9 +54,11 @@ class BrowserPanel final : public QWidget
   protected:
     void resizeEvent(QResizeEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
+    void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
   private:
     void filter();
@@ -59,6 +66,8 @@ class BrowserPanel final : public QWidget
     void readLegacyDetails(const CatalogAsset &asset);
     void showDetails(const CatalogAsset &asset);
     void selectVersion();
+    void rememberChecks();
+    QString workingKey() const;
     void chooseLibrary();
     void addSources();
     void createAsset();
@@ -91,6 +100,8 @@ class BrowserPanel final : public QWidget
     void restoreSplit();
     double splitRatio() const;
     bool applyPendingContext();
+    void handleFileDrop(QDropEvent *event, bool working, bool import);
+    bool overWorkingPage(const QPoint &position) const;
     QStringList pickSources();
     QString m_library;
     QString m_workspace;
@@ -99,6 +110,8 @@ class BrowserPanel final : public QWidget
     QString m_pendingRevision;
     QString m_indexTerm;
     QString m_activeGroup;
+    QString m_displayedAsset;
+    QHash<QString, QSet<QString>> m_checkedFiles;
     QSet<QString> m_collapsedGroups;
     QStringList m_problems;
     QList<CatalogAsset> m_assets;
@@ -147,6 +160,18 @@ class BrowserPanel final : public QWidget
     ElaFlowLayout *m_actionLayout = nullptr;
     ElaTreeView *m_list = nullptr;
     ElaToolButton *m_newGroup = nullptr;
+    ElaListView *m_groupItems = nullptr;
+    ElaTabWidget *m_pages = nullptr;
+    QWidget *m_workingPage = nullptr;
+    QWidget *m_historyPage = nullptr;
+    ElaTreeView *m_workingFiles = nullptr;
+    WorkingFilesModel *m_workingModel = nullptr;
+    ElaCheckBox *m_checkAll = nullptr;
+    ElaToolButton *m_addFiles = nullptr;
+    ElaToolButton *m_addFolder = nullptr;
+    ElaToolButton *m_openWorking = nullptr;
+    ElaText *m_workingEmpty = nullptr;
+    ElaText *m_historyEmpty = nullptr;
     ElaListView *m_files = nullptr;
     CatalogModel *m_model = nullptr;
     QStringListModel *m_fileModel = nullptr;

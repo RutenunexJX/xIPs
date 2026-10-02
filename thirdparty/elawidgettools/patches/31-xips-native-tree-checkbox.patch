@@ -1,0 +1,45 @@
+diff --git a/Development/ElaTreeViewStyle.cpp b/Development/ElaTreeViewStyle.cpp
+index 30d226e..4024b89 100644
+--- a/Development/ElaTreeViewStyle.cpp
++++ b/Development/ElaTreeViewStyle.cpp
+@@ -25,6 +25,40 @@ void ElaTreeViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOptio
+ {
+     switch (element)
+     {
++    case QStyle::PE_IndicatorItemViewItemCheck:
++    {
++        if (!_nativeItemContent) break;
++        // Keep Qt's item layout and hit testing, but use Ela colors for the
++        // indicator. The Windows native checked fill can disappear against
++        // an Ela light palette, even after native animations have finished.
++        painter->save();
++        painter->setRenderHint(QPainter::Antialiasing);
++        if (!option->state.testFlag(State_Enabled)) painter->setOpacity(0.5);
++        const QRectF box = QRectF(option->rect).adjusted(1, 1, -1, -1);
++        const bool checked = option->state.testFlag(State_On);
++        const bool partial = option->state.testFlag(State_NoChange);
++        const bool hover = option->state.testFlag(State_MouseOver);
++        painter->setPen(checked || partial ? QPen(Qt::NoPen)
++            : QPen(ElaThemeColor(_themeMode, BasicBorderDeep), 1.2));
++        painter->setBrush(checked || partial ? ElaThemeColor(_themeMode, PrimaryNormal)
++            : hover ? ElaThemeColor(_themeMode, BasicHover) : ElaThemeColor(_themeMode, BasicBase));
++        painter->drawRoundedRect(box, 2, 2);
++        painter->setBrush(Qt::NoBrush);
++        painter->setPen(QPen(ElaThemeColor(_themeMode, BasicTextInvert), 1.8, Qt::SolidLine,
++                            Qt::RoundCap, Qt::RoundJoin));
++        if (checked) {
++            QPainterPath tick;
++            tick.moveTo(box.left() + box.width() * 0.22, box.top() + box.height() * 0.52);
++            tick.lineTo(box.left() + box.width() * 0.43, box.top() + box.height() * 0.73);
++            tick.lineTo(box.left() + box.width() * 0.79, box.top() + box.height() * 0.28);
++            painter->drawPath(tick);
++        } else if (partial) {
++            painter->drawLine(QPointF(box.left() + 3, box.center().y()),
++                              QPointF(box.right() - 3, box.center().y()));
++        }
++        painter->restore();
++        return;
++    }
+     case QStyle::PE_PanelItemViewItem:
+     {
+         // Item背景

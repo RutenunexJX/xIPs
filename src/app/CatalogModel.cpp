@@ -122,7 +122,8 @@ void CatalogModel::setAssets(const QList<CatalogAsset> &assets, const QString &l
         secondary += !asset.referencePath.isEmpty() ? QStringLiteral(" · Referenced")
             : asset.discovered ? QStringLiteral(" · Working files")
             : asset.legacy ? QStringLiteral(" · Legacy")
-            : asset.snapshots.isEmpty() ? QStringLiteral(" · Unavailable")
+            : asset.snapshots.isEmpty() ? (asset.historyIncomplete ? QStringLiteral(" · Unavailable")
+                                                                  : QStringLiteral(" · No saved versions"))
             : QStringLiteral(" · %1").arg(SnapshotLibrary::revisionLabel(asset.snapshots.last()));
         if (!asset.description.isEmpty())
             secondary += " · " + asset.description.simplified();

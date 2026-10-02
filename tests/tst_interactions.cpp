@@ -372,9 +372,9 @@ class Interactions final : public QObject
         panel.setContext(QString::fromUtf8(XIPS_EXAMPLE_LIBRARY), {});
         QTRY_VERIFY(!panel.isCatalogBusy());
         auto *list = panel.findChild<ElaTreeView *>("assetList");
-        auto *versions = panel.findChild<ElaTableView *>("revisionTable");
+        auto *working = panel.findChild<ElaTreeView *>("workingFiles");
         QVERIFY(list->model()->rowCount() >= 2);
-        QTRY_VERIFY(versions->model()->rowCount() > 0);
+        QTRY_VERIFY(working->isEnabled() && working->model()->rowCount() > 0);
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         QString selectedId;
         {
@@ -384,9 +384,9 @@ class Interactions final : public QObject
             selectedId = panel.saveState()["assetId"].toString();
             QVERIFY(panel.findChildren<QFutureWatcherBase *>().size() <= 1);
         }
-        QTRY_VERIFY(!panel.saveState()["revision"].toString().isEmpty());
+        QTRY_VERIFY(working->isEnabled());
         QCOMPARE(panel.saveState()["assetId"].toString(), selectedId);
-        QVERIFY(versions->model()->rowCount() > 0);
+        QVERIFY(working->model()->rowCount() > 0);
     }
     void formClosesWhenEmbeddedOwnerDies()
     {

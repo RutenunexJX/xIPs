@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 
 namespace xips
@@ -196,13 +197,27 @@ CatalogAsset load(const QString &root, const QString &library)
                 QStringLiteral("Incomplete asset metadata: %1").arg(root));
         QSet<QString> ids;
         asset.nextSequence = asset.document.value("nextRevision").toInteger(1);
-        for (const auto &value : asset.document.value("revisions").toArray())
+        const auto appendRevision = [&](const Snapshot &snapshot)
         {
-            const auto snapshot = parseSnapshot(value.toObject());
             require(!ids.contains(snapshot.id), QStringLiteral("Duplicate revision number"));
             ids.insert(snapshot.id);
-            asset.snapshots.append(snapshot);
-        }
+            asset.nextSequence = qMax(asset.nextSequence, snapshot.sequence + 1);
+            const auto tombstone = child(root, ".xips/deleted-revisions/" + snapshot.id + ".json");
+            if (QFileInfo::exists(tombstone))
+            {
+                const auto deleted = readJson(tombstone);
+                require(deleted.value("assetId").toString() == asset.id &&
+                            deleted.value("revision").toString() == snapshot.id &&
+                            (!deleted.contains("hash") || deleted.value("hash").toString() == snapshot.hash) &&
+                            (!deleted.contains("sequence") || deleted.value("sequence").toInteger() == snapshot.sequence) &&
+                            (!deleted.contains("parents") || strings(deleted.value("parents").toArray()) == snapshot.parents),
+                        QStringLiteral("Invalid revision deletion record: %1").arg(tombstone));
+                asset.deletedRevisionParents.insert(snapshot.id, snapshot.parents);
+            }
+            else asset.snapshots.append(snapshot);
+        };
+        for (const auto &value : asset.document.value("revisions").toArray())
+            appendRevision(parseSnapshot(value.toObject()));
         if (schema == 3)
         {
             const auto directory = child(root, ".xips/revisions");
@@ -218,18 +233,7 @@ CatalogAsset load(const QString &root, const QString &library)
                             record.value("assetId").toString() == asset.id && !snapshot.objects.isEmpty() &&
                             entry.fileName() == snapshot.id + ".json" && !ids.contains(snapshot.id),
                         QStringLiteral("Invalid independent version manifest: %1").arg(entry.absoluteFilePath()));
-                asset.nextSequence = qMax(asset.nextSequence, snapshot.sequence + 1);
-                const auto tombstone = child(root, ".xips/deleted-revisions/" + snapshot.id + ".json");
-                if (QFileInfo::exists(tombstone))
-                {
-                    const auto deleted = readJson(tombstone);
-                    require(deleted.value("assetId").toString() == asset.id &&
-                                deleted.value("revision").toString() == snapshot.id,
-                            QStringLiteral("Invalid revision deletion record"));
-                    continue;
-                }
-                ids.insert(snapshot.id);
-                asset.snapshots.append(snapshot);
+                appendRevision(snapshot);
                 }
                 catch (const Failure &failure)
                 {
@@ -243,15 +247,28 @@ CatalogAsset load(const QString &root, const QString &library)
                 }
             }
         }
+        const auto deletions = child(root, ".xips/deleted-revisions");
+        safePath(deletions);
+        for (const auto &entry : QDir(deletions).entryInfoList({"*.json"}, QDir::Files, QDir::Name))
+            if (!ids.contains(entry.completeBaseName()))
+            {
+                asset.historyIncomplete = true;
+                asset.problems.append(QStringLiteral("Deleted revision manifest unavailable: %1").arg(entry.absoluteFilePath()));
+            }
         std::sort(asset.snapshots.begin(), asset.snapshots.end(), [](const auto &a, const auto &b)
                   { return a.sequence != b.sequence ? a.sequence < b.sequence
                        : a.created != b.created ? a.created < b.created : a.id < b.id; });
-        if (asset.snapshots.isEmpty() && schema == 3)
+        const auto workingArea = asset.document.value("workingArea").toString();
+        const bool emptyWorkspace = asset.document.contains("source") &&
+            (workingArea == "managed" || workingArea == "linked");
+        const bool emptyHistory = emptyWorkspace || !asset.deletedRevisionParents.isEmpty();
+        if (asset.snapshots.isEmpty() && schema == 3 && !emptyHistory)
         {
             asset.historyIncomplete = true;
             asset.problems.append(QStringLiteral("No healthy saved revisions: %1").arg(root));
         }
-        require(asset.snapshots.isEmpty() ? asset.historyIncomplete : asset.nextSequence > asset.snapshots.last().sequence,
+        require(asset.snapshots.isEmpty() ? (asset.historyIncomplete || (emptyHistory && asset.nextSequence > 0))
+                                          : asset.nextSequence > asset.snapshots.last().sequence,
                 QStringLiteral("Invalid revision counter: %1").arg(root));
     }
     return asset;
@@ -439,7 +456,8 @@ CatalogAsset discoveredAsset(const QString &root, const QString &library,
     asset.category = category;
     asset.description = QDir(library).relativeFilePath(root);
     std::sort(files.begin(), files.end());
-    asset.snapshots.append({"current", {}, {}, {}, files});
+    asset.workingFiles = files;
+    if (!files.isEmpty()) asset.snapshots.append({"current", {}, {}, {}, files});
     return asset;
 }
 QStringList directorySources(const QString &directory)
@@ -484,7 +502,8 @@ CatalogAsset attachHistory(const CatalogAsset &history, const CatalogAsset *sour
     {
         require(result.root == source->root && result.sourceIsDirectory == source->sourceIsDirectory,
                 QStringLiteral("Saved source location has changed"));
-        result.snapshots.append(source->snapshots.last());
+        result.workingFiles = source->workingFiles;
+        if (!source->snapshots.isEmpty()) result.snapshots.append(source->snapshots.last());
     }
     return result;
 }
@@ -528,13 +547,19 @@ CatalogAsset currentSource(const CatalogAsset &asset)
             break;
         parent = QFileInfo(parent).absolutePath();
     }
-    auto result = discoveredAsset(asset.root, asset.library, asset.category,
-                                  asset.sourceIsDirectory ? directorySources(asset.root)
-                                                          : QStringList{info.fileName()},
-                                  asset.sourceIsDirectory);
+    const auto history = asset.historyRoot.isEmpty() ? CatalogAsset{} : load(asset.historyRoot, asset.library);
+    QStringList working;
+    if (!asset.sourceIsDirectory) working = {info.fileName()};
+    else if (history.document.value("workingArea") == "managed")
+    {
+        enumerate(asset.root, asset.root, working, true, true);
+        working.sort();
+    }
+    else working = directorySources(asset.root);
+    auto result = discoveredAsset(asset.root, asset.library, asset.category, working, asset.sourceIsDirectory);
     if (!asset.historyRoot.isEmpty())
-        result = attachHistory(load(asset.historyRoot, asset.library), &result);
-    require(result.id == asset.id && !result.snapshots.last().files.isEmpty(),
+        result = attachHistory(history, &result);
+    require(result.id == asset.id && (!result.workingFiles.isEmpty() || history.document.contains("workingArea")),
             QStringLiteral("The source has changed. Rescan the folder."));
     return result;
 }
@@ -587,6 +612,19 @@ struct InputFile
     QString source;
     QString relative;
 };
+QList<InputFile> selectedFiles(const CatalogAsset &asset, QStringList files)
+{
+    require(!files.isEmpty(), QStringLiteral("Select at least one working file."));
+    files.sort();
+    require(std::adjacent_find(files.cbegin(), files.cend()) == files.cend(), QStringLiteral("Duplicate selected file."));
+    QList<InputFile> inputs;
+    for (const auto &file : files)
+    {
+        require(asset.workingFiles.contains(file), QStringLiteral("Selected file is no longer available: %1. Refresh and select again.").arg(file));
+        inputs.append({child(sourceRoot(asset), file), file});
+    }
+    return inputs;
+}
 QList<InputFile> sourceFiles(const QStringList &sources, bool artifact)
 {
     require(!sources.isEmpty(), QStringLiteral("Choose files or a folder"));
@@ -622,10 +660,19 @@ QList<InputFile> sourceFiles(const QStringList &sources, bool artifact)
 }
 QStringList parentRevisions(const CatalogAsset &asset)
 {
+    auto ancestry = asset.deletedRevisionParents;
+    for (const auto &snapshot : asset.snapshots) ancestry.insert(snapshot.id, snapshot.parents);
     QSet<QString> referenced;
+    QStringList pending;
     for (const auto &snapshot : asset.snapshots)
-        for (const auto &parent : snapshot.parents)
-            referenced.insert(parent);
+        pending.append(snapshot.parents);
+    while (!pending.isEmpty())
+    {
+        const auto parent = pending.takeLast();
+        if (referenced.contains(parent)) continue;
+        referenced.insert(parent);
+        pending.append(ancestry.value(parent));
+    }
     QStringList result;
     for (const auto &snapshot : asset.snapshots)
         if (snapshot.id != "current" && !referenced.contains(snapshot.id))
@@ -790,6 +837,8 @@ CatalogResult SnapshotLibrary::scan(const QString &library)
                             QSet<QString> recorded;
                             for (const auto &snapshot : asset.snapshots)
                                 recorded.insert(snapshot.id);
+                            for (auto it = asset.deletedRevisionParents.cbegin(); it != asset.deletedRevisionParents.cend(); ++it)
+                                recorded.insert(it.key());
                             for (const auto &revision :
                                  QDir(child(path, ".xips/revisions"))
                                      .entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot |
@@ -1136,9 +1185,9 @@ SnapshotResult SnapshotLibrary::update(const CatalogAsset &asset, const QStringL
             for (qsizetype i = 0; i < inputs.size(); ++i)
                 require(inputs[i].source == confirmed[i].source && inputs[i].relative == confirmed[i].relative,
                         QStringLiteral("Source file list changed while saving"));
-            const auto &latest = result.asset.snapshots.last();
-            if (parents.size() == 1 && sameContent(result.asset, latest, result.snapshot))
+            if (parents.size() == 1 && sameContent(result.asset, result.asset.snapshots.last(), result.snapshot))
             {
+                const auto &latest = result.asset.snapshots.last();
                 verifySaved(result.asset, latest);
                 result.unchanged = true;
                 result.snapshot = latest;
@@ -1178,7 +1227,8 @@ QJsonObject definitionFields(const CatalogDefinition &definition)
             {"description", definition.description.trimmed()}, {"indexes", indexes}};
 }
 void saveSourceRevision(const CatalogAsset &asset, const QString &note, SnapshotResult &result,
-                        const QJsonObject &definition = {}, const PayloadPreview *expected = nullptr)
+                        const QJsonObject &definition = {}, const PayloadPreview *expected = nullptr,
+                        const QStringList *selection = nullptr)
 {
         require(asset.discovered, QStringLiteral("Select original files to save a revision."));
         require(asset.referencePath.isEmpty(), QStringLiteral("Open the owning library to modify a referenced IP."));
@@ -1207,13 +1257,18 @@ void saveSourceRevision(const CatalogAsset &asset, const QString &note, Snapshot
             healthyHistory(current);
         }
         QList<InputFile> inputs;
-        for (const auto &file : current.snapshots.last().files)
+        for (const auto &file : current.workingFiles)
             inputs.append({child(sourceRoot(current), file), file});
+        if (selection) inputs = selectedFiles(current, *selection);
         const auto parents = parentRevisions(current);
         result.snapshot = storeInputs(asset.library, inputs, current.nextSequence, note, parents);
         matchesPreview(result.snapshot, current.id, parents, expected);
-        require(currentSource(current).snapshots.last().files == result.snapshot.files,
-                QStringLiteral("Source file list changed while saving"));
+        const auto fresh = currentSource(current);
+        if (selection) selectedFiles(fresh, *selection);
+        else require(fresh.workingFiles == result.snapshot.files, QStringLiteral("Source file list changed while saving"));
+        for (const auto &input : inputs)
+            require(ContentStore::fingerprint(input.source) == result.snapshot.objects.value(input.relative),
+                    QStringLiteral("Working file changed while saving: %1. Review again.").arg(input.relative));
         if (existing)
         {
             const auto history = load(destination, asset.library);
@@ -1265,6 +1320,15 @@ SnapshotResult SnapshotLibrary::saveCurrent(const CatalogAsset &asset, const QSt
         saveSourceRevision(asset, note, result, {}, expected);
     });
 }
+SnapshotResult SnapshotLibrary::saveSelected(const CatalogAsset &asset, const QStringList &files,
+                                            const QString &note, const PayloadPreview *expected)
+{
+    return operation([&](auto &result)
+    {
+        LibraryLock lock(asset.library);
+        saveSourceRevision(asset, note, result, {}, expected, &files);
+    });
+}
 SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefinition &definition)
 {
     return operation([&](auto &result)
@@ -1272,34 +1336,212 @@ SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefi
         const auto metadata = definitionFields(definition);
         require(definition.category == "module" || definition.category == "ip", QStringLiteral("Choose Module or IP."));
         LibraryLock lock(library);
-        QString source = definition.source;
-        if (source.isEmpty())
+        const bool managed = definition.source.isEmpty();
+        QString source = managed ? availableRoot(library, definition.name) : absolute(definition.source);
+        std::unique_ptr<QTemporaryDir> sourceStage;
+        if (managed)
         {
-            const auto name = definition.name.trimmed();
-            require(QRegularExpression("^[A-Za-z_][A-Za-z0-9_]*$").match(name).hasMatch(),
-                    QStringLiteral("For a new HDL module, use letters, digits and underscores; start with a letter or underscore."));
-            source = availableRoot(library, name);
-            QTemporaryDir staging(child(library, ".xips-create-XXXXXX"));
-            require(staging.isValid(), QStringLiteral("Cannot create source folder"));
-            ContentStore::makeDirectory(child(staging.path(), "rtl"));
-            QFile file(child(staging.path(), "rtl/" + name + ".sv"));
-            const auto content = ("module " + name + " (\n);\n\nendmodule\n").toUtf8();
-            require(file.open(QIODevice::WriteOnly | QIODevice::NewOnly) && file.write(content) == content.size() && file.flush(),
-                    QStringLiteral("Cannot create HDL source"));
-            file.close();
-            OperationScope::publish();
-            require(!QFileInfo::exists(source) && QDir().rename(staging.path(), source), QStringLiteral("Cannot publish source folder"));
-            staging.setAutoRemove(false);
-            result.retainedPath = source;
+            sourceStage = std::make_unique<QTemporaryDir>(child(library, ".xips-create-XXXXXX"));
+            require(sourceStage->isValid(), QStringLiteral("Cannot create working folder"));
         }
         safePath(source);
         require(files::isWithin(source, library) && absolute(source) != absolute(library),
                 QStringLiteral("Choose a source file or subfolder inside the library root."));
         const QFileInfo info(source);
-        require(info.isFile() || info.isDir(), QStringLiteral("Source unavailable"));
-        auto asset = discoveredAsset(source, library, definition.category,
-            info.isDir() ? directorySources(source) : QStringList{info.fileName()}, info.isDir());
-        saveSourceRevision(asset, QStringLiteral("Created in catalog"), result, metadata);
+        require(managed || info.isFile() || info.isDir(), QStringLiteral("Source unavailable"));
+        const bool directory = managed || info.isDir();
+        if (!managed)
+        {
+            auto parent = directory ? source : info.absolutePath();
+            for (;;)
+            {
+                require(!QFileInfo::exists(child(parent, ".xips.json")),
+                        QStringLiteral("This source belongs to a managed asset; choose an original working folder."));
+                if (files::isWithin(library, parent)) break;
+                parent = QFileInfo(parent).absolutePath();
+            }
+        }
+        const auto relative = QDir(library).relativeFilePath(source);
+        require(!relative.toCaseFolded().split('/').contains(".xips"), QStringLiteral("Choose source files outside catalog metadata."));
+        auto identity = relative;
+#ifdef Q_OS_WIN
+        identity = identity.toCaseFolded();
+#endif
+        const auto key = QUuid::createUuidV5(QUuid("89a7fef0-e3aa-4d2a-9334-62d3bb4f3e1f"),
+            ((directory ? "directory:" : "file:") + identity).toUtf8()).toString(QUuid::WithoutBraces);
+        const auto destination = child(library, ".xips/assets/" + key);
+        const bool existing = QFileInfo::exists(destination);
+        auto document = existing ? load(destination, library).document : newDocument(unique({}), definition.name, definition.category);
+        const auto originalDocument = document;
+        if (existing) healthyHistory(load(destination, library));
+        require(!existing || document.value("registered") == false, QStringLiteral("This source is already registered in the catalog."));
+        for (auto it = metadata.begin(); it != metadata.end(); ++it) document.insert(it.key(), it.value());
+        document.insert("source", QJsonObject{{"path", relative}, {"directory", directory}});
+        if (!existing) document.insert("workingArea", managed ? "managed" : "linked");
+        document.insert("registered", true);
+        // Stage both the empty working directory and its catalog definition before publishing.
+        ContentStore::makeDirectory(QFileInfo(destination).absolutePath());
+        QTemporaryDir historyStage(child(QFileInfo(destination).absolutePath(), ".pending-XXXXXX"));
+        require(historyStage.isValid(), QStringLiteral("Cannot stage catalog entry"));
+        QFile staged(child(historyStage.path(), ".xips.json"));
+        const auto data = QJsonDocument(document).toJson();
+        require(staged.open(QIODevice::WriteOnly) && staged.write(data) == data.size() && staged.flush(),
+                QStringLiteral("Cannot stage catalog metadata"));
+        staged.close();
+        OperationScope::publish();
+        if (managed)
+        {
+            require(!QFileInfo::exists(source) && QDir().rename(sourceStage->path(), source), QStringLiteral("Cannot publish working folder"));
+            sourceStage->setAutoRemove(false);
+            result.retainedPath = source;
+        }
+        if (existing)
+        {
+            const auto original = bytes(child(destination, ".xips.json"));
+            require(readJson(child(destination, ".xips.json")) == originalDocument,
+                    QStringLiteral("Registration changed elsewhere. Refresh and retry."));
+            writeJson(child(destination, ".xips.json"), document, &original);
+        }
+        else if (!QDir().rename(historyStage.path(), destination))
+        {
+            if (managed && QDir().rmdir(source)) result.retainedPath.clear();
+            throw Failure{QStringLiteral("Cannot publish catalog entry")};
+        }
+        else historyStage.setAutoRemove(false);
+        result.asset = currentSource(attachHistory(load(destination, library)));
+        result.retainedPath.clear();
+    });
+}
+SnapshotResult SnapshotLibrary::importFiles(const CatalogAsset &asset, const QStringList &sources)
+{
+    return operation([&](auto &result)
+    {
+        require(asset.discovered && asset.sourceIsDirectory && asset.referencePath.isEmpty(),
+                QStringLiteral("Choose an IP with a writable working folder."));
+        require(!sources.isEmpty(), QStringLiteral("Choose files or a folder to add."));
+        LibraryLock lock(asset.library);
+        auto current = currentSource(asset);
+        healthyHistory(current);
+        QMap<QString, InputFile> planned;
+        for (const auto &source : sources)
+        {
+            safePath(source);
+            const QFileInfo info(source);
+            require(info.isDir() || info.isFile(), QStringLiteral("Source unavailable: %1").arg(source));
+            require(!info.isDir() || (!files::isWithin(asset.root, source) && !files::isWithin(source, asset.root)),
+                    QStringLiteral("Choose a folder outside this IP's working area."));
+            QStringList relatives;
+            if (info.isDir()) enumerate(source, source, relatives, true, true);
+            else relatives = {info.fileName()};
+            for (const auto &relative : relatives)
+            {
+                const auto target = info.isDir() ? info.fileName() + '/' + relative : relative;
+                const auto parts = target.toCaseFolded().split('/');
+                if (current.document.value("workingArea") != "managed")
+                {
+                    for (int i = 0; i < parts.size(); ++i)
+                        require(!parts[i].startsWith('.') && (i == parts.size() - 1 || !files::isIgnoredDirectory(parts[i])),
+                                QStringLiteral("This registered source excludes hidden/build paths: %1. Nothing was added.").arg(target));
+                }
+                require(!target.isEmpty() && QDir::cleanPath(target) == target && !QDir::isAbsolutePath(target) &&
+                    !target.startsWith("../") && !target.contains(':') && !target.contains('\\') &&
+                    !parts.contains(".xips") && !parts.contains(".git") &&
+                    !std::any_of(parts.cbegin(), parts.cend(), [](const auto &part) { return part.startsWith(".xips-"); }) &&
+                    !parts.contains(".xips.json") && !parts.contains(".snapshot.json"),
+                    QStringLiteral("Reserved or invalid working file path: %1").arg(target));
+                const InputFile input{info.isDir() ? child(source, relative) : source, target};
+                const auto key = target.toCaseFolded();
+                if (planned.contains(key))
+                    require(ContentStore::fingerprint(planned.value(key).source) == ContentStore::fingerprint(input.source),
+                            QStringLiteral("Conflicting imports: %1. Rename one source and retry.").arg(target));
+                else planned.insert(key, input);
+            }
+        }
+        require(!planned.isEmpty(), QStringLiteral("The selected sources contain no files to add."));
+        ContentStore::makeDirectory(child(asset.library, ".xips/imports"));
+        QTemporaryDir stage(child(asset.library, ".xips/imports/.pending-XXXXXX"));
+        require(stage.isValid(), QStringLiteral("Cannot stage imported files."));
+        QMap<QString, ContentObject> staged;
+        for (const auto &input : planned)
+        {
+            const auto destination = child(asset.root, input.relative);
+            safePath(destination);
+            require(files::isWithin(destination, asset.root), QStringLiteral("Invalid import destination."));
+            const auto expected = ContentStore::fingerprint(input.source);
+            if (QFileInfo::exists(destination))
+            {
+                require(QFileInfo(destination).isFile() && ContentStore::fingerprint(destination) == expected,
+                        QStringLiteral("Already exists with different content: %1. Rename the incoming file or folder and retry; nothing was overwritten.").arg(input.relative));
+                continue;
+            }
+            auto parent = QFileInfo(destination).absolutePath();
+            while (parent != absolute(asset.root))
+            {
+                require(!QFileInfo::exists(parent) || QFileInfo(parent).isDir(),
+                        QStringLiteral("A file blocks the destination folder: %1").arg(parent));
+                const auto relativeParent = QDir(asset.root).relativeFilePath(parent).toCaseFolded();
+                require(!planned.contains(relativeParent), QStringLiteral("Conflicting file and folder names: %1").arg(relativeParent));
+                parent = QFileInfo(parent).absolutePath();
+            }
+            const auto stagedPath = child(stage.path(), input.relative);
+            ContentStore::makeDirectory(QFileInfo(stagedPath).absolutePath());
+            QFile in(input.source), out(stagedPath);
+            require(in.open(QIODevice::ReadOnly) && out.open(QIODevice::WriteOnly | QIODevice::NewOnly),
+                    QStringLiteral("Cannot copy %1").arg(input.source));
+            while (!in.atEnd())
+            {
+                OperationScope::checkpoint(QStringLiteral("Adding %1").arg(input.relative), in.pos(), expected.size);
+                const auto block = in.read(1024 * 1024);
+                require(in.error() == QFileDevice::NoError && out.write(block) == block.size(), QStringLiteral("Import failed: %1").arg(input.relative));
+            }
+            require(out.flush(), QStringLiteral("Cannot flush imported file: %1").arg(input.relative));
+            in.close(); out.close();
+            require(ContentStore::fingerprint(input.source) == expected && ContentStore::fingerprint(stagedPath) == expected,
+                    QStringLiteral("Source changed while adding files: %1").arg(input.source));
+            staged.insert(input.relative, expected);
+        }
+        // No original is modified. A failed batch removes only the new files it published.
+        QStringList published, directories;
+        try
+        {
+            const auto fresh = currentSource(current);
+            require(fresh.document == current.document, QStringLiteral("IP definition changed. Refresh and retry."));
+            OperationScope::publish();
+            for (auto it = staged.cbegin(); it != staged.cend(); ++it)
+            {
+                const auto target = child(asset.root, it.key());
+                safePath(target);
+                auto parent = QFileInfo(target).absolutePath();
+                QStringList missing;
+                while (!QFileInfo::exists(parent)) { missing.prepend(parent); parent = QFileInfo(parent).absolutePath(); }
+                for (const auto &directory : missing)
+                {
+                    require(QDir().mkdir(directory), QStringLiteral("Cannot create import folder: %1").arg(directory));
+                    directories.append(directory);
+                }
+                require(!QFileInfo::exists(target) && QFile::rename(child(stage.path(), it.key()), target),
+                        QStringLiteral("Destination changed or cannot be written: %1").arg(it.key()));
+                published.append(it.key());
+            }
+        }
+        catch (...)
+        {
+            for (const auto &file : published)
+            {
+                const auto path = child(asset.root, file);
+                try
+                {
+                    if (ContentStore::fingerprint(path) != staged.value(file) || !QFile::remove(path)) result.retainedPath = asset.root;
+                }
+                catch (...) { result.retainedPath = asset.root; }
+            }
+            for (auto it = directories.crbegin(); it != directories.crend(); ++it) QDir().rmdir(*it);
+            throw;
+        }
+        result.unchanged = staged.isEmpty();
+        result.preview.files = staged.keys();
+        if (!staged.isEmpty()) result.retainedPath = asset.root;
+        result.asset = currentSource(current);
         result.retainedPath.clear();
     });
 }
@@ -1538,7 +1780,7 @@ SnapshotResult SnapshotLibrary::previewSave(const CatalogAsset &asset, const QSt
         {
             result.asset = currentSource(result.asset);
             QList<InputFile> inputs;
-            for (const auto &file : result.asset.snapshots.last().files) inputs.append({child(sourceRoot(result.asset), file), file});
+            for (const auto &file : result.asset.workingFiles) inputs.append({child(sourceRoot(result.asset), file), file});
             previewFiles(preview, inputs);
             if (asset.sourceIsDirectory) excludedFiles(asset.root, {}, true, false, preview.excluded);
         }
@@ -1549,6 +1791,19 @@ SnapshotResult SnapshotLibrary::previewSave(const CatalogAsset &asset, const QSt
                 if (QFileInfo(source).isDir()) excludedFiles(source, sources.size() > 1 ? QFileInfo(source).fileName() + '/' : QString(), false, asset.category == "artifact", preview.excluded);
         }
         comparePreview(preview, result.asset);
+    });
+}
+SnapshotResult SnapshotLibrary::previewSelected(const CatalogAsset &asset, const QStringList &files)
+{
+    return operation([&](auto &result)
+    {
+        require(asset.discovered && asset.referencePath.isEmpty(), QStringLiteral("Choose an original working copy."));
+        result.asset = currentSource(asset);
+        healthyHistory(result.asset);
+        result.preview.assetId = result.asset.id;
+        result.preview.heads = parentRevisions(result.asset);
+        previewFiles(result.preview, selectedFiles(result.asset, files));
+        comparePreview(result.preview, result.asset);
     });
 }
 SnapshotResult SnapshotLibrary::previewExport(const CatalogAsset &asset, const QString &revision)
@@ -1691,59 +1946,39 @@ SnapshotResult SnapshotLibrary::saveReceipt(const SnapshotResult &exported, cons
     });
 }
 SnapshotResult SnapshotLibrary::eraseSnapshot(const CatalogAsset &asset, const QString &revision,
-                                              bool permanent)
+                                              bool /*permanent*/)
 {
     return operation(
         [&](auto &result)
         {
-            require(!asset.discovered, QStringLiteral("Scanned files cannot be deleted from xIPs."));
             require(asset.referencePath.isEmpty(), QStringLiteral("A reference cannot delete its source IP."));
             LibraryLock lock(asset.library);
-            result.asset = load(asset.root, asset.library);
+            const auto definitionRoot = asset.discovered ? asset.historyRoot : asset.root;
+            require(!definitionRoot.isEmpty(), QStringLiteral("This IP has no saved history."));
+            result.asset = load(definitionRoot, asset.library);
             require(!result.asset.legacy && result.asset.id == asset.id,
-                    QStringLiteral("Convert this legacy asset first."));
+                    QStringLiteral("The asset identity or format has changed. Refresh and retry."));
+            if (asset.discovered)
+            {
+                const auto source = attachHistory(result.asset);
+                require(source.root == absolute(asset.root) && source.sourceIsDirectory == asset.sourceIsDirectory,
+                        QStringLiteral("Saved source location has changed. Refresh and retry."));
+            }
             healthyHistory(result.asset);
-            require(result.asset.snapshots.size() > 1,
-                    QStringLiteral("The last revision cannot be deleted on its own. Delete the "
-                                   "entire asset instead."));
             const auto snapshot = selected(result.asset, revision);
-            if (!snapshot.objects.isEmpty())
-            {
-                verifySaved(result.asset, snapshot);
-                ContentStore::publishJson(child(asset.root, ".xips/deleted-revisions/" + snapshot.id + ".json"),
-                    {{"assetId", asset.id}, {"revision", snapshot.id},
-                     {"deleted", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}});
-                result.asset = load(asset.root, asset.library);
-                return;
-            }
-            const QString source = revisionRoot(result.asset, snapshot);
-            const auto original = bytes(child(asset.root, ".xips.json"));
-            verify(source, snapshot);
-            const QString isolated = child(asset.root, ".xips/" + unique(".removed-"));
-            OperationScope::publish();
-            require(QDir().rename(source, isolated),
-                    QStringLiteral("Cannot isolate the revision for deletion"));
-            result.retainedPath = isolated;
-            verify(isolated, snapshot);
-            auto document = result.asset.document;
-            QJsonArray retained;
-            for (const auto &item : document.value("revisions").toArray())
-                if (item.toObject().value("id").toString() != revision)
-                    retained.append(item);
-            document.insert("revisions", retained);
-            try
-            {
-                writeJson(child(asset.root, ".xips.json"), document, &original);
-            }
-            catch (...)
-            {
-                if (!QFileInfo::exists(source) && QDir().rename(isolated, source))
-                    result.retainedPath.clear();
-                throw;
-            }
-            removeDirectory(isolated, permanent);
-            result.retainedPath.clear();
-            result.asset = load(asset.root, asset.library);
+            const auto original = bytes(child(definitionRoot, ".xips.json"));
+            verifySaved(result.asset, snapshot);
+            const auto fresh = load(definitionRoot, asset.library);
+            healthyHistory(fresh);
+            require(fresh.id == asset.id && toJson(selected(fresh, snapshot.id)) == toJson(snapshot) &&
+                        bytes(child(definitionRoot, ".xips.json")) == original,
+                    QStringLiteral("The version changed during deletion. Refresh and retry."));
+            // Preserve immutable manifests, ancestry and shared content for synchronization.
+            ContentStore::publishJson(child(definitionRoot, ".xips/deleted-revisions/" + snapshot.id + ".json"),
+                {{"assetId", asset.id}, {"revision", snapshot.id}, {"sequence", snapshot.sequence},
+                 {"hash", snapshot.hash}, {"parents", QJsonArray::fromStringList(snapshot.parents)},
+                 {"deleted", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}});
+            result.asset = resolveAsset(asset);
         });
 }
 SnapshotResult SnapshotLibrary::eraseAsset(const CatalogAsset &asset, bool permanent)

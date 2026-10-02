@@ -7,13 +7,13 @@ The interface uses Ela controls and shares ZeroSlack's compact panel layout. All
 ## Everyday workflow
 
 1. Choose the catalog root once. Only explicitly created, registered or referenced entries appear; loose source files never become catalog entries automatically.
-2. Click **New IP** to create an IP or module. Generate a SystemVerilog source folder, or register an existing file/folder inside the root. Registering a folder associates its files automatically and saves the first revision.
-3. Assign multiple categories, tags, interfaces and purposes to one definition. Browse with **All indexes**, combine type filters with search, or use terms such as `category:Communication tag:serial interface:"AXI4 Lite"`. Quote a field value or phrase containing spaces. Category paths support parent browsing, e.g. Communication includes Communication/UART.
-4. Use the archive/revision action (**Ctrl+S**) to review the file list, byte count, changes and excluded paths, then save with an optional note. For registered working sources, select **Working** before archiving. Unchanged content creates no extra revision unless joining parallel heads.
-5. Click **Copy to project** to copy the selected version to a new destination. The resulting files are independent editable copies. **Collect** also saves external files as a new asset; the revision action saves subsequent versions of collected assets.
+2. Click **New IP**, choose IP or Module, and enter a name. This creates an empty working folder and catalog definition, with no HDL template or saved version. Empty entries persist across refreshes and restarts. Registering an existing file/folder inside the root is optional and also creates no version automatically.
+3. In **Working files**, use **Add files** or **Add folder**, or drag files and folders into the file area. Files are copied into this IP's working folder with their nested paths; external originals stay unchanged. Identical duplicates are skipped, and conflicting names are reported without overwriting existing files. Adding files does not create a version.
+4. Check the files to include. A folder checkbox selects its descendants; **All** selects or clears every file. Browsing a row does not change its checkbox. Checks survive refreshes and version switches, and missing files are removed from the selection. Click **Create version** (**Ctrl+S**), review the checked file list, and optionally add a note. Zero checked files cannot create a version. This explicit save creates **rev1**, followed by **rev2** and later versions; unchanged content creates no extra version unless joining parallel heads.
+5. Use **Versions** to select a saved version, then **Copy to project** to copy exactly that version's files to a new destination. The copies are independently editable. Continue adding or editing working files and create another version without changing earlier versions.
 
-The compact revision table shows **Version** and **Status** together: **Editing** for
-working sources and **Archived** with a lock for saved revisions. Double-click a file,
+**Working files** and **Versions** are separate tabs. The version table contains only
+saved snapshots, with **Version** and **Status: Archived** plus a lock. Double-click a file,
 press **Enter**, or use its open action to edit the original working file or open a
 verified read-only copy of an archived file. Secondary actions remain visible as
 outline icons with tooltips; errors and operation progress appear when needed.
@@ -22,38 +22,52 @@ Use **New group** beside **Groups** to create a group in the left tree. Drag an 
 a group to add membership while retaining its existing groups. Right-click an IP to
 add it to one or more groups or remove its membership. Right-click a group to rename
 or delete it. Empty groups persist, and group changes never move source files.
+Selecting a group lists all its IPs/modules in the detail pane; click an entry to open it.
 Selecting a group before **New IP** puts the new IP in that group.
+
+Assign multiple categories, tags, interfaces and purposes to one definition with
+**Edit details**. Browse with **All indexes**, combine type filters with search, or use
+terms such as `category:Communication tag:serial interface:"AXI4 Lite"`. Quote a field
+value or phrase containing spaces. Category paths support parent browsing, e.g.
+Communication includes Communication/UART.
 
 While focus is in the catalog, **Ctrl+F** focuses search, **Ctrl+N** creates an IP,
 **Ctrl+Shift+N** creates a group, **Ctrl+S** saves a revision, and **F5** refreshes.
 **F2** renames the selected group in the tree; **Esc** clears the focused search field.
 
-Registered folders retain their relative file layout, including IP packages with
+Existing folders registered in place retain their relative file layout, including IP packages with
 `component.xml`. Hidden files/directories, links and generated build directories are
-excluded from registered working sources. Rescan refreshes definitions and their file
-lists without hashing or copying source content. Hashes are calculated when saving,
+excluded by their existing scan rules; importing an excluded path reports an error.
+New empty workspaces can include ordinary files and build outputs explicitly added to them.
+Refresh updates definitions and their file lists without hashing or copying source
+content. Hashes are calculated when saving,
 resolving or using a version. Vendor Tcl is not executed by the catalog.
 
 Created definitions have a globally unique ID and a library-relative source location.
-Moving the whole library preserves history. **Current files** selects working sources;
-saved revisions remain selectable. **More → Edit asset details** maintains the index
-values, and **Open source folder** opens the working directory.
+Moving the whole library preserves history. **Working files** shows the editable sources;
+**Versions** shows saved snapshots. **Edit details** maintains the index values, and
+**Source folder** opens the working directory.
 
-**More → Reference in library / project** adds a reference to a saved revision in another
+**Reference** adds a reference to a saved revision in another
 catalog or project directory. The reference contains the owner location, asset ID and
 revision ID, with no source or history-object copy. New owner revisions do not advance
 existing references. Referenced definitions are read-only through the receiving catalog;
-their owner must remain available. Use **Export** when an editable materialized copy is needed.
+their owner must remain available. Use **Copy to project** when an editable materialized copy is needed.
 
-Each saved revision describes a complete file set, while unchanged content is shared
-across revisions and assets. Editing collected asset details creates no revision.
-Project copies never update automatically.
+Each saved revision records a complete file set; for working sources, this is exactly
+the checked set. Unchanged content is shared across revisions and assets. Editing
+collected asset details creates no revision.
+Project copies never update automatically. **Collect** remains available for creating
+an asset directly from external files and saving its first revision; **New revision**
+saves subsequent versions of collected assets. Existing collected assets, legacy
+conversion and pinned references retain their workflows.
 
-**Collect**, **Save revision** and new-format **Export** show a file review before
-writing. Export identifies whether the destination will be a new file or directory.
+**Create version** reviews the exact checked files before saving. **Collect**,
+**New revision** and new-format **Copy to project** also review files before writing.
+Copying identifies whether the destination will be a new file or directory.
 If included files or bytes change after review, the operation fails safely and asks
-for another review. File changes are compared with the latest displayed saved revision;
-this is a file summary, not a source-text diff. Parallel heads are shown explicitly:
+for another review. Collected-asset update reviews summarize file changes against the
+latest saved revision. Parallel heads are shown explicitly:
 **Adopt reviewed files** records all current heads as parents, with no text merge.
 A head arriving after the review also requires a fresh review.
 
@@ -63,7 +77,7 @@ history available. Saving and metadata/deletion changes are blocked while revisi
 metadata is incomplete; restore that metadata and refresh before mutating history.
 Content-object integrity is checked when a saved version is used.
 
-**More → Unregister source** hides the definition while retaining source files, history
+**Unregister** hides the definition while retaining source files, history
 and group memberships. Register the same source again to recover its identity and history.
 **Remove local reference** retains the local record under `.xips/removed-references` and
 leaves its owner untouched. An unavailable reference remains selectable for
@@ -71,7 +85,7 @@ leaves its owner untouched. An unavailable reference remains selectable for
 then explicitly choose a saved revision. The asset ID must match; later owner versions
 never silently advance a reference. Malformed reference JSON is reported in Issues.
 
-After a standalone export, **More → Save export receipt** writes an optional
+After a standalone export, **Save receipt** writes an optional
 `xips.use/v1` JSON sidecar containing the asset ID, revision, content digest and
 receipt-relative payload location. The proposed name is `<export destination>.xips-use.json`.
 It records the most recent export in this session and never overwrites different content.
@@ -88,10 +102,13 @@ non-cancellable before exposing its source folder. Legacy service I/O has coarse
 checkpoints; legacy export becomes non-cancellable before copying. Legacy export does
 not use the new file-review dialog. No global percentage or speed improvement is implied.
 
-**More** contains folder selection, rescan, saved-asset editing/deletion, and reported issues.
-Removing a new-format revision writes a deletion record; shared content remains available to other revisions.
-The last revision can only be removed with the whole collected asset.
-Deletion never renumbers subsequent revisions. Existing project copies stay unchanged.
+Folder selection, refresh, asset actions and reported issues have visible controls with tooltips.
+In **Versions**, select an archived version and click **Delete version**. The confirmation
+identifies the IP and version. You can also delete the last version: the IP, working files,
+groups and metadata remain, and you can create another version from the checked files.
+Deletion records hide removed versions after refresh or reopen; immutable history and shared
+content are retained for synchronization. Later versions keep increasing their numbers.
+References cannot delete versions in the owning catalog. Existing project copies stay unchanged.
 
 ## Files and revisions
 
@@ -190,7 +207,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
 and the SuiteApp SDK enabled. For an explicitly standalone release, configure
 **XIPS_ENABLE_SUITEAPP=OFF** and pass **-Standalone** to the packaging script.
-The release tag **v2.6.0** must identify HEAD.
+The release tag **v2.7.0** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell
