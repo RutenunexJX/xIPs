@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.8.0 — 2026-10-03
+
+- Add the native browser component with a private Ela runtime, host-controlled context, theme and lifetime, and usable narrow layouts.
+- Preserve unchanged Working files model identity instead of rebuilding the tree, including checked files and selection.
+- Keep standalone creation, file/folder import, version deletion and group workflows available without the SuiteApp SDK.
+
 ## 2.7.0 — 2026-10-03
 
 - Delete any archived version from the visible Versions action, including the last, while retaining the IP, working files, groups, immutable history and shared content. Preserve revision numbering and ancestry through deletions, and reject stale targets or incomplete synchronized history.

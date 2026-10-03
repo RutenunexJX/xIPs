@@ -164,8 +164,13 @@ The panel uses the same local SQLite cache and runs without a separate process o
 - If provenance cannot be saved, the panel reports the failure and the exported location.
 
 Launch the new standalone xIPs once to register its component location, then open or reload the xIPs panel in ZeroSlack.
-Alternatively, deploy xips-browser.dll next to ZeroSlack, or set XIPS_BROWSER_LIBRARY to its full path.
-Both applications must use matching Qt, compiler, architecture, and Ela builds.
+Alternatively, deploy the component DLLs together next to ZeroSlack, or set XIPS_BROWSER_LIBRARY to the full path of xips-browser.dll.
+Both applications must use matching Qt, compiler and architecture. Deploy the
+component's **xips-browser-impl.dll** and private **XipsEla.dll** beside
+**xips-browser.dll**; the entry point loads these from its own directory and can coexist with
+the host's own Ela runtime. The component initializes its own controls without
+changing the host application identity or font. The host can call **setDarkTheme(bool)**
+to synchronize the panel with its theme.
 An incompatible component leaves a small fallback panel with **Open xIPs** and **Reload xIPs**.
 
 ## AppSuite

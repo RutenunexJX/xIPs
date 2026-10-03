@@ -23,6 +23,10 @@ class ElaFilePicker final : public ElaContentDialog
     static QString getOpenFileName(QWidget *parent, const QString &title, const QString &initial);
     static QStringList getOpenFileNames(QWidget *parent, const QString &title, const QString &initial);
 
+  protected:
+    void showEvent(QShowEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+
   private:
     void navigate(const QString &path);
     void submit();

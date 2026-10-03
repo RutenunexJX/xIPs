@@ -21,6 +21,8 @@ class ElaToolButton;
 class ElaFlowLayout;
 class ElaTabWidget;
 class ElaCheckBox;
+class ElaScrollArea;
+class QBoxLayout;
 class QStringListModel;
 class QStandardItemModel;
 class QSplitter;
@@ -36,7 +38,7 @@ class BrowserPanel final : public QWidget
 {
     Q_OBJECT
   public:
-    explicit BrowserPanel(QWidget *parent = nullptr, QObject *host = nullptr);
+    explicit BrowserPanel(QWidget *parent = nullptr, QObject *host = nullptr, bool embedded = false);
     ~BrowserPanel() override;
     Q_INVOKABLE void setContext(const QString &library, const QString &workspace);
     Q_INVOKABLE void collectPaths(const QStringList &paths);
@@ -45,11 +47,15 @@ class BrowserPanel final : public QWidget
     Q_INVOKABLE QVariantMap saveState() const;
     Q_INVOKABLE void restoreState(const QVariantMap &state);
     Q_INVOKABLE void refresh();
-    bool isCatalogBusy() const
+    Q_INVOKABLE void setDarkTheme(bool dark);
+    Q_INVOKABLE bool isCatalogBusy() const
     {
         return m_busy;
     }
     std::optional<CatalogAsset> catalogAsset(const QString &id) const;
+
+  signals:
+    void contextChanging();
 
   protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -98,6 +104,8 @@ class BrowserPanel final : public QWidget
     void applyTheme();
     void updateActivity();
     void restoreSplit();
+    void adaptEmbeddedLayout();
+    void updateVersionHeight();
     double splitRatio() const;
     bool applyPendingContext();
     void handleFileDrop(QDropEvent *event, bool working, bool import);
@@ -118,6 +126,9 @@ class BrowserPanel final : public QWidget
     CatalogAsset m_selected;
     Snapshot m_snapshot;
     QPointer<QObject> m_host;
+    const bool m_embedded;
+    bool m_contextInitialized = false;
+    int m_pendingPage = -1;
     int m_generation = 0;
     bool m_busy = false;
     bool m_loadingDetails = false;
@@ -129,6 +140,7 @@ class BrowserPanel final : public QWidget
     double m_horizontalRatio = 0.27;
     double m_verticalRatio = 0.28;
     std::optional<QPair<QString, QString>> m_pendingContext;
+    std::optional<QVariantMap> m_pendingState;
     std::optional<CatalogAsset> m_pendingDetail;
     QFutureWatcher<SnapshotResult> *m_detailWatcher = nullptr;
     ElaProgressRing *m_activity = nullptr;
@@ -181,6 +193,11 @@ class BrowserPanel final : public QWidget
     ElaToolButton *m_update = nullptr;
     QWidget *m_catalog = nullptr;
     QWidget *m_details = nullptr;
+    ElaScrollArea *m_detailScroll = nullptr;
+    QBoxLayout *m_identityLayout = nullptr;
+    QBoxLayout *m_identityActions = nullptr;
+    QBoxLayout *m_workingActions = nullptr;
+    QBoxLayout *m_versionHeader = nullptr;
     QWidget *m_versionSection = nullptr;
     QWidget *m_fileSection = nullptr;
     QWidget *m_feedback = nullptr;
@@ -189,5 +206,5 @@ class BrowserPanel final : public QWidget
     QTimer *m_searchTimer = nullptr;
 };
 
-void initializeEla();
+void initializeEla(bool embedded = false);
 } // namespace xips

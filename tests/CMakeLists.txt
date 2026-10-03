@@ -30,6 +30,21 @@ target_link_libraries(tst_native PRIVATE xips_core Qt6::Test Qt6::Widgets Ela::W
 add_dependencies(tst_native xips_browser)
 add_test(NAME native COMMAND tst_native)
 
+# Host-like probe deliberately does not link xips_app or either Ela runtime.
+add_executable(tst_embedded tst_embedded.cpp)
+target_include_directories(tst_embedded PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(tst_embedded PRIVATE XIPS_BROWSER_PATH="$<TARGET_FILE:xips_browser>")
+target_link_libraries(tst_embedded PRIVATE xips_core Qt6::Test Qt6::Widgets Qt6::Concurrent)
+set_target_properties(tst_embedded PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/host-probe")
+xips_enable_strict_warnings(tst_embedded)
+add_dependencies(tst_embedded xips_browser)
+add_test(NAME embedded COMMAND tst_embedded -o -,txt)
+
+add_executable(tst_working_model tst_working_model.cpp)
+target_link_libraries(tst_working_model PRIVATE xips_app Qt6::Test)
+xips_enable_strict_warnings(tst_working_model)
+add_test(NAME working_model COMMAND tst_working_model -o -,txt)
+
 add_executable(tst_cli tst_cli.cpp)
 target_compile_definitions(tst_cli
     PRIVATE
@@ -69,8 +84,8 @@ endif()
 get_filename_component(_xips_qt_bin_dir "${_xips_qt_core_location}" DIRECTORY)
 get_filename_component(_xips_qt_prefix "${_xips_qt_bin_dir}/.." ABSOLUTE)
 get_filename_component(_xips_compiler_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-set(_xips_tests core snapshots workflows cli gui_smoke user_journey native interactions)
-set(_xips_gui_tests gui_smoke user_journey native interactions)
+set(_xips_tests core snapshots workflows cli gui_smoke user_journey native interactions working_model embedded)
+set(_xips_gui_tests gui_smoke user_journey native interactions working_model embedded)
 if(TARGET xips_suite)
     add_executable(tst_suite tst_suite.cpp)
     target_compile_definitions(tst_suite PRIVATE XIPS_RUNTIME_PATH="$<TARGET_FILE:SuiteApp::suite-runtime>")

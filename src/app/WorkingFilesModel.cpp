@@ -40,12 +40,29 @@ void WorkingFilesModel::updateParents()
 void WorkingFilesModel::setFiles(const QStringList &files, const QSet<QString> &checked, bool editable)
 {
     const QScopedValueRollback<bool> guard(m_updating, true);
+    auto sorted = files;
+    sorted.sort();
+    sorted.removeDuplicates();
+    if (columnCount() != 0 && sorted == m_paths && editable == m_editable)
+    {
+        bool changed = false;
+        if (editable)
+            for (auto it = m_files.cbegin(); it != m_files.cend(); ++it)
+            {
+                const auto state = checked.contains(it.key()) ? Qt::Checked : Qt::Unchecked;
+                if (it.value()->checkState() == state) continue;
+                it.value()->setCheckState(state);
+                changed = true;
+            }
+        if (changed) updateParents();
+        return;
+    }
+    m_paths = sorted;
+    m_editable = editable;
     m_files.clear(); m_folders.clear();
     clear();
     setHorizontalHeaderLabels({QStringLiteral("Working files")});
     QHash<QString, QStandardItem *> folders;
-    auto sorted = files;
-    sorted.sort();
     for (const auto &relative : sorted)
     {
         auto *parent = invisibleRootItem();

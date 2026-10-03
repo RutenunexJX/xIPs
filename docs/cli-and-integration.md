@@ -62,19 +62,33 @@ Load the two C exports with QLibrary:
 - xips_browser_abi_v1(): compares the Qt patch version, pointer size, and compiler ABI.
 - xips_create_browser_v1(QWidget *parent, QObject *host): creates a browser widget owned by the parent.
 
-Use matching Ela builds as well; the Windows build is Qt 6.10.2 / MinGW 13.1 / 64-bit.
-The host must initialize its Ela theme before creating the panel.
+The Windows build is Qt 6.10.2 / MinGW 13.1 / 64-bit. Deploy **xips-browser.dll**
+with **xips-browser-impl.dll** and its matching **XipsEla.dll** together. The lightweight
+v1 entry point locates its own module directory and loads the implementation with
+Windows' altered search path for that load only. It does not alter process PATH or
+global DLL search directories. The implementation retains a loader reference until
+process exit, including after its last panel closes. This private runtime can coexist with
+the host's **ElaWidgetTools.dll**; never replace the host DLL with xIPs' copy.
+Call the factory on the QApplication thread. It initializes its own Ela controls,
+preserves host identity/font/palette, and returns null if construction fails or
+the call is made on another thread. The host must check for null before embedding.
+The optional **xips_browser_last_error_v1()** export returns a UTF-8 diagnostic on
+the calling thread; copy the string before the next factory call on that thread.
+Missing implementation/dependencies can be redeployed and the factory retried.
 Keep the component loaded until all widgets and background operations are gone. ZeroSlack uses PreventUnloadHint.
 
 The returned QWidget exposes public Qt invokables:
 
 | Method | Purpose |
 | --- | --- |
-| setContext(QString library, QString workspace) | Set explicit library and current project. Empty library uses environment or xIPs settings. |
+| setContext(QString library, QString workspace) | Set explicit library and current project. Empty library retains the selected library; initial fallback is environment or xIPs settings. Empty workspace closes the project context. |
 | collectPaths(QStringList) | Open the small collection form for selected sources. |
+| importWorkingFiles(QStringList) | Add files/folders to the selected writable Working files area, preserving the existing import/conflict rules. |
 | revealAsset(QString id) | Select a stable asset ID. |
 | refresh() | Reload external changes. |
-| saveState() -> QVariantMap | Preserve query, category, selected asset, and selected revision. |
+| isCatalogBusy() -> bool | Observe a pending catalog operation. |
+| setDarkTheme(bool) | Set the private xIPs runtime theme; no host theme or settings changes. All xIPs panels in the process share it. |
+| saveState() -> QVariantMap | Preserve library, checked files per asset, tab (including empty Versions), query, indexes, groups, selection and splitter ratios. |
 | restoreState(QVariantMap) | Restore panel state. |
 
 An optional host QObject implements:
@@ -84,6 +98,12 @@ An optional host QObject implements:
 | collectionSources() -> QStringList | Return saved files from the current editor, or an empty list on cancellation. |
 | destinationError(QString) -> QString | Empty permits the destination; otherwise show the reason and abort. |
 | exportCompleted(QVariantMap) -> QString | Record provenance after copying; empty means success, otherwise display the returned error and exported location. |
+
+The host bridge lives on the GUI thread. Copying to a project requires the
+destination validator and receipt callback; losing the bridge never changes an
+embedded panel into a standalone exporter. Catalog browsing and local working-file
+operations do not require these callbacks. Theme synchronization uses the optional
+setDarkTheme invokable; listen to the host's theme changes and forward the boolean.
 
 Export receipts use schema **xips.use/v1**, with assetId, name, category, revision, contentHash, path, workspace, and relative files.
 A callback failure does not remove an already created project copy.
@@ -107,15 +127,23 @@ No host code reads xIPs private revision directories.
 The native ABI string includes **;ela=454cac2d-p27** in addition to Qt 6.10.2,
 pointer size, and compiler. The host must match this string. The component directly
 imports p26 combo and p27 menu lifecycle APIs, so an older Ela DLL cannot satisfy
-its imports. `xips_browser_capabilities_v1` is an optional `const char *(*)()` export
+its imports. These imports now resolve against **XipsEla.dll**. The v1 ABI token
+is retained for existing hosts; actual patch/source provenance remains in the
+capabilities JSON. `xips_browser_capabilities_v1` is an optional `const char *(*)()` export
 returning UTF-8 JSON with the capability list and normalized vendor source SHA-256.
 The same metadata is packaged as **xips-capabilities.json**. **build-info.json** also
 records the packaged Ela DLL SHA-256. Patch 28 changes style lifetime without an API
 or class-layout change; its source is identified by the fingerprint and patch record.
 
-State adds **horizontalRatio** and **verticalRatio** while retaining query,
-category, assetId and revision. Old saved states remain accepted. A context change
-during a background transaction is applied after completion. Modern revision
+State adds **library**, **workingChecks** (asset ID to relative file list) and
+**page** (0 Working files, 1 Versions), alongside **horizontalRatio** and
+**verticalRatio**. Old saved states remain accepted; an empty map is a no-op.
+Call setContext with the current host workspace, then restoreState; the state
+never restores a workspace path. Context and restored state queue together during
+background work, with the latest request taking precedence. Open forms are
+rejected on context changes. Deleting the parent cancels pending cancellable I/O
+and disconnects completion handlers; keep the DLL loaded because workers may
+still be reaching their next checkpoint. Modern revision
 metadata is cached until Refresh; Use reloads and verifies the selected immutable
 revision before materializing it. Legacy detail reads are serialized and coalesced.
 
@@ -124,6 +152,12 @@ The optional SuiteApp SDK publishes the **xips** application descriptor using
 the provider; loading the native panel does not create another provider or service.
 Runtime lookup follows the SDK's explicit override, environment, application,
 sibling **../Runtime**, and PATH search. Missing runtime is non-fatal.
+
+The embedded browser accepts a 280-pixel-wide host. Below 580 pixels the catalog
+and details use the vertical splitter; below 360 pixels the working/version
+actions stack. The Ela details area scrolls when height is limited. Resizing or
+reparenting changes the layout without rescanning the catalog or replacing file
+model indexes. Standalone windows retain their direct splitter layout.
 
 | Contract | Behavior |
 | --- | --- |
@@ -139,5 +173,5 @@ Loading catalogs return **provider_busy**; missing assets and revisions return
 structured errors. No suite action writes the library or materializes files.
 
 The **AppSuite/Apps/xIPs/** component contains its own Qt/Ela dependencies,
-**xips.exe**, **xips-cli.exe**, **xips-browser.dll**, and
+**xips.exe**, **xips-cli.exe**, **xips-browser.dll**, **xips-browser-impl.dll**, **XipsEla.dll**, and
 **assets/icons/xips-256.png**. The Windows executable embeds **xips.ico**.

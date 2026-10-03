@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(xIPs VERSION 2.7.0 LANGUAGES CXX)
+project(xIPs VERSION 2.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,7 +28,8 @@ endif()
 set(QT_VERSION_MAJOR 6)
 set(ELAWIDGETTOOLS_BUILD_STATIC_LIB OFF CACHE BOOL "" FORCE)
 add_subdirectory(thirdparty/elawidgettools EXCLUDE_FROM_ALL SYSTEM)
-set_target_properties(ElaWidgetTools PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set_target_properties(ElaWidgetTools PROPERTIES OUTPUT_NAME "XipsEla"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 file(GLOB_RECURSE _ela_sources CONFIGURE_DEPENDS RELATIVE "${CMAKE_SOURCE_DIR}/thirdparty/elawidgettools"
     "thirdparty/elawidgettools/*.h" "thirdparty/elawidgettools/*.cpp"
@@ -44,7 +45,7 @@ foreach(_ela_source IN LISTS _ela_sources)
     string(APPEND _ela_inventory "${_ela_source}:${_ela_hash}\n")
 endforeach()
 string(SHA256 XIPS_ELA_SOURCE_SHA256 "${_ela_inventory}")
-set(XIPS_CAPABILITIES_JSON "{\"schema\":\"xips.browser-capabilities/v1\",\"version\":\"${PROJECT_VERSION}\",\"nativeSurfaceAbi\":1,\"elaBaseline\":\"454cac2d-p27\",\"elaPatchLevel\":31,\"elaSourceSha256\":\"${XIPS_ELA_SOURCE_SHA256}\",\"qt\":\"${Qt6_VERSION}\",\"capabilities\":[\"immutable-revisions\",\"interruptible-combo\",\"precision-wheel\",\"native-text-scroll-units\",\"split-ratios\",\"english-edit-menu\",\"interruptible-menu\"]}")
+set(XIPS_CAPABILITIES_JSON "{\"schema\":\"xips.browser-capabilities/v1\",\"version\":\"${PROJECT_VERSION}\",\"nativeSurfaceAbi\":1,\"elaRuntime\":\"XipsEla\",\"elaBaseline\":\"454cac2d-p27\",\"elaPatchLevel\":31,\"elaSourceSha256\":\"${XIPS_ELA_SOURCE_SHA256}\",\"qt\":\"${Qt6_VERSION}\",\"capabilities\":[\"private-ela-runtime\",\"working-files\",\"group-members\",\"version-deletion\",\"panel-state-v2\",\"host-theme\",\"immutable-revisions\",\"interruptible-combo\",\"precision-wheel\",\"native-text-scroll-units\",\"split-ratios\",\"english-edit-menu\",\"interruptible-menu\"]}")
 file(WRITE "${CMAKE_BINARY_DIR}/xips-capabilities.json" "${XIPS_CAPABILITIES_JSON}\n")
 configure_file(src/app/BuildCapabilities.h.in generated/BuildCapabilities.h @ONLY)
 

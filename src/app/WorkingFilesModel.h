@@ -22,6 +22,8 @@ class WorkingFilesModel final : public QStandardItemModel
     void updateParents();
     QHash<QString, QStandardItem *> m_files;
     QList<QStandardItem *> m_folders;
+    QStringList m_paths;
+    bool m_editable = false;
     bool m_updating = false;
 };
 }

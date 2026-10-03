@@ -6,6 +6,7 @@
 #include "UiSupport.h"
 #include "ElaFilePicker.h"
 #include "ElaFlowLayout.h"
+#include "ElaScrollArea.h"
 #include "ElaApplication.h"
 #include "ElaComboBox.h"
 #include "ElaContentDialog.h"
@@ -48,6 +49,7 @@
 #include <QStringListModel>
 #include <QTextDocument>
 #include <QTimer>
+#include <QTabBar>
 #include <QtConcurrent>
 #include <algorithm>
 #include <type_traits>
@@ -56,11 +58,17 @@ namespace xips
 {
 namespace
 {
+QFont uiFont(int pixelSize = 13)
+{
+    QFont result(QStringLiteral("Segoe UI"));
+    result.setPixelSize(pixelSize);
+    return result;
+}
 ElaToolButton *actionButton(QWidget *parent, const char *name, UiIcon icon, const QString &text, const QString &tip = {})
 {
     auto *button = new ElaToolButton(parent);
     button->setObjectName(name);
-    button->setFont(qApp->font());
+    button->setFont(uiFont());
     button->setText(text);
     button->setIcon(uiIcon(icon));
     button->setIconSize(QSize(16, 16));
@@ -170,9 +178,12 @@ class Form final : public ElaContentDialog
         setObjectName("xipsForm");
         const auto detach = [this] { reject(); setParent(nullptr); };
         connect(parent, &QObject::destroyed, this, detach);
+        if (auto *panel = qobject_cast<BrowserPanel *>(parent))
+            connect(panel, &BrowserPanel::contextChanging, this, &QDialog::reject);
         if (parent != parent->window())
             connect(parent->window(), &QObject::destroyed, this, detach);
         setWindowTitle(title);
+        setFont(parent->font());
         setStandardButtonsVisible(false);
         auto *content = new QWidget(this);
         auto *layout = new QVBoxLayout(content);
@@ -205,11 +216,22 @@ class Form final : public ElaContentDialog
             if (qobject_cast<ElaPushButton *>(control) || qobject_cast<ElaComboBox *>(control))
             {
                 control->setFixedHeight(30);
-                control->setFont(qApp->font());
+                control->setFont(font());
                 if (auto *button = qobject_cast<ElaPushButton *>(control))
                     button->setMinimumWidth(button->fontMetrics().horizontalAdvance(button->text()) + 28);
             }
         return ElaContentDialog::exec();
+    }
+    void showEvent(QShowEvent *event) override
+    {
+        ElaContentDialog::showEvent(event);
+        keepDialogOnScreen(this);
+        QTimer::singleShot(0, this, [this] { keepDialogOnScreen(this); });
+    }
+    void resizeEvent(QResizeEvent *event) override
+    {
+        ElaContentDialog::resizeEvent(event);
+        if (isVisible()) keepDialogOnScreen(this);
     }
     void message(const QString &text)
     {
@@ -325,13 +347,17 @@ QMap<QString, QStringList> readIndexes(const QMap<QString, EnglishLineEdit *> &e
     return result;
 }
 } // namespace
-void initializeEla()
+void initializeEla(bool embedded)
 {
+    static bool initialized = false;
+    if (initialized) return;
+    initialized = true;
+    const auto hostFont = qApp->font();
     QFont font(QStringLiteral("Segoe UI"));
     font.setPixelSize(13);
     const bool siblings = QApplication::testAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
     eApp->init();
-    qApp->setFont(font);
+    qApp->setFont(embedded ? hostFont : font);
     QApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings, siblings);
     using namespace ElaThemeType;
     struct Colors { ThemeColor role; const char *light; const char *dark; };
@@ -379,14 +405,24 @@ void initializeEla()
         eTheme->setThemeColor(Light, color.role, QColor(color.light));
         eTheme->setThemeColor(Dark, color.role, QColor(color.dark));
     }
-    eTheme->setThemeMode(QSettings().value("ui/dark", false).toBool() ? Dark : Light);
+    eTheme->setThemeMode(QSettings("xIPs", "xIPs").value("ui/dark", false).toBool() ? Dark : Light);
 }
-BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_host(host)
+BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
+    : QWidget(parent), m_host(host), m_embedded(embedded || host)
 {
+    QFont panelFont(QStringLiteral("Segoe UI"));
+    panelFont.setPixelSize(13);
+    setFont(panelFont);
+    if (host) connect(host, &QObject::destroyed, this, [this]
+    {
+        if (m_operation) m_operation->cancel();
+        emit contextChanging();
+        notice(QStringLiteral("The host connection closed. Reopen this panel to copy files to a project."), true);
+    });
     setObjectName("xipsBrowser");
     setAttribute(Qt::WA_StyledBackground, true);
     setAcceptDrops(true);
-    setMinimumSize(340, 260);
+    setMinimumSize(m_embedded ? 280 : 340, 260);
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -415,7 +451,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_new->setIconSize(QSize(14, 14));
     m_new->setToolTip(QStringLiteral("Create an IP or module (Ctrl+N)"));
     enableToolTip(m_new);
-    m_new->setFont(qApp->font());
+    m_new->setFont(font());
     toolbar->addWidget(m_new);
     m_collect = actionButton(toolbar, "collectButton", UiIcon::Collect, QStringLiteral("Collect"),
         QStringLiteral("Collect files or a folder as a saved asset"));
@@ -426,7 +462,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     toolbar->addWidget(m_filterToggle);
     m_theme = actionButton(toolbar, "themeButton", UiIcon::Theme, QStringLiteral("Dark theme"));
     m_theme->setCheckable(true);
-    m_theme->setVisible(!m_host);
+    m_theme->setVisible(!m_embedded);
     toolbar->addWidget(m_theme);
     layout->addWidget(toolbar);
     m_filters = new QWidget(this);
@@ -451,6 +487,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_indexes->addItem(QStringLiteral("All indexes"), QString());
     filters->addWidget(m_indexes, 1);
     auto *clearFilters = new ElaToolButton(m_filters);
+    clearFilters->setFont(uiFont());
     clearFilters->setObjectName("clearFiltersButton");
     clearFilters->setText(QStringLiteral("Clear"));
     filters->addWidget(clearFilters);
@@ -512,12 +549,25 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_model = new CatalogModel(this);
     m_list->setModel(m_model);
     catalogLayout->addWidget(m_list, 1);
-    m_details = new QWidget(m_splitter);
+    if (m_embedded)
+    {
+        m_detailScroll = new ElaScrollArea(m_splitter);
+        m_detailScroll->setObjectName("assetDetailScroll");
+        m_detailScroll->setFrameShape(QFrame::NoFrame);
+        m_detailScroll->setWidgetResizable(true);
+        m_detailScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_detailScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        m_detailScroll->setIsAnimation(Qt::Vertical, false);
+    }
+    m_details = new QWidget(m_detailScroll ? nullptr : m_splitter);
+    if (m_detailScroll) m_detailScroll->setWidget(m_details);
+    m_details->setFont(font());
     m_details->setObjectName("assetDetails");
     auto *details = new QVBoxLayout(m_details);
     details->setContentsMargins(12, 6, 12, 8);
     details->setSpacing(4);
     auto *identity = new QHBoxLayout;
+    m_identityLayout = identity;
     m_name = new ElaText(QStringLiteral("Select an asset"), 15, m_details);
     m_name->setObjectName("assetName");
     m_name->setWordWrap(true);
@@ -531,17 +581,21 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_update = actionButton(m_details, "updateButton", UiIcon::Archive, QStringLiteral("Create version"));
     m_update->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_update->setFixedWidth(132);
-    identity->addWidget(m_update);
+    auto *identityActions = new QWidget(m_details);
+    m_identityActions = new QHBoxLayout(identityActions);
+    m_identityActions->setContentsMargins(0, 0, 0, 0);
+    m_identityActions->addWidget(m_update);
     m_take = new ElaPushButton(QStringLiteral("Copy to project"), m_details);
     m_take->setObjectName("takeButton");
-    m_take->setFont(qApp->font());
+    m_take->setFont(font());
     m_take->setFixedHeight(30);
     m_take->setIcon(uiIcon(UiIcon::Copy, true));
     m_take->setIconSize(QSize(14, 14));
     m_take->setMinimumWidth(m_take->fontMetrics().horizontalAdvance(m_take->text()) + 44);
     primaryButton(m_take);
     enableToolTip(m_take);
-    identity->addWidget(m_take);
+    m_identityActions->addWidget(m_take);
+    identity->addWidget(identityActions);
     details->addLayout(identity);
     m_description = new ElaText(m_details);
     m_description->setTextPixelSize(12);
@@ -592,6 +646,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     connect(m_groupItems, &QAbstractItemView::clicked, this, openGroupMember);
     connect(m_groupItems, &QAbstractItemView::activated, this, openGroupMember);
     m_pages = new ElaTabWidget(m_details);
+    m_pages->setFont(font());
     m_pages->setObjectName("assetPages");
     m_pages->setTabSize(QSize(116, 28));
     m_pages->setTabsClosable(false);
@@ -600,6 +655,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     m_pages->setIsContainerAcceptDrops(false);
     details->addWidget(m_pages, 1);
     m_workingPage = new QWidget(m_pages);
+    m_workingPage->setFont(font());
     m_workingPage->setObjectName("workingPage");
     m_workingPage->setAcceptDrops(true);
     m_workingPage->installEventFilter(this);
@@ -607,22 +663,35 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     workingLayout->setContentsMargins(0, 4, 0, 0);
     workingLayout->setSpacing(4);
     auto *workingActions = new QHBoxLayout;
+    m_workingActions = workingActions;
     workingActions->setSpacing(4);
+    auto *imports = new QWidget(m_workingPage);
+    auto *importActions = new QHBoxLayout(imports);
+    importActions->setContentsMargins(0, 0, 0, 0);
+    importActions->setSpacing(4);
+    workingActions->addWidget(imports);
     m_addFiles = actionButton(m_workingPage, "addFilesButton", UiIcon::Add, QStringLiteral("Add files"));
     m_addFolder = actionButton(m_workingPage, "addFolderButton", UiIcon::FolderPlus, QStringLiteral("Add folder"));
     for (auto *button : {m_addFiles, m_addFolder})
     {
+        button->setFont(font());
         button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         button->setFixedWidth(button->fontMetrics().horizontalAdvance(button->text()) + 34);
-        workingActions->addWidget(button);
+        importActions->addWidget(button);
     }
     workingActions->addStretch();
+    auto *selection = new QWidget(m_workingPage);
+    auto *selectionActions = new QHBoxLayout(selection);
+    selectionActions->setContentsMargins(0, 0, 0, 0);
+    selectionActions->setSpacing(4);
+    workingActions->addWidget(selection);
     m_checkAll = new ElaCheckBox(QStringLiteral("All"), m_workingPage);
+    m_checkAll->setFont(uiFont(15));
     m_checkAll->setObjectName("checkAllFiles");
-    workingActions->addWidget(m_checkAll);
+    selectionActions->addWidget(m_checkAll);
     m_openWorking = actionButton(m_workingPage, "openWorkingButton", UiIcon::Open, QStringLiteral("Edit file"),
         QStringLiteral("Open the original file (double-click or Enter)"));
-    workingActions->addWidget(m_openWorking);
+    selectionActions->addWidget(m_openWorking);
     workingLayout->addLayout(workingActions);
     m_workingEmpty = new ElaText(QStringLiteral("Add files or a folder to begin."), 12, m_workingPage);
     m_workingEmpty->setObjectName("workingEmpty");
@@ -654,6 +723,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     workingLayout->addWidget(m_workingFiles, 1);
     m_pages->addTab(m_workingPage, QStringLiteral("Working files"));
     m_historyPage = new QWidget(m_pages);
+    m_historyPage->setFont(font());
     auto *historyLayout = new QVBoxLayout(m_historyPage);
     historyLayout->setContentsMargins(0, 4, 0, 0);
     historyLayout->setSpacing(4);
@@ -667,12 +737,18 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     versionLayout->setContentsMargins(0, 4, 0, 0);
     versionLayout->setSpacing(0);
     auto *versionHeader = new QHBoxLayout;
+    m_versionHeader = versionHeader;
     versionHeader->setContentsMargins(7, 0, 0, 0);
     versionHeader->setSpacing(0);
+    auto *versionLabels = new QWidget(m_versionSection);
+    auto *labels = new QHBoxLayout(versionLabels);
+    labels->setContentsMargins(0, 0, 0, 0);
+    labels->setSpacing(0);
     auto *versionLabel = new ElaText(QStringLiteral("Version"), 12, m_versionSection);
     versionLabel->setFixedWidth(104);
-    versionHeader->addWidget(versionLabel);
-    versionHeader->addWidget(new ElaText(QStringLiteral("Status"), 12, m_versionSection), 1);
+    labels->addWidget(versionLabel);
+    labels->addWidget(new ElaText(QStringLiteral("Status"), 12, m_versionSection), 1);
+    versionHeader->addWidget(versionLabels, 1);
     m_deleteRevision = actionButton(m_versionSection, "deleteRevisionButton", UiIcon::Trash, QStringLiteral("Delete version"));
     m_deleteRevision->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_deleteRevision->setFixedWidth(m_deleteRevision->fontMetrics().horizontalAdvance(m_deleteRevision->text()) + 34);
@@ -889,7 +965,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
     connect(m_theme, &QToolButton::clicked, this, [this](bool dark)
     {
         eTheme->setThemeMode(dark ? ElaThemeType::Dark : ElaThemeType::Light);
-        QSettings().setValue("ui/dark", dark);
+        QSettings("xIPs", "xIPs").setValue("ui/dark", dark);
     });
     const auto shortcut = [this](const QKeySequence &keys, QWidget *scope, auto operation)
     {
@@ -920,6 +996,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host) : QWidget(parent), m_
         (m_splitter->orientation() == Qt::Horizontal ? m_horizontalRatio : m_verticalRatio) = splitRatio();
     });
     connect(eTheme, &ElaTheme::themeModeChanged, this, [this] { applyTheme(); });
+    adaptEmbeddedLayout();
     applyTheme();
     setBusy(false);
 }
@@ -930,6 +1007,10 @@ BrowserPanel::~BrowserPanel()
 void BrowserPanel::beginOperation()
 {
     m_operation = std::make_shared<OperationControl>();
+}
+void BrowserPanel::setDarkTheme(bool dark)
+{
+    eTheme->setThemeMode(dark ? ElaThemeType::Dark : ElaThemeType::Light);
 }
 void BrowserPanel::applyTheme()
 {
@@ -956,6 +1037,12 @@ void BrowserPanel::applyTheme()
     p.setColor(QPalette::Highlight, eTheme->getThemeColor(mode, ElaThemeType::BasicSelectedAlpha));
     p.setColor(QPalette::HighlightedText, text);
     setPalette(p);
+    if (m_detailScroll)
+    {
+        m_detailScroll->setPalette(p);
+        m_detailScroll->viewport()->setPalette(p);
+        m_detailScroll->viewport()->setAutoFillBackground(true);
+    }
     setAutoFillBackground(true);
     setStyleSheet(QStringLiteral("QWidget#xipsBrowser, QWidget#assetDetails { background: %1; } "
         "QWidget#catalogSidebar { background: %3; } "
@@ -967,12 +1054,22 @@ void BrowserPanel::applyTheme()
                        static_cast<QAbstractItemView *>(m_workingFiles),
                        static_cast<QAbstractItemView *>(m_versions)})
     {
+        view->setFont(font());
+        view->viewport()->setFont(font());
         auto viewPalette = p;
         if (view == m_list) { viewPalette.setColor(QPalette::Base, sidebar); viewPalette.setColor(QPalette::Window, sidebar); }
         view->setPalette(viewPalette);
         view->viewport()->setPalette(viewPalette);
         view->viewport()->setAutoFillBackground(true);
         view->viewport()->update();
+    }
+    m_pages->setFont(font());
+    m_pages->tabBar()->setFont(font());
+    for (auto *label : findChildren<ElaText *>())
+    {
+        auto labelFont = label->font();
+        labelFont.setFamily(font().family());
+        label->setFont(labelFont);
     }
     auto headerPalette = p;
     headerPalette.setColor(QPalette::Button, background);
@@ -1001,9 +1098,35 @@ void BrowserPanel::restoreSplit()
     const double ratio = m_splitter->orientation() == Qt::Horizontal ? m_horizontalRatio : m_verticalRatio;
     m_splitter->setSizes({qRound(ratio * 10000), qRound((1.0 - ratio) * 10000)});
 }
+void BrowserPanel::adaptEmbeddedLayout()
+{
+    if (!m_embedded) return;
+    const bool narrow = width() < 580;
+    const bool stacked = width() < 360;
+    m_identityLayout->setDirection(narrow ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+    m_identityLayout->setStretch(0, narrow ? 0 : 1);
+    m_identityActions->setDirection(stacked ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+    m_identityLayout->setAlignment(m_identityActions->parentWidget(), narrow ? Qt::AlignLeft : Qt::Alignment());
+    m_identityActions->setAlignment(m_update, narrow ? Qt::AlignLeft : Qt::Alignment());
+    m_identityActions->setAlignment(m_take, narrow ? Qt::AlignLeft : Qt::Alignment());
+    m_workingActions->setDirection(stacked ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+    m_workingActions->setStretch(1, stacked ? 0 : 1);
+    m_workingActions->setAlignment(m_workingActions->itemAt(0)->widget(), stacked ? Qt::AlignLeft : Qt::Alignment());
+    m_workingActions->setAlignment(m_workingActions->itemAt(2)->widget(), stacked ? Qt::AlignLeft : Qt::Alignment());
+    m_versionHeader->setDirection(stacked ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+    m_versionHeader->setStretch(0, stacked ? 0 : 1);
+    m_versionHeader->setAlignment(m_deleteRevision, stacked ? Qt::AlignLeft : Qt::Alignment());
+    updateVersionHeight();
+}
+void BrowserPanel::updateVersionHeight()
+{
+    m_versionSection->setMaximumHeight(m_versions->maximumHeight() +
+        (m_embedded ? m_versionHeader->sizeHint().height() + 4 : 32));
+}
 void BrowserPanel::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
+    adaptEmbeddedLayout();
     const auto orientation = width() < 580 ? Qt::Vertical : Qt::Horizontal;
     if (m_splitter->orientation() != orientation)
     {
@@ -1065,25 +1188,32 @@ void BrowserPanel::handleFileDrop(QDropEvent *event, bool working, bool import)
 }
 void BrowserPanel::setContext(const QString &library, const QString &workspace)
 {
-    if (m_busy)
-    {
-        m_pendingContext = qMakePair(library, workspace);
-        return;
-    }
-    m_workspace = workspace;
-    m_take->setToolTip(QStringLiteral("Copy the selected version's source files to a destination you choose; creates an independent copy"));
-    QString path = library;
+    QString path = library.isEmpty() ? m_library : library;
     if (path.isEmpty())
     {
-        QSettings settings("xIPs", "xIPs");
         path = qEnvironmentVariable("XIPS_LIBRARY");
-        if (path.isEmpty())
-            path = settings.value("library/root").toString();
+        if (path.isEmpty()) path = QSettings("xIPs", "xIPs").value("library/root").toString();
     }
     path = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
-    if (path == m_library && !m_assets.isEmpty())
+    if (m_contextInitialized && path == m_library && workspace == m_workspace && !m_pendingContext)
         return;
+    emit contextChanging();
+    if (m_busy)
+    {
+        m_pendingContext = qMakePair(path, workspace);
+        m_pendingState.reset();
+        return;
+    }
+    const bool sameLibrary = m_contextInitialized && path == m_library;
+    m_contextInitialized = true;
+    m_workspace = workspace;
+    m_take->setToolTip(QStringLiteral("Copy the selected version's source files to a destination you choose; creates an independent copy"));
+    if (sameLibrary) return;
     m_library = path;
+    m_pendingId.clear();
+    m_pendingRevision.clear();
+    m_pendingPage = -1;
+    m_displayedAsset.clear();
     m_activeGroup.clear();
     m_collapsedGroups.clear();
     m_assets.clear();
@@ -1122,13 +1252,15 @@ void BrowserPanel::importWorkingFiles(const QStringList &paths)
 }
 bool BrowserPanel::applyPendingContext()
 {
-    if (!m_pendingContext || m_busy)
-        return false;
-    const auto context = *m_pendingContext;
+    if (m_busy) return false;
+    const auto context = m_pendingContext;
+    const auto state = m_pendingState;
     m_pendingContext.reset();
-    const auto previousLibrary = m_library;
-    setContext(context.first, context.second);
-    return m_busy || previousLibrary != m_library;
+    m_pendingState.reset();
+    if (context) setContext(context->first, context->second);
+    if (state) restoreState(*state);
+    else if (context && !m_busy) filter();
+    return bool(context) || bool(state);
 }
 void BrowserPanel::refresh()
 {
@@ -1397,7 +1529,7 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
         m_versionModel->appendRow(row);
     }
     m_versions->setMaximumHeight(qBound(1, m_versionModel->rowCount(), 6) * 28);
-    m_versionSection->setMaximumHeight(m_versions->maximumHeight() + 32);
+    updateVersionHeight();
     m_versions->setCurrentIndex(m_versionModel->index(requested, 0));
     m_versions->scrollTo(m_versions->currentIndex());
     m_pendingRevision.clear();
@@ -1425,6 +1557,9 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
         m_pages->setCurrentIndex(1);
     else if (!sameAsset || requestedRevision == "current" || requestedRevision == "working")
         m_pages->setCurrentIndex(0);
+    if (m_pendingPage >= 0)
+        m_pages->setCurrentIndex(m_pendingPage == 0 && hasWorking ? 0 : 1);
+    m_pendingPage = -1;
     selectVersion();
 }
 QString BrowserPanel::workingKey() const
@@ -1488,7 +1623,7 @@ void BrowserPanel::updateActivity()
 {
     const bool active = m_busy || m_loadingDetails;
     m_activity->setVisible(active);
-    m_feedback->setVisible(active || !m_status->toolTip().isEmpty() || !m_problems.isEmpty() || (!m_host && m_lastExport.ok));
+    m_feedback->setVisible(active || !m_status->toolTip().isEmpty() || !m_problems.isEmpty() || (!m_embedded && m_lastExport.ok));
     const bool animate = active && isVisible();
     if (m_activity->getIsBusying() != animate)
         m_activity->setIsBusying(animate);
@@ -1538,7 +1673,11 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
                     return;
                 }
                 if (finished)
+                {
+                    const QPointer<BrowserPanel> alive(this);
                     finished(result);
+                    if (!alive) return;
+                }
                 else
                 {
                     m_pendingId = result.asset.id;
@@ -1559,12 +1698,9 @@ void BrowserPanel::chooseLibrary()
         ElaFilePicker::getExistingDirectory(this, QStringLiteral("Choose library folder"), m_library);
     if (path.isEmpty())
         return;
-    m_library = path;
-    m_assets.clear();
-    m_selected = {};
     QSettings settings("xIPs", "xIPs");
     settings.setValue("library/root", path);
-    refresh();
+    setContext(path, m_workspace);
 }
 QStringList BrowserPanel::pickSources()
 {
@@ -2069,10 +2205,10 @@ void BrowserPanel::exportPrepared(const SnapshotResult &prepared)
     if (form.exec() != QDialog::Accepted)
         return;
     const QString target = QFileInfo(destination->text().trimmed()).absoluteFilePath();
-    if (m_host)
+    if (m_embedded)
     {
         QString error;
-        if (!QMetaObject::invokeMethod(m_host, "destinationError", Qt::DirectConnection,
+        if (!m_host || !QMetaObject::invokeMethod(m_host, "destinationError", Qt::DirectConnection,
                                        Q_RETURN_ARG(QString, error), Q_ARG(QString, target)))
         {
             notice(QStringLiteral("The host did not provide destination validation."), true);
@@ -2098,10 +2234,10 @@ void BrowserPanel::exportPrepared(const SnapshotResult &prepared)
                                          {"workspace", workspace},
                                          {"files", result.snapshot.files},
                                          {"category", result.asset.category}};
-            if (m_host)
+            if (m_embedded)
             {
                 QString error;
-                const bool recorded = QMetaObject::invokeMethod(
+                const bool recorded = m_host && QMetaObject::invokeMethod(
                     m_host, "exportCompleted", Qt::DirectConnection, Q_RETURN_ARG(QString, error),
                     Q_ARG(QVariantMap, provenance));
                 if (!recorded || !error.isEmpty())
@@ -2117,12 +2253,12 @@ void BrowserPanel::exportPrepared(const SnapshotResult &prepared)
             }
             m_lastExport = result;
             notice(QStringLiteral("Created %1 from %2").arg(result.exportedPath, versionText(result.asset, result.snapshot))
-                + (m_host ? QString() : QStringLiteral(". Use Save receipt to record its origin.")));
+                + (m_embedded ? QString() : QStringLiteral(". Use Save receipt to record its origin.")));
         });
 }
 void BrowserPanel::saveOrigin()
 {
-    if (m_busy || !m_lastExport.ok || m_host) return;
+    if (m_busy || !m_lastExport.ok || m_embedded) return;
     const auto exported = m_lastExport;
     Form form(this, QStringLiteral("Save export receipt"), QStringLiteral("Save receipt"));
     auto *path = new EnglishLineEdit(&form);
@@ -2233,7 +2369,7 @@ void BrowserPanel::updateActions()
     m_issues->setToolTip(QStringLiteral("Issues · %1 — open details").arg(m_problems.size()));
     m_issues->setAccessibleName(m_issues->toolTip());
     m_issues->setVisible(!m_problems.isEmpty());
-    m_receipt->setVisible(!m_host && m_lastExport.ok);
+    m_receipt->setVisible(!m_embedded && m_lastExport.ok);
     m_receipt->setEnabled(!m_busy);
     m_remove->setText(reference ? QStringLiteral("Remove reference…") : QStringLiteral("Unregister…"));
     m_remove->setAccessibleName(m_remove->text());
@@ -2284,6 +2420,7 @@ void BrowserPanel::updateActions()
     }
     m_actionLayout->parentWidget()->setVisible(!visible.isEmpty());
     m_actionLayout->invalidate();
+    if (m_embedded) updateVersionHeight();
 }
 void BrowserPanel::openFile()
 {
@@ -2379,7 +2516,13 @@ void BrowserPanel::revealAsset(const QString &id)
 }
 QVariantMap BrowserPanel::saveState() const
 {
-    return {{"query", m_search->text()},
+    if (m_pendingState) return *m_pendingState;
+    QVariantMap checked;
+    const auto prefix = m_library + '\n';
+    for (auto it = m_checkedFiles.cbegin(); it != m_checkedFiles.cend(); ++it)
+        if (it.key().startsWith(prefix)) checked.insert(it.key().mid(prefix.size()), QStringList(it.value().values()));
+    return {{"library", m_library}, {"workingChecks", checked}, {"page", m_pages->currentIndex()},
+            {"query", m_search->text()},
             {"category", m_category},
             {"index", m_indexTerm},
             {"filtersExpanded", m_filterToggle->isChecked()},
@@ -2393,6 +2536,24 @@ QVariantMap BrowserPanel::saveState() const
 }
 void BrowserPanel::restoreState(const QVariantMap &state)
 {
+    if (state.isEmpty()) return;
+    const auto library = state.value("library").toString();
+    if (!library.isEmpty() && library != (m_pendingContext ? m_pendingContext->first : m_library))
+        setContext(library, m_pendingContext ? m_pendingContext->second : m_workspace);
+    if (m_busy) { m_pendingState = state; return; }
+    if (state.contains("workingChecks"))
+    {
+        const auto prefix = m_library + '\n';
+        for (auto it = m_checkedFiles.begin(); it != m_checkedFiles.end();)
+            if (it.key().startsWith(prefix)) it = m_checkedFiles.erase(it); else ++it;
+        const auto checked = state.value("workingChecks").toMap();
+        for (auto it = checked.cbegin(); it != checked.cend(); ++it)
+        {
+            const auto files = it.value().toStringList();
+            m_checkedFiles.insert(prefix + it.key(), QSet<QString>(files.cbegin(), files.cend()));
+        }
+    }
+    m_pendingPage = state.value("page", -1).toInt();
     m_search->setText(state.value("query").toString());
     m_searchTimer->stop();
     m_horizontalRatio = qBound(0.1, state.value("horizontalRatio", m_horizontalRatio).toDouble(), 0.9);
@@ -2414,6 +2575,7 @@ void BrowserPanel::restoreState(const QVariantMap &state)
     const auto collapsed = state.value("collapsedGroups").toStringList();
     m_collapsedGroups = QSet<QString>(collapsed.cbegin(), collapsed.cend());
     m_pendingRevision = state.value("revision").toString();
+    m_selected = {};
     if (!m_busy)
         filter();
 }

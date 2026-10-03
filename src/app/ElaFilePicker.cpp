@@ -14,6 +14,7 @@
 #include <QFileSystemModel>
 #include <QHBoxLayout>
 #include <QSignalBlocker>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace xips
@@ -36,10 +37,21 @@ ElaFilePicker::ElaFilePicker(QWidget *parent, const QString &title, const QStrin
     : ElaContentDialog(parent ? parent->window() : nullptr), m_mode(mode)
 {
     setObjectName("xipsFilePicker");
+    if (parent) setFont(parent->font());
     setWindowTitle(title);
     setStandardButtonsVisible(false);
     if (parent)
+    {
         connect(parent, &QObject::destroyed, this, [this] { reject(); setParent(nullptr); });
+        if (parent != parent->window())
+            connect(parent->window(), &QObject::destroyed, this, [this] { reject(); setParent(nullptr); });
+        for (auto *owner = parent; owner; owner = owner->parentWidget())
+            if (owner->metaObject()->indexOfSignal("contextChanging()") >= 0)
+            {
+                connect(owner, SIGNAL(contextChanging()), this, SLOT(reject()));
+                break;
+            }
+    }
     auto *body = new QWidget(this);
     auto *layout = new QVBoxLayout(body);
     layout->setContentsMargins(12, 12, 12, 12);
@@ -110,7 +122,7 @@ ElaFilePicker::ElaFilePicker(QWidget *parent, const QString &title, const QStrin
     for (auto *button : {cancel, m_accept})
     {
         button->setFixedHeight(30);
-        button->setFont(qApp->font());
+        button->setFont(font());
         buttons->addWidget(button);
     }
     layout->addLayout(buttons);
@@ -150,6 +162,17 @@ ElaFilePicker::ElaFilePicker(QWidget *parent, const QString &title, const QStrin
 QString ElaFilePicker::absoluteInput() const
 {
     return QDir::cleanPath(QDir(m_directory).absoluteFilePath(QDir::fromNativeSeparators(m_path->text().trimmed())));
+}
+void ElaFilePicker::showEvent(QShowEvent *event)
+{
+    ElaContentDialog::showEvent(event);
+    keepDialogOnScreen(this);
+    QTimer::singleShot(0, this, [this] { keepDialogOnScreen(this); });
+}
+void ElaFilePicker::resizeEvent(QResizeEvent *event)
+{
+    ElaContentDialog::resizeEvent(event);
+    if (isVisible()) keepDialogOnScreen(this);
 }
 void ElaFilePicker::navigate(const QString &path)
 {

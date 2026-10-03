@@ -21,6 +21,17 @@
 
 namespace xips
 {
+void keepDialogOnScreen(QWidget *dialog)
+{
+    const auto *screen = dialog->screen();
+    if (!screen) return;
+    const auto area = screen->availableGeometry();
+    const auto frame = dialog->frameGeometry();
+    const auto topLeft = QPoint(qBound(area.left(), frame.left(), qMax(area.left(), area.right() - frame.width() + 1)),
+                               qBound(area.top(), frame.top(), qMax(area.top(), area.bottom() - frame.height() + 1)));
+    // QWidget::move positions a top-level frame, including native borders.
+    dialog->move(topLeft);
+}
 void primaryButton(ElaPushButton *button)
 {
     using namespace ElaThemeType;

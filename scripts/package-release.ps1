@@ -49,7 +49,7 @@ if ($Standalone) {
     $suiteSdkVersion = $suiteVersionMatch.Groups[1].Value
 }
 $binaryRoot = Join-Path $buildRoot 'bin'
-$binaries = @('xips.exe', 'xips-cli.exe', 'xips-browser.dll', 'ElaWidgetTools.dll')
+$binaries = @('xips.exe', 'xips-cli.exe', 'xips-browser.dll', 'xips-browser-impl.dll', 'XipsEla.dll')
 foreach ($name in $binaries) {
     if (-not (Test-Path -LiteralPath (Join-Path $binaryRoot $name) -PathType Leaf)) { throw "Missing $name" }
 }
@@ -101,7 +101,8 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs') -Destination (Join-Path $o
     distribution = $(if ($Standalone) { 'standalone' } else { 'appsuite' }); appSuiteEnabled = -not [bool]$Standalone
     elaBaseline = $capabilities.elaBaseline; elaSourceSha256 = $capabilities.elaSourceSha256
     elaPatchLevel = $capabilities.elaPatchLevel
-    elaDllSha256 = (Get-FileHash -LiteralPath (Join-Path $outputRoot 'ElaWidgetTools.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+    elaRuntime = 'XipsEla.dll'
+    elaDllSha256 = (Get-FileHash -LiteralPath (Join-Path $outputRoot 'XipsEla.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
     builtAtUtc = [DateTime]::UtcNow.ToString('o')
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputRoot 'build-info.json') -Encoding utf8
 $hashLines = Get-ChildItem -LiteralPath $outputRoot -Recurse -File | Sort-Object FullName | ForEach-Object {

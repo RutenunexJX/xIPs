@@ -32,4 +32,4 @@ E:/QT6/Tools/CMake_64/bin/ctest.exe --test-dir build/ela --output-on-failure
 ```
 
 Qt and MinGW runtimes must be on PATH for a development build. Use windeployqt for a standalone package.
-The standalone application and xips-browser.dll share the same ElaWidgetTools.dll; ship matching copies.
+The standalone application and xips-browser-impl.dll share the private XipsEla.dll; ship both DLLs beside the public xips-browser.dll entry point. Do not replace a host application's ElaWidgetTools.dll.
