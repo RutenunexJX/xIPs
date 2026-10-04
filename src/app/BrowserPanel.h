@@ -32,6 +32,7 @@ template <class T> class QFutureWatcher;
 namespace xips
 {
 class CatalogModel;
+class CatalogWatcher;
 class OperationControl;
 class WorkingFilesModel;
 class BrowserPanel final : public QWidget
@@ -67,6 +68,16 @@ class BrowserPanel final : public QWidget
     bool eventFilter(QObject *watched, QEvent *event) override;
 
   private:
+    struct WorkingViewState
+    {
+        QSet<QString> collapsed;
+        QString selectedPath;
+        int horizontal = 0, vertical = 0;
+    };
+    WorkingViewState captureWorkingView() const;
+    void rememberWorkingView();
+    void applyAssetResult(const SnapshotResult &result, const QString &revision);
+    void refreshCatalog(bool automatic, bool full = true, const QStringList &ids = {}, int attempt = 0);
     void filter();
     void selectCurrent();
     void readLegacyDetails(const CatalogAsset &asset);
@@ -98,7 +109,7 @@ class BrowserPanel final : public QWidget
     void showIssues();
     void detailsDialog();
     void run(const QString &message, std::function<SnapshotResult()> work,
-             std::function<void(const SnapshotResult &)> finished = {});
+             std::function<void(const SnapshotResult &)> finished = {}, bool updateCatalog = false);
     void setBusy(bool value, const QString &message = {});
     void notice(const QString &message, bool error = false);
     void applyTheme();
@@ -119,7 +130,10 @@ class BrowserPanel final : public QWidget
     QString m_indexTerm;
     QString m_activeGroup;
     QString m_displayedAsset;
+    QString m_displayedRevision;
     QHash<QString, QSet<QString>> m_checkedFiles;
+    QHash<QString, WorkingViewState> m_workingViews;
+    bool m_restoringWorkingView = false;
     QSet<QString> m_collapsedGroups;
     QStringList m_problems;
     QList<CatalogAsset> m_assets;
@@ -131,6 +145,7 @@ class BrowserPanel final : public QWidget
     int m_pendingPage = -1;
     int m_generation = 0;
     bool m_busy = false;
+    bool m_backgroundRefresh = false;
     bool m_loadingDetails = false;
     bool m_noticeError = false;
     std::shared_ptr<OperationControl> m_operation;
@@ -186,6 +201,7 @@ class BrowserPanel final : public QWidget
     ElaText *m_historyEmpty = nullptr;
     ElaListView *m_files = nullptr;
     CatalogModel *m_model = nullptr;
+    CatalogWatcher *m_catalogWatcher = nullptr;
     QStringListModel *m_fileModel = nullptr;
     ElaPushButton *m_new = nullptr;
     ElaToolButton *m_folder = nullptr;

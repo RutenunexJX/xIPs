@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.9.0 — 2026-10-04
+
+- Refresh affected IPs automatically after external edits or synchronized changes, coalescing file events and retrying incomplete writes without losing operation errors.
+- Update individual catalog entries after imports and saved versions, and filter cached catalog data without rebuilding unchanged tree nodes.
+- Preview added, modified and omitted files before creating an immutable version.
+- Preserve each IP's working-file selection, collapsed folders and scroll position; keep the selected archived version and file in place during refresh.
+- Monitor managed working folders, including hidden and build directories, without locking source directories against rename or replacement on Windows.
+
 ## 2.8.0 — 2026-10-03
 
 - Add the native browser component with a private Ela runtime, host-controlled context, theme and lifetime, and usable narrow layouts.

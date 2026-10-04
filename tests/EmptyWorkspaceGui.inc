@@ -112,7 +112,8 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
         whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
         {
             QTimer::singleShot(0, form->findChild<ElaPushButton *>("formAccept"), &QPushButton::click);
-            QCOMPARE(form->findChild<QPlainTextEdit *>("payloadPreview")->toPlainText(), selected.join('\n'));
+            QVERIFY(form->findChild<QPlainTextEdit *>("payloadPreview")->toPlainText()
+                .contains("Included files\n" + selected.join('\n')));
             form->findChild<ElaPushButton *>("formAccept")->click();
         });
         create->click();

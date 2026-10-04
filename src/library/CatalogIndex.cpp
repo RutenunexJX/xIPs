@@ -42,6 +42,46 @@ class Connection
         return db.open();
     }
 };
+class RowWriter
+{
+    QSqlQuery assetQuery, revisionQuery, facets;
+  public:
+    explicit RowWriter(QSqlDatabase &db) : assetQuery(db), revisionQuery(db), facets(db) {}
+    bool prepare()
+    {
+        return assetQuery.prepare("INSERT INTO assets VALUES (?, ?, ?, ?, ?)") &&
+            revisionQuery.prepare("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?)") &&
+            facets.prepare("INSERT OR IGNORE INTO facets VALUES (?, ?, ?)");
+    }
+    bool insert(const CatalogAsset &asset)
+    {
+        assetQuery.bindValue(0, asset.id);
+        assetQuery.bindValue(1, asset.root);
+        assetQuery.bindValue(2, asset.name);
+        assetQuery.bindValue(3, asset.category);
+        assetQuery.bindValue(4, CatalogIndex::searchText(asset));
+        if (!assetQuery.exec()) return false;
+        for (auto it = asset.indexes.cbegin(); it != asset.indexes.cend(); ++it)
+            for (const auto &value : it.value())
+            {
+                facets.bindValue(0, asset.id);
+                facets.bindValue(1, it.key());
+                facets.bindValue(2, value.toCaseFolded());
+                if (!facets.exec()) return false;
+            }
+        for (const auto &revision : asset.snapshots)
+        {
+            revisionQuery.bindValue(0, asset.id);
+            revisionQuery.bindValue(1, revision.id);
+            revisionQuery.bindValue(2, revision.sequence);
+            revisionQuery.bindValue(3, revision.created.toString(Qt::ISODateWithMs));
+            revisionQuery.bindValue(4, revision.note);
+            revisionQuery.bindValue(5, revision.hash);
+            if (!revisionQuery.exec()) return false;
+        }
+        return true;
+    }
+};
 bool initialize(QSqlDatabase &db)
 {
     QSqlQuery query(db);
@@ -86,7 +126,10 @@ QString CatalogIndex::searchText(const CatalogAsset &asset)
 }
 bool CatalogIndex::matches(const CatalogAsset &asset, const QStringList &terms)
 {
-    const auto text = searchText(asset);
+    return matches(asset, terms, searchText(asset));
+}
+bool CatalogIndex::matches(const CatalogAsset &asset, const QStringList &terms, const QString &text)
+{
     for (const auto &term : terms)
     {
         const auto kind = indexKind(term);
@@ -138,13 +181,26 @@ QStringList CatalogIndex::queryTerms(const QString &query, QString *error)
 QString CatalogIndex::generation(const QList<CatalogAsset> &assets)
 {
     QCryptographicHash hash(QCryptographicHash::Sha256);
+    const auto add = [&](const QString &part)
+    {
+        const auto bytes = part.toUtf8();
+        hash.addData(QByteArray::number(bytes.size()) + ':' + bytes);
+    };
     for (const auto &asset : assets)
-        for (const auto &part : {asset.id, asset.root, asset.category, searchText(asset),
-                                QString::fromUtf8(QJsonDocument(asset.document.value("indexes").toObject()).toJson(QJsonDocument::Compact))})
+    {
+        for (const auto &part : {asset.id, asset.root, asset.name, asset.category, searchText(asset)}) add(part);
+        add(QString::number(asset.indexes.size()));
+        for (auto it = asset.indexes.cbegin(); it != asset.indexes.cend(); ++it)
         {
-            const auto bytes = part.toUtf8();
-            hash.addData(QByteArray::number(bytes.size()) + ':' + bytes);
+            add(it.key());
+            add(QString::number(it.value().size()));
+            for (const auto &value : it.value()) add(value);
         }
+        add(QString::number(asset.snapshots.size()));
+        for (const auto &revision : asset.snapshots)
+            for (const auto &part : {revision.id, QString::number(revision.sequence),
+                 revision.created.toString(Qt::ISODateWithMs), revision.note, revision.hash}) add(part);
+    }
     return QString::fromLatin1(hash.result().toHex());
 }
 bool CatalogIndex::rebuild(const QString &library, const QList<CatalogAsset> &assets)
@@ -177,45 +233,55 @@ bool CatalogIndex::rebuild(const QString &library, const QList<CatalogAsset> &as
         return false;
     if (!initialize(connection.db) || !connection.db.transaction())
         return false;
-    QSqlQuery assetQuery(connection.db), revisionQuery(connection.db), facets(connection.db), meta(connection.db);
-    if (!assetQuery.exec("DELETE FROM assets") || !revisionQuery.exec("DELETE FROM revisions") ||
-        !facets.exec("DELETE FROM facets") ||
-        !facets.prepare("INSERT OR IGNORE INTO facets VALUES (?, ?, ?)") ||
-        !assetQuery.prepare("INSERT INTO assets VALUES (?, ?, ?, ?, ?)") ||
-        !revisionQuery.prepare("INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?)"))
+    QSqlQuery meta(connection.db);
+    RowWriter writer(connection.db);
+    if (!meta.exec("DELETE FROM assets") || !meta.exec("DELETE FROM revisions") ||
+        !meta.exec("DELETE FROM facets") || !writer.prepare())
         return false;
     for (const auto &asset : assets)
-    {
-        assetQuery.bindValue(0, asset.id);
-        assetQuery.bindValue(1, asset.root);
-        assetQuery.bindValue(2, asset.name);
-        assetQuery.bindValue(3, asset.category);
-        assetQuery.bindValue(4, searchText(asset));
-        if (!assetQuery.exec())
-            return false;
-        for (auto it = asset.indexes.cbegin(); it != asset.indexes.cend(); ++it)
-            for (const auto &value : it.value())
-            {
-                facets.bindValue(0, asset.id);
-                facets.bindValue(1, it.key());
-                facets.bindValue(2, value.toCaseFolded());
-                if (!facets.exec()) return false;
-            }
-        for (const auto &revision : asset.snapshots)
-        {
-            revisionQuery.bindValue(0, asset.id);
-            revisionQuery.bindValue(1, revision.id);
-            revisionQuery.bindValue(2, revision.sequence);
-            revisionQuery.bindValue(3, revision.created.toString(Qt::ISODateWithMs));
-            revisionQuery.bindValue(4, revision.note);
-            revisionQuery.bindValue(5, revision.hash);
-            if (!revisionQuery.exec())
-                return false;
-        }
-    }
+        if (!writer.insert(asset)) return false;
     meta.prepare("INSERT OR REPLACE INTO meta VALUES ('generation', ?)");
     meta.addBindValue(generation(assets));
     return meta.exec() && connection.db.commit();
+}
+bool CatalogIndex::updateAsset(const QString &library, const CatalogAsset &asset,
+                               const QString &expectedGeneration, const QString &nextGeneration)
+{
+    return updateAssets(library, {asset}, expectedGeneration, nextGeneration);
+}
+bool CatalogIndex::updateAssets(const QString &library, const QList<CatalogAsset> &assets,
+                                const QString &expectedGeneration, const QString &nextGeneration)
+{
+    const auto target = path(library);
+    if (target.isEmpty() || !QFileInfo::exists(target)) return false;
+    try { ContentStore::safePath(target); } catch (const std::exception &) { return false; }
+    QLockFile lock(target + ".lock");
+    if (!lock.tryLock(0)) return false;
+    Connection connection;
+    if (!connection.open(target) || !connection.db.transaction()) return false;
+    QSqlQuery query(connection.db);
+    if (!query.exec("SELECT value FROM meta WHERE key='generation'") || !query.next() ||
+        query.value(0).toString() != expectedGeneration) return false;
+    query.finish();
+    // Patch only the known asset. A different/missing cache falls back to memory;
+    // never replace a newer catalog generation written by another browser.
+    RowWriter writer(connection.db);
+    if (!writer.prepare()) return false;
+    for (const auto &asset : assets)
+    {
+        for (const auto &statement : {"DELETE FROM assets WHERE id=?",
+                                      "DELETE FROM revisions WHERE asset_id=?",
+                                      "DELETE FROM facets WHERE asset_id=?"})
+        {
+            if (!query.prepare(statement)) return false;
+            query.addBindValue(asset.id);
+            if (!query.exec()) return false;
+        }
+        if (!writer.insert(asset)) return false;
+    }
+    if (!query.prepare("UPDATE meta SET value=? WHERE key='generation'")) return false;
+    query.addBindValue(nextGeneration);
+    return query.exec() && connection.db.commit();
 }
 std::optional<QSet<QString>> CatalogIndex::matchingRoots(const QString &library,
                                                        const QString &expected,

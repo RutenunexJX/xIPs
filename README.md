@@ -9,7 +9,7 @@ The interface uses Ela controls and shares ZeroSlack's compact panel layout. All
 1. Choose the catalog root once. Only explicitly created, registered or referenced entries appear; loose source files never become catalog entries automatically.
 2. Click **New IP**, choose IP or Module, and enter a name. This creates an empty working folder and catalog definition, with no HDL template or saved version. Empty entries persist across refreshes and restarts. Registering an existing file/folder inside the root is optional and also creates no version automatically.
 3. In **Working files**, use **Add files** or **Add folder**, or drag files and folders into the file area. Files are copied into this IP's working folder with their nested paths; external originals stay unchanged. Identical duplicates are skipped, and conflicting names are reported without overwriting existing files. Adding files does not create a version.
-4. Check the files to include. A folder checkbox selects its descendants; **All** selects or clears every file. Browsing a row does not change its checkbox. Checks survive refreshes and version switches, and missing files are removed from the selection. Click **Create version** (**Ctrl+S**), review the checked file list, and optionally add a note. Zero checked files cannot create a version. This explicit save creates **rev1**, followed by **rev2** and later versions; unchanged content creates no extra version unless joining parallel heads.
+4. Check the files to include. A folder checkbox selects its descendants; **All** selects or clears every file. Browsing a row does not change its checkbox. Checks survive refreshes and version switches, and missing files are removed from the selection. Click **Create version** (**Ctrl+S**), review the included files and the added, modified or omitted files compared with the previous version, and optionally add a note. Omitting a file from a version keeps its working copy. Zero checked files cannot create a version. This explicit save creates **rev1**, followed by **rev2** and later versions; unchanged content creates no extra version unless joining parallel heads.
 5. Use **Versions** to select a saved version, then **Copy to project** to copy exactly that version's files to a new destination. The copies are independently editable. Continue adding or editing working files and create another version without changing earlier versions.
 
 **Working files** and **Versions** are separate tabs. The version table contains only
@@ -17,6 +17,15 @@ saved snapshots, with **Version** and **Status: Archived** plus a lock. Double-c
 press **Enter**, or use its open action to edit the original working file or open a
 verified read-only copy of an archived file. Secondary actions remain visible as
 outline icons with tooltips; errors and operation progress appear when needed.
+
+Folder folding, the selected file and scroll position are remembered per IP and
+included in saved browser state. Saving a version or importing working files updates
+that IP and its local search index without rescanning the whole catalog. External
+edits and synchronized changes refresh automatically after a short pause. Returning
+to the window checks for missed changes in the background. **Rescan** remains available
+for an immediate full check.
+Refreshing other IPs leaves the current details intact. Refreshing the current IP
+keeps the selected archived version, file and scroll position while they remain available.
 
 Use **New group** beside **Groups** to create a group in the left tree. Drag an IP onto
 a group to add membership while retaining its existing groups. Right-click an IP to
@@ -149,7 +158,11 @@ Only payload is exported; internal manifests and revisions are not copied to the
 Unrecognized staging directories, retained deletions, and orphaned revision payloads are reported by path.
 Shared objects are retained after deletion; there is no automatic garbage collection,
 object packing, or built-in cloud synchronization service.
-Use Rescan after external or synchronized-folder changes.
+External file/metadata changes are coalesced before refreshing affected IPs; new
+definitions and groups trigger a catalog check. Updates wait while a modal editor
+or catalog operation is active, and incomplete sync writes are retried before errors
+are displayed. Search uses cached in-memory fields and preserves surviving tree nodes
+as filters change. Use **Rescan** to force a full check.
 
 ## ZeroSlack
 

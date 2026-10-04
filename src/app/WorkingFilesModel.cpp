@@ -37,7 +37,7 @@ void WorkingFilesModel::updateParents()
         folder->setCheckState(checked ? (unchecked ? Qt::PartiallyChecked : Qt::Checked) : Qt::Unchecked);
     }
 }
-void WorkingFilesModel::setFiles(const QStringList &files, const QSet<QString> &checked, bool editable)
+bool WorkingFilesModel::setFiles(const QStringList &files, const QSet<QString> &checked, bool editable)
 {
     const QScopedValueRollback<bool> guard(m_updating, true);
     auto sorted = files;
@@ -55,14 +55,13 @@ void WorkingFilesModel::setFiles(const QStringList &files, const QSet<QString> &
                 changed = true;
             }
         if (changed) updateParents();
-        return;
+        return false;
     }
     m_paths = sorted;
     m_editable = editable;
-    m_files.clear(); m_folders.clear();
+    m_files.clear(); m_folders.clear(); m_folderItems.clear();
     clear();
     setHorizontalHeaderLabels({QStringLiteral("Working files")});
-    QHash<QString, QStandardItem *> folders;
     for (const auto &relative : sorted)
     {
         auto *parent = invisibleRootItem();
@@ -73,7 +72,7 @@ void WorkingFilesModel::setFiles(const QStringList &files, const QSet<QString> &
             if (!path.isEmpty()) path += '/';
             path += parts[part];
             const bool file = part == parts.size() - 1;
-            auto *item = file ? nullptr : folders.value(path);
+            auto *item = file ? nullptr : m_folderItems.value(path);
             if (!item)
             {
                 item = new QStandardItem(uiIcon(file ? UiIcon::File : UiIcon::Folder), parts[part]);
@@ -84,12 +83,13 @@ void WorkingFilesModel::setFiles(const QStringList &files, const QSet<QString> &
                 if (editable) item->setCheckState(file && checked.contains(path) ? Qt::Checked : Qt::Unchecked);
                 parent->appendRow(item);
                 if (file) m_files.insert(path, item);
-                else { folders.insert(path, item); m_folders.append(item); }
+                else { m_folderItems.insert(path, item); m_folders.append(item); }
             }
             parent = item;
         }
     }
     if (editable) updateParents();
+    return true;
 }
 void WorkingFilesModel::checkAll(bool checked)
 {
@@ -111,6 +111,11 @@ QStringList WorkingFilesModel::checkedFiles() const
 QModelIndex WorkingFilesModel::fileIndex(const QString &relative) const
 {
     const auto *item = m_files.value(relative);
+    return item ? item->index() : QModelIndex();
+}
+QModelIndex WorkingFilesModel::pathIndex(const QString &relative) const
+{
+    const auto *item = m_files.value(relative, m_folderItems.value(relative));
     return item ? item->index() : QModelIndex();
 }
 }

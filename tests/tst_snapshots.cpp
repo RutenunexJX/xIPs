@@ -7,6 +7,8 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QLockFile>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QtTest>
 #include <QUuid>
@@ -51,6 +53,7 @@ class SnapshotTest : public QObject
     void sourceHistorySurvivesRelocationAndMissingOriginal();
     void partialSyncAndConcurrentRevisionsAreSafe();
     void localIndexCanBeRebuilt();
+    void localIndexUpdatesOnlyOneAssetAndRejectsStaleWriters();
     void catalogDefinitionsSupportMultipleIndexes();
     void referencesPinOneDefinitionAcrossLibrariesAndProjects();
     void groupsPersistWithoutChangingSourcesOrHistory();
@@ -503,6 +506,78 @@ void SnapshotTest::localIndexCanBeRebuilt()
     QVERIFY(matches.has_value());
     QCOMPARE(matches->size(), 1);
     QCOMPARE(QDir(library).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot), QStringList({".xips", "uart.sv"}));
+}
+void SnapshotTest::localIndexUpdatesOnlyOneAssetAndRejectsStaleWriters()
+{
+    QTemporaryDir tmp;
+    const auto oldCache = qgetenv("XIPS_TEST_CACHE_ROOT");
+    const bool hadCache = qEnvironmentVariableIsSet("XIPS_TEST_CACHE_ROOT");
+    const auto restore = qScopeGuard([&]
+    {
+        if (hadCache) qputenv("XIPS_TEST_CACHE_ROOT", oldCache); else qunsetenv("XIPS_TEST_CACHE_ROOT");
+    });
+    qputenv("XIPS_TEST_CACHE_ROOT", tmp.filePath("cache").toUtf8());
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition; definition.name = "alpha";
+    const auto first = savedCatalogFixture(library, definition); QVERIFY(first.ok);
+    definition.name = "beta";
+    const auto second = savedCatalogFixture(library, definition); QVERIFY(second.ok);
+    auto assets = SnapshotLibrary::scan(library).assets;
+    const auto before = CatalogIndex::generation(assets);
+    const auto path = CatalogIndex::path(library);
+    const auto connection = QUuid::createUuid().toString();
+    {
+        auto db = QSqlDatabase::addDatabase("QSQLITE", connection); db.setDatabaseName(path); QVERIFY(db.open());
+        QSqlQuery query(db);
+        // Fail any implementation that replaces unrelated rows during an update.
+        for (const auto &table : {QString("assets"), QString("facets"), QString("revisions")})
+            QVERIFY(query.exec(QString("CREATE TRIGGER keep_%1 BEFORE DELETE ON %1 WHEN OLD.%2='%3' "
+                "BEGIN SELECT RAISE(ABORT, 'unrelated asset touched'); END")
+                .arg(table, table == "assets" ? "id" : "asset_id", second.asset.id)));
+    }
+    QSqlDatabase::removeDatabase(connection);
+    put(first.asset.root + "/added.sv", "new file");
+    const auto changed = SnapshotLibrary::saveCurrent(first.asset, "new revision"); QVERIFY(changed.ok);
+    for (auto &asset : assets) if (asset.id == first.asset.id) asset = changed.asset;
+    const auto after = CatalogIndex::generation(assets);
+    QVERIFY(before != after);
+    QVERIFY(CatalogIndex::updateAsset(library, changed.asset, before, after));
+    const auto all = CatalogIndex::matchingRoots(library, after, {}, {});
+    QVERIFY(all.has_value()); QCOMPARE(all->size(), 2);
+    const auto added = CatalogIndex::matchingRoots(library, after, {}, {"added.sv"});
+    QVERIFY(added.has_value()); QCOMPARE(*added, QSet<QString>{changed.asset.root});
+    QVERIFY(!CatalogIndex::updateAsset(library, first.asset, before, "stale"));
+    QVERIFY(CatalogIndex::matchingRoots(library, after, {}, {}).has_value());
+    // A same-path content revision must also change the cache generation.
+    put(first.asset.root + "/added.sv", "changed contents");
+    const auto newer = SnapshotLibrary::saveCurrent(changed.asset); QVERIFY(newer.ok);
+    for (auto &asset : assets) if (asset.id == first.asset.id) asset = newer.asset;
+    const auto newest = CatalogIndex::generation(assets); QVERIFY(newest != after);
+    QLockFile lock(path + ".lock"); QVERIFY(lock.tryLock(0));
+    QVERIFY(!CatalogIndex::updateAsset(library, newer.asset, after, newest));
+    lock.unlock();
+    QVERIFY(CatalogIndex::updateAsset(library, newer.asset, after, newest));
+    // One failing row must roll back an entire coalesced external refresh.
+    auto batch = assets;
+    for (auto &asset : batch) asset.description = "batch-only change";
+    const auto batchGeneration = CatalogIndex::generation(batch);
+    QVERIFY(!CatalogIndex::updateAssets(library, batch, newest, batchGeneration));
+    const auto rolledBack = CatalogIndex::matchingRoots(library, newest, {}, {"batch-only"});
+    QVERIFY(rolledBack.has_value()); QVERIFY(rolledBack->isEmpty());
+    {
+        auto db = QSqlDatabase::addDatabase("QSQLITE", connection); db.setDatabaseName(path); QVERIFY(db.open());
+        QSqlQuery query(db);
+        for (const auto &table : {QString("assets"), QString("facets"), QString("revisions")})
+            QVERIFY(query.exec("DROP TRIGGER keep_" + table));
+    }
+    QSqlDatabase::removeDatabase(connection);
+    QVERIFY(CatalogIndex::updateAssets(library, batch, newest, batchGeneration));
+    const auto combined = CatalogIndex::matchingRoots(library, batchGeneration, {}, {"batch-only"});
+    QVERIFY(combined.has_value()); QCOMPARE(combined->size(), 2);
+    QVERIFY(QFile::remove(path));
+    QVERIFY(!CatalogIndex::updateAsset(library, newer.asset, newest, newest));
+    QVERIFY(!QFileInfo::exists(path));
 }
 void SnapshotTest::catalogDefinitionsSupportMultipleIndexes()
 {

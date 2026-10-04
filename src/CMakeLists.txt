@@ -40,6 +40,8 @@ add_library(xips_app STATIC
     app/MainWindow.h
     app/CatalogModel.cpp
     app/CatalogModel.h
+    app/CatalogWatcher.cpp
+    app/CatalogWatcher.h
     app/UiSupport.cpp
     app/UiSupport.h
     app/WorkingFilesModel.cpp

@@ -1,5 +1,6 @@
 #include "BrowserPanel.h"
 #include "CatalogModel.h"
+#include "CatalogWatcher.h"
 #include "WorkingFilesModel.h"
 #include "library/CatalogIndex.h"
 #include "library/OperationControl.h"
@@ -41,6 +42,8 @@
 #include <QResizeEvent>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QScrollBar>
+#include <QScopedValueRollback>
 #include <QShortcut>
 #include <QStandardPaths>
 #include <QStandardItemModel>
@@ -58,6 +61,20 @@ namespace xips
 {
 namespace
 {
+struct CatalogReload
+{
+    CatalogResult catalog;
+    bool full = true;
+    CatalogWatcher::Plan watches;
+    QHash<QString, CatalogWatcher::Plan> assetWatches;
+};
+bool sameAssetView(const CatalogAsset &a, const CatalogAsset &b)
+{
+    return a.id == b.id && a.root == b.root && a.document == b.document &&
+        a.historyIncomplete == b.historyIncomplete && a.sourceProblem == b.sourceProblem &&
+        a.problems == b.problems && a.workingFiles == b.workingFiles &&
+        CatalogIndex::generation({a}) == CatalogIndex::generation({b});
+}
 QFont uiFont(int pixelSize = 13)
 {
     QFont result(QStringLiteral("Segoe UI"));
@@ -281,7 +298,7 @@ void previewContents(Form &form, const PayloadPreview &preview, bool exporting =
     section(QStringLiteral("Included files"), preview.files);
     section(QStringLiteral("Added"), preview.added);
     section(QStringLiteral("Modified"), preview.modified);
-    section(QStringLiteral("Removed"), preview.removed);
+    section(QStringLiteral("Not included in this version (working files are kept)"), preview.removed);
     section(QStringLiteral("Excluded paths and reasons"), preview.excluded);
     if (preview.heads.size() > 1)
     {
@@ -871,7 +888,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     m_progressTimer->setInterval(120);
     connect(m_progressTimer, &QTimer::timeout, this, [this]
     {
-        if (!m_busy || !m_operation) return;
+        if (!m_busy || !m_operation || m_backgroundRefresh) return;
         const auto status = m_operation->status();
         if (!status.isEmpty() && m_operation->state.load() != OperationControl::CancelRequested) notice(status);
         m_cancel->setEnabled(m_operation->state.load() == OperationControl::Running);
@@ -889,6 +906,16 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     connect(m_workingModel, &WorkingFilesModel::checkedFilesChanged, this, &BrowserPanel::rememberChecks);
     connect(m_checkAll, &QCheckBox::clicked, this, [this](bool checked) { m_workingModel->checkAll(checked); });
     connect(m_workingFiles->selectionModel(), &QItemSelectionModel::currentChanged, this, [this] { updateActions(); });
+    connect(m_workingFiles, &QTreeView::collapsed, this, [this](const QModelIndex &index)
+    {
+        if (!m_restoringWorkingView && !m_displayedAsset.isEmpty())
+            m_workingViews[m_displayedAsset].collapsed.insert(index.data(Qt::UserRole).toString());
+    });
+    connect(m_workingFiles, &QTreeView::expanded, this, [this](const QModelIndex &index)
+    {
+        if (!m_restoringWorkingView && !m_displayedAsset.isEmpty())
+            m_workingViews[m_displayedAsset].collapsed.remove(index.data(Qt::UserRole).toString());
+    });
     connect(m_workingFiles, &QAbstractItemView::doubleClicked, this, [this] { openFile(); });
     connect(m_openWorking, &QToolButton::clicked, this, &BrowserPanel::openFile);
     connect(m_addFiles, &QToolButton::clicked, this, [this]
@@ -996,6 +1023,14 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
         (m_splitter->orientation() == Qt::Horizontal ? m_horizontalRatio : m_verticalRatio) = splitRatio();
     });
     connect(eTheme, &ElaTheme::themeModeChanged, this, [this] { applyTheme(); });
+    m_catalogWatcher = new CatalogWatcher(this);
+    connect(m_catalogWatcher, &CatalogWatcher::refreshRequested, this,
+        [this](bool full, const QStringList &ids) { refreshCatalog(true, full, ids); });
+    connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state)
+    {
+        if (state == Qt::ApplicationActive && isVisible() && m_contextInitialized && !m_library.isEmpty())
+            m_catalogWatcher->checkNow();
+    });
     adaptEmbeddedLayout();
     applyTheme();
     setBusy(false);
@@ -1141,6 +1176,7 @@ void BrowserPanel::showEvent(QShowEvent *event)
     QWidget::showEvent(event);
     restoreSplit();
     updateActivity();
+    if (m_contextInitialized && !m_busy && !m_library.isEmpty()) m_catalogWatcher->checkNow();
 }
 void BrowserPanel::hideEvent(QHideEvent *event)
 {
@@ -1209,6 +1245,8 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
     m_workspace = workspace;
     m_take->setToolTip(QStringLiteral("Copy the selected version's source files to a destination you choose; creates an independent copy"));
     if (sameLibrary) return;
+    rememberWorkingView();
+    m_catalogWatcher->clear();
     m_library = path;
     m_pendingId.clear();
     m_pendingRevision.clear();
@@ -1245,10 +1283,8 @@ void BrowserPanel::importWorkingFiles(const QStringList &paths)
     run(QStringLiteral("Adding files…"), [asset, paths] { return SnapshotLibrary::importFiles(asset, paths); },
         [this](const auto &result)
     {
-        m_pendingId = result.asset.id;
-        m_pendingRevision = QStringLiteral("current");
-        refresh();
-    });
+        applyAssetResult(result, QStringLiteral("current"));
+    }, true);
 }
 bool BrowserPanel::applyPendingContext()
 {
@@ -1264,11 +1300,19 @@ bool BrowserPanel::applyPendingContext()
 }
 void BrowserPanel::refresh()
 {
-    if (m_busy)
+    refreshCatalog(false);
+}
+void BrowserPanel::refreshCatalog(bool automatic, bool full, const QStringList &ids, int attempt)
+{
+    if (automatic && (m_busy || m_loadingDetails || !isVisible() || QApplication::activeModalWidget()))
+    {
+        m_catalogWatcher->queue(full, ids);
         return;
+    }
+    if (m_busy) return;
     if (m_library.isEmpty())
     {
-        notice(QStringLiteral("Choose a catalog folder, then create an IP or module."));
+        if (!automatic) notice(QStringLiteral("Choose a catalog folder, then create an IP or module."));
         return;
     }
     const QString library = m_library,
@@ -1276,42 +1320,138 @@ void BrowserPanel::refresh()
     ++m_generation;
     m_pendingDetail.reset();
     m_loadingDetails = false;
+    m_backgroundRefresh = automatic;
     beginOperation();
     const auto operation = m_operation;
-    setBusy(true, QStringLiteral("Scanning folder…"));
-    auto *watcher = new QFutureWatcher<CatalogResult>(this);
-    connect(watcher, &QFutureWatcher<CatalogResult>::finished, this,
-            [this, watcher, selectedId]
+    setBusy(true, automatic ? QStringLiteral("Updating changed files…") : QStringLiteral("Scanning folder…"));
+    auto *watcher = new QFutureWatcher<CatalogReload>(this);
+    connect(watcher, &QFutureWatcher<CatalogReload>::finished, this,
+            [this, watcher, selectedId, automatic, full, ids, attempt, library]
             {
-                const auto result = watcher->result();
+                const auto reload = watcher->result();
+                const auto &result = reload.catalog;
                 watcher->deleteLater();
                 if (result.cancelled)
                 {
                     setBusy(false);
+                    m_backgroundRefresh = false;
                     notice(QStringLiteral("Scan cancelled. The previous catalog is still available."));
                     applyPendingContext();
                     return;
                 }
-                m_assets = result.assets;
-                m_model->setAssets(m_assets, m_library, result.groups);
-                refreshIndexes();
-                m_problems = result.problems;
-                if (m_pendingId.isEmpty())
-                    m_pendingId = selectedId;
-                m_selected = {};
+                if (automatic && !result.problems.isEmpty() && attempt < 2)
+                {
+                    setBusy(false);
+                    m_backgroundRefresh = false;
+                    if (applyPendingContext()) return;
+                    QTimer::singleShot(900, this, [this, library, full, ids, attempt]
+                    { if (m_library == library) refreshCatalog(true, full, ids, attempt + 1); });
+                    return;
+                }
+                const auto currentId = automatic ? m_selected.id : selectedId;
+                bool changed = false, indexesChanged = false, reset = false, selectedChanged = false;
+                if (reload.full)
+                {
+                    m_catalogWatcher->install(reload.watches);
+                    bool sameStructure = m_assets.size() == result.assets.size() && m_model->groups() == result.groups;
+                    for (int i = 0; sameStructure && i < m_assets.size(); ++i)
+                        sameStructure = m_assets[i].id == result.assets[i].id && m_assets[i].root == result.assets[i].root &&
+                            m_assets[i].name == result.assets[i].name;
+                    if (!sameStructure || !automatic)
+                    {
+                        const auto oldSelection = std::find_if(m_assets.cbegin(), m_assets.cend(),
+                            [&](const auto &asset) { return asset.id == currentId; });
+                        const auto newSelection = std::find_if(result.assets.cbegin(), result.assets.cend(),
+                            [&](const auto &asset) { return asset.id == currentId; });
+                        selectedChanged = oldSelection != m_assets.cend() &&
+                            (newSelection == result.assets.cend() || !sameAssetView(*oldSelection, *newSelection));
+                        m_assets = result.assets;
+                        m_model->setAssets(m_assets, m_library, result.groups);
+                        changed = indexesChanged = reset = true;
+                    }
+                    m_problems = result.problems;
+                }
+                if (!reload.full) m_catalogWatcher->updateAssets(reload.assetWatches);
+                QHash<QString, int> positions;
+                if (!reset) for (int i = 0; i < m_assets.size(); ++i) positions.insert(m_assets[i].id, i);
+                bool reorder = false;
+                if (!reset) for (const auto &asset : result.assets)
+                {
+                    const int row = positions.value(asset.id, -1);
+                    if (row >= 0)
+                    {
+                        auto &current = m_assets[row];
+                        if (!sameAssetView(current, asset))
+                        {
+                            selectedChanged |= asset.id == currentId;
+                            indexesChanged |= current.indexes != asset.indexes;
+                            if (!reload.full)
+                            {
+                                for (const auto &problem : current.problems) m_problems.removeAll(problem);
+                                m_problems.append(asset.problems);
+                            }
+                            current = asset;
+                            reorder |= !m_model->updateAsset(asset);
+                            changed = true;
+                        }
+                    }
+                }
+                if (reorder)
+                {
+                    std::sort(m_assets.begin(), m_assets.end(), [](const auto &a, const auto &b)
+                        { return a.name.localeAwareCompare(b.name) < 0; });
+                    m_model->setAssets(m_assets, m_library, m_model->groups());
+                }
+                if (indexesChanged) refreshIndexes();
+                if (changed)
+                {
+                    if (m_pendingId.isEmpty()) m_pendingId = currentId;
+                    if (!automatic || selectedChanged) m_selected = {};
+                }
                 setBusy(false);
+                m_backgroundRefresh = false;
                 if (applyPendingContext())
                     return;
-                filter();
-                if (!m_problems.isEmpty())
+                if (changed) filter();
+                if (!m_problems.isEmpty() && (!automatic || !m_noticeError))
                     notice(QStringLiteral("%1 issues found. Select Issues for details.")
                                .arg(m_problems.size()),
                            true);
-                else
+                else if (!automatic)
                     notice({});
             });
-    watcher->setFuture(QtConcurrent::run([library, operation]
-        { OperationScope scope(operation.get()); return SnapshotLibrary::scan(library); }));
+    watcher->setFuture(QtConcurrent::run([library, operation, full, ids, attempt, assets = m_assets]() mutable
+    {
+        OperationScope scope(operation.get());
+        CatalogReload reload; reload.full = full;
+        if (!full)
+        {
+            const auto generation = CatalogIndex::generation(assets);
+            QList<CatalogAsset> updates;
+            for (auto &asset : assets)
+                if (ids.contains(asset.id))
+                {
+                    const auto result = SnapshotLibrary::describe(asset);
+                    if (result.cancelled) { reload.catalog.cancelled = true; return reload; }
+                    if (!result.ok) { reload.catalog.problems.append(result.error); continue; }
+                    reload.catalog.problems.append(result.asset.problems);
+                    reload.assetWatches.insert(asset.id, CatalogWatcher::assetPlan(result.asset));
+                    if (!sameAssetView(asset, result.asset))
+                    {
+                        asset = result.asset;
+                        updates.append(asset);
+                    }
+                    reload.catalog.assets.append(asset);
+                }
+            if (reload.catalog.problems.isEmpty() && !updates.isEmpty())
+                CatalogIndex::updateAssets(library, updates, generation, CatalogIndex::generation(assets));
+            if (reload.catalog.problems.isEmpty() || attempt < 2) return reload;
+            reload.full = true;
+        }
+        reload.catalog = SnapshotLibrary::scan(library);
+        if (!reload.catalog.cancelled) reload.watches = CatalogWatcher::plan(library, reload.catalog.assets);
+        return reload;
+    }));
 }
 void BrowserPanel::filter()
 {
@@ -1476,6 +1616,8 @@ void BrowserPanel::readLegacyDetails(const CatalogAsset &asset)
 }
 void BrowserPanel::showDetails(const CatalogAsset &asset)
 {
+    rememberWorkingView();
+    const QScopedValueRollback<bool> restoring(m_restoringWorkingView, true);
     const auto previousRevision = m_snapshot.id;
     const bool sameAsset = m_displayedAsset == m_library + '\n' + asset.id;
     const auto requestedRevision = m_pendingRevision;
@@ -1547,9 +1689,20 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
             if (snapshot.id == "working") files = snapshot.files;
     auto checked = m_checkedFiles.value(workingKey());
     checked.intersect(QSet<QString>(files.cbegin(), files.cend()));
-    m_workingModel->setFiles(files, checked, asset.discovered && asset.referencePath.isEmpty());
-    m_workingFiles->expandAll();
-    ElaTreeView::finishExpansion(m_workingFiles);
+    const bool rebuilt = m_workingModel->setFiles(files, checked, asset.discovered && asset.referencePath.isEmpty());
+    auto &viewState = m_workingViews[m_displayedAsset];
+    if (rebuilt || !sameAsset)
+    {
+        m_workingFiles->expandAll();
+        for (auto it = viewState.collapsed.begin(); it != viewState.collapsed.end();)
+        {
+            const auto folder = m_workingModel->pathIndex(*it);
+            if (!folder.isValid()) it = viewState.collapsed.erase(it);
+            else { m_workingFiles->collapse(folder); ++it; }
+        }
+        ElaTreeView::finishExpansion(m_workingFiles);
+    }
+    m_workingFiles->setCurrentIndex(m_workingModel->pathIndex(viewState.selectedPath));
     rememberChecks();
     const bool hasWorking = (asset.discovered || asset.legacy) && asset.referencePath.isEmpty();
     m_pages->setTabVisible(0, hasWorking);
@@ -1561,6 +1714,29 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
         m_pages->setCurrentIndex(m_pendingPage == 0 && hasWorking ? 0 : 1);
     m_pendingPage = -1;
     selectVersion();
+    const auto restoreScroll = [this, key = m_displayedAsset, generation = m_generation,
+                                horizontal = viewState.horizontal, vertical = viewState.vertical]
+    {
+        if (key != m_displayedAsset || generation != m_generation) return;
+        m_workingFiles->doItemsLayout();
+        m_workingFiles->horizontalScrollBar()->setValue(horizontal);
+        m_workingFiles->verticalScrollBar()->setValue(vertical);
+    };
+    restoreScroll();
+    QTimer::singleShot(0, this, restoreScroll);
+}
+BrowserPanel::WorkingViewState BrowserPanel::captureWorkingView() const
+{
+    auto state = m_workingViews.value(m_displayedAsset);
+    state.selectedPath = m_workingFiles->currentIndex().data(Qt::UserRole).toString();
+    state.horizontal = m_workingFiles->horizontalScrollBar()->value();
+    state.vertical = m_workingFiles->verticalScrollBar()->value();
+    return state;
+}
+void BrowserPanel::rememberWorkingView()
+{
+    if (!m_restoringWorkingView && !m_displayedAsset.isEmpty())
+        m_workingViews.insert(m_displayedAsset, captureWorkingView());
 }
 QString BrowserPanel::workingKey() const
 {
@@ -1579,6 +1755,9 @@ void BrowserPanel::rememberChecks()
 }
 void BrowserPanel::selectVersion()
 {
+    const auto selectedFile = m_files->currentIndex().data().toString();
+    const int horizontal = m_files->horizontalScrollBar()->value();
+    const int vertical = m_files->verticalScrollBar()->value();
     m_snapshot = {};
     for (const auto &snapshot : m_selected.snapshots)
         if (snapshot.id == m_versions->currentIndex().data(Qt::UserRole).toString())
@@ -1586,14 +1765,30 @@ void BrowserPanel::selectVersion()
     const bool editing = m_snapshot.id == "current" || (m_selected.legacy && m_snapshot.id == "working");
     m_fileHeading->setToolTip(editing ? QStringLiteral("Working files · Editable")
                                    : versionText(m_selected, m_snapshot) + QStringLiteral(" · Read-only"));
-    m_fileModel->setStringList(m_snapshot.files);
-    if (m_fileModel->rowCount() > 0) m_files->setCurrentIndex(m_fileModel->index(0));
+    const auto revisionKey = workingKey() + '\n' + m_snapshot.id;
+    const bool sameRevision = revisionKey == m_displayedRevision;
+    m_displayedRevision = revisionKey;
+    if (m_fileModel->stringList() != m_snapshot.files) m_fileModel->setStringList(m_snapshot.files);
+    const int row = sameRevision ? m_snapshot.files.indexOf(selectedFile) : -1;
+    const auto selected = m_fileModel->index(row >= 0 ? row : 0);
+    if (m_files->currentIndex() != selected) m_files->setCurrentIndex(selected);
     m_files->setToolTip(m_snapshot.id == "current" || m_snapshot.id == "working"
         ? QStringLiteral("Double-click or press Enter to open the original file")
         : QStringLiteral("Double-click or press Enter to open a read-only copy of this revision"));
     m_files->setMaximumHeight(qMax(1, qMin(1000, int(m_snapshot.files.size()))) * 28);
     m_fileSection->setMaximumHeight(m_files->maximumHeight() + 36);
     updateActions();
+    const auto restoreScroll = [this, revisionKey, generation = m_generation,
+                                horizontal = sameRevision ? horizontal : 0,
+                                vertical = sameRevision ? vertical : 0]
+    {
+        if (revisionKey != m_displayedRevision || generation != m_generation) return;
+        m_files->doItemsLayout();
+        m_files->horizontalScrollBar()->setValue(horizontal);
+        m_files->verticalScrollBar()->setValue(vertical);
+    };
+    restoreScroll();
+    if (sameRevision) QTimer::singleShot(0, this, restoreScroll);
 }
 void BrowserPanel::setBusy(bool value, const QString &message)
 {
@@ -1614,7 +1809,7 @@ void BrowserPanel::setBusy(bool value, const QString &message)
     m_cancel->setEnabled(value && bool(m_operation));
     if (value && m_operation) m_progressTimer->start();
     else { m_progressTimer->stop(); if (!value) m_operation.reset(); }
-    if (!message.isEmpty() || !value)
+    if (!m_backgroundRefresh && (!message.isEmpty() || !value))
         notice(message);
     updateActivity();
     updateActions();
@@ -1639,7 +1834,7 @@ void BrowserPanel::notice(const QString &message, bool error)
     applyTheme();
 }
 void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> work,
-                       std::function<void(const SnapshotResult &)> finished)
+                       std::function<void(const SnapshotResult &)> finished, bool updateCatalog)
 {
     if (m_busy)
         return;
@@ -1649,12 +1844,15 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
     beginOperation();
     const auto operation = m_operation;
     setBusy(true, message);
+    const auto watchPlan = std::make_shared<CatalogWatcher::Plan>();
     auto *watcher = new QFutureWatcher<SnapshotResult>(this);
     connect(watcher, &QFutureWatcher<SnapshotResult>::finished, this,
-            [this, watcher, finished]
+            [this, watcher, finished, updateCatalog, watchPlan]
             {
                 const auto result = watcher->result();
                 watcher->deleteLater();
+                if (updateCatalog && result.ok && !result.cancelled)
+                    m_catalogWatcher->updateAsset(result.asset.id, *watchPlan);
                 setBusy(false);
                 if (result.cancelled)
                 {
@@ -1687,8 +1885,47 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
                 }
                 applyPendingContext();
             });
-    watcher->setFuture(QtConcurrent::run([work = std::move(work), operation]
-        { OperationScope scope(operation.get()); return work(); }));
+    watcher->setFuture(QtConcurrent::run([work = std::move(work), operation, updateCatalog, watchPlan,
+        library = m_library, assets = updateCatalog ? m_assets : QList<CatalogAsset>{}]() mutable
+    {
+        OperationScope scope(operation.get());
+        auto result = work();
+        if (updateCatalog && result.ok && !result.cancelled)
+        {
+            *watchPlan = CatalogWatcher::assetPlan(result.asset);
+            const auto previous = CatalogIndex::generation(assets);
+            for (auto &asset : assets)
+                if (asset.id == result.asset.id && asset.root == result.asset.root)
+                {
+                    asset = result.asset;
+                    CatalogIndex::updateAsset(library, asset, previous, CatalogIndex::generation(assets));
+                    break;
+                }
+        }
+        return result;
+    }));
+}
+void BrowserPanel::applyAssetResult(const SnapshotResult &result, const QString &revision)
+{
+    if (m_pendingContext && m_pendingContext->first != m_library)
+    {
+        applyPendingContext();
+        return;
+    }
+    m_pendingId = result.asset.id;
+    m_pendingRevision = revision;
+    bool updated = false;
+    for (auto &asset : m_assets)
+        if (asset.id == result.asset.id && asset.root == result.asset.root)
+        {
+            asset = result.asset;
+            updated = m_model->updateAsset(asset);
+            break;
+        }
+    m_selected = {};
+    if (applyPendingContext()) return;
+    if (updated) filter();
+    else refresh();
 }
 void BrowserPanel::chooseLibrary()
 {
@@ -2100,23 +2337,7 @@ void BrowserPanel::savePrepared(const SnapshotResult &prepared, const QStringLis
     Form form(this, QStringLiteral("Create version · %1").arg(asset.name), expected.heads.size() > 1
         ? QStringLiteral("Adopt reviewed files") : QStringLiteral("Create version"));
     form.setObjectName("payloadReviewForm");
-    if (asset.discovered)
-    {
-        form.message(QStringLiteral("%1 checked files").arg(expected.files.size()));
-        auto *files = new EnglishPlainTextEdit(&form);
-        files->setObjectName("payloadPreview");
-        files->setReadOnly(true);
-        files->setPlainText(expected.files.join('\n'));
-        files->setMinimumSize(360, 120);
-        form.body->addWidget(files);
-        if (expected.heads.size() > 1)
-        {
-            form.setMinimumWidth(520);
-            files->appendPlainText(QStringLiteral("\n%1 parallel revision heads\n%2\nAdopts these files with all heads as parents; source text is not merged.")
-                .arg(expected.heads.size()).arg(expected.heads.join('\n')));
-        }
-    }
-    else previewContents(form, expected);
+    previewContents(form, expected);
     auto *note = new EnglishLineEdit(&form);
     note->setObjectName("revisionNote");
     note->setPlaceholderText(QStringLiteral("Note (optional), e.g. verified on board"));
@@ -2131,17 +2352,10 @@ void BrowserPanel::savePrepared(const SnapshotResult &prepared, const QStringLis
             : SnapshotLibrary::update(asset, paths, text, &expected); },
         [this](const auto &result)
         {
-            m_pendingRevision = result.snapshot.id;
-            showDetails(result.asset);
+            applyAssetResult(result, result.snapshot.id);
             if (result.unchanged)
                 notice(QStringLiteral("Content unchanged. No revision created."));
-            else
-            {
-                m_pendingId = result.asset.id;
-                m_pendingRevision = result.snapshot.id;
-                refresh();
-            }
-        });
+        }, true);
 }
 void BrowserPanel::exportAsset()
 {
@@ -2521,7 +2735,15 @@ QVariantMap BrowserPanel::saveState() const
     const auto prefix = m_library + '\n';
     for (auto it = m_checkedFiles.cbegin(); it != m_checkedFiles.cend(); ++it)
         if (it.key().startsWith(prefix)) checked.insert(it.key().mid(prefix.size()), QStringList(it.value().values()));
-    return {{"library", m_library}, {"workingChecks", checked}, {"page", m_pages->currentIndex()},
+    auto views = m_workingViews;
+    if (!m_displayedAsset.isEmpty()) views.insert(m_displayedAsset, captureWorkingView());
+    QVariantMap workingViews;
+    for (auto it = views.cbegin(); it != views.cend(); ++it)
+        if (it.key().startsWith(prefix))
+            workingViews.insert(it.key().mid(prefix.size()), QVariantMap{
+                {"collapsed", QStringList(it->collapsed.values())}, {"selected", it->selectedPath},
+                {"horizontal", it->horizontal}, {"vertical", it->vertical}});
+    return {{"library", m_library}, {"workingChecks", checked}, {"workingViews", workingViews}, {"page", m_pages->currentIndex()},
             {"query", m_search->text()},
             {"category", m_category},
             {"index", m_indexTerm},
@@ -2541,6 +2763,25 @@ void BrowserPanel::restoreState(const QVariantMap &state)
     if (!library.isEmpty() && library != (m_pendingContext ? m_pendingContext->first : m_library))
         setContext(library, m_pendingContext ? m_pendingContext->second : m_workspace);
     if (m_busy) { m_pendingState = state; return; }
+    rememberWorkingView();
+    const QScopedValueRollback<bool> restoring(m_restoringWorkingView, true);
+    if (state.contains("workingViews"))
+    {
+        const auto prefix = m_library + '\n';
+        for (auto it = m_workingViews.begin(); it != m_workingViews.end();)
+            if (it.key().startsWith(prefix)) it = m_workingViews.erase(it); else ++it;
+        const auto views = state.value("workingViews").toMap();
+        for (auto it = views.cbegin(); it != views.cend(); ++it)
+        {
+            const auto view = it.value().toMap();
+            const auto collapsed = view.value("collapsed").toStringList();
+            m_workingViews.insert(prefix + it.key(), {
+                QSet<QString>(collapsed.cbegin(), collapsed.cend()), view.value("selected").toString(),
+                qMax(0, view.value("horizontal").toInt()), qMax(0, view.value("vertical").toInt())});
+        }
+        // Apply supplied expansion state even when the same model stays alive.
+        m_displayedAsset.clear();
+    }
     if (state.contains("workingChecks"))
     {
         const auto prefix = m_library + '\n';

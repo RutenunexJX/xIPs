@@ -15,7 +15,7 @@ namespace xips
 const CatalogModel::Node *CatalogModel::node(const QModelIndex &index) const
 {
     const auto id = index.internalId();
-    return index.isValid() && index.model() == this && id > 0 && id <= quintptr(m_nodes.size())
+    return index.isValid() && index.model() == this && id > 0 && id <= quintptr(m_nodes.size()) && m_nodes[qsizetype(id) - 1].row >= 0
         ? &m_nodes[qsizetype(id) - 1] : nullptr;
 }
 QModelIndex CatalogModel::index(int row, int column, const QModelIndex &parent) const
@@ -111,58 +111,108 @@ bool CatalogModel::dropMimeData(const QMimeData *data, Qt::DropAction action, in
     emit groupMembershipRequested(groupId(parent), droppedAsset(data));
     return true;
 }
+CatalogModel::Row CatalogModel::assetRow(const CatalogAsset &asset)
+{
+    QString secondary = SnapshotLibrary::categoryLabel(asset.category);
+    secondary += !asset.referencePath.isEmpty() ? QStringLiteral(" · Referenced")
+        : asset.discovered ? QStringLiteral(" · Working files")
+        : asset.legacy ? QStringLiteral(" · Legacy")
+        : asset.snapshots.isEmpty() ? (asset.historyIncomplete ? QStringLiteral(" · Unavailable")
+                                                              : QStringLiteral(" · No saved versions"))
+        : QStringLiteral(" · %1").arg(SnapshotLibrary::revisionLabel(asset.snapshots.last()));
+    if (!asset.description.isEmpty())
+        secondary += " · " + asset.description.simplified();
+    QString search = CatalogIndex::searchText(asset);
+    return {asset.id, asset.root, asset.category, asset.name, asset.name + '\n' + secondary,
+            search.toCaseFolded()};
+}
 void CatalogModel::setAssets(const QList<CatalogAsset> &assets, const QString &library,
                              const QList<CatalogGroup> &groups)
 {
     QList<Row> rows;
     rows.reserve(assets.size());
-    for (const auto &asset : assets)
-    {
-        QString secondary = SnapshotLibrary::categoryLabel(asset.category);
-        secondary += !asset.referencePath.isEmpty() ? QStringLiteral(" · Referenced")
-            : asset.discovered ? QStringLiteral(" · Working files")
-            : asset.legacy ? QStringLiteral(" · Legacy")
-            : asset.snapshots.isEmpty() ? (asset.historyIncomplete ? QStringLiteral(" · Unavailable")
-                                                                  : QStringLiteral(" · No saved versions"))
-            : QStringLiteral(" · %1").arg(SnapshotLibrary::revisionLabel(asset.snapshots.last()));
-        if (!asset.description.isEmpty())
-            secondary += " · " + asset.description.simplified();
-        QString search = CatalogIndex::searchText(asset);
-        rows.append({asset.id, asset.root, asset.category, asset.name, asset.name + '\n' + secondary,
-                     search.toCaseFolded()});
-    }
+    for (const auto &asset : assets) rows.append(assetRow(asset));
     beginResetModel();
     m_rows = std::move(rows);
     m_assets = assets;
+    m_assetLookup.clear();
+    for (int i = 0; i < assets.size(); ++i) m_assetLookup.insert(assets[i].id, i);
     m_groups = groups;
     m_library = library.isEmpty() ? (assets.isEmpty() ? QString() : assets.first().library) : library;
-    m_generation = CatalogIndex::generation(assets);
     m_visible.clear();
-    m_nodes.clear();
-    m_roots.clear();
+    for (int i = 0; i < m_rows.size(); ++i) m_visible.append(i);
+    rebuild();
     endResetModel();
+}
+bool CatalogModel::updateAsset(const CatalogAsset &asset)
+{
+    const int i = m_assetLookup.value(asset.id, -1);
+    if (i < 0 || m_assets[i].root != asset.root || m_assets[i].name != asset.name) return false;
+    m_assets[i] = asset;
+    m_rows[i] = assetRow(asset);
+    for (const int n : m_assetNodes[i])
+        if (m_nodes[n].row >= 0)
+        {
+            const auto item = createIndex(m_nodes[n].row, 0, quintptr(n + 1));
+            emit dataChanged(item, item);
+        }
+    return true;
 }
 void CatalogModel::filter(const QString &category, const QStringList &terms)
 {
     QList<int> visible;
-    const auto indexed = m_library.isEmpty() ? std::nullopt
-        : CatalogIndex::matchingRoots(m_library, m_generation, category, terms);
     visible.reserve(m_rows.size());
     for (qsizetype i = 0; i < m_rows.size(); ++i)
     {
         const auto &row = m_rows[i];
-        if (indexed ? !indexed->contains(row.root) : ((!category.isEmpty() && row.category != category) ||
-            !CatalogIndex::matches(m_assets[i], terms))
-            )
+        if ((!category.isEmpty() && row.category != category) ||
+            !CatalogIndex::matches(m_assets[i], terms, row.search))
             continue;
         visible.append(static_cast<int>(i));
     }
-    if (visible == m_visible && (!m_nodes.isEmpty() || m_groups.isEmpty()))
+    if (visible == m_visible)
         return;
-    beginResetModel();
     m_visible = std::move(visible);
-    rebuild();
-    endResetModel();
+    const QSet<int> accepted(m_visible.cbegin(), m_visible.cend());
+    for (int i = 0; i < m_nodes.size(); ++i)
+        if (m_nodes[i].asset < 0) filterChildren(i, accepted);
+    filterChildren(-1, accepted);
+}
+void CatalogModel::filterChildren(int parentId, const QSet<int> &visible)
+{
+    auto &children = parentId < 0 ? m_roots : m_nodes[parentId].children;
+    const auto &all = parentId < 0 ? m_allRoots : m_nodes[parentId].allChildren;
+    const auto parentIndex = parentId < 0 ? QModelIndex()
+        : createIndex(m_nodes[parentId].row, 0, quintptr(parentId + 1));
+    QList<int> wanted;
+    for (int id : all)
+        if (m_nodes[id].asset < 0 || visible.contains(m_nodes[id].asset)) wanted.append(id);
+    const QSet<int> keep(wanted.cbegin(), wanted.cend());
+    const bool changed = wanted != children;
+    for (int last = int(children.size()) - 1; last >= 0;)
+    {
+        if (keep.contains(children[last])) { --last; continue; }
+        int first = last;
+        while (first > 0 && !keep.contains(children[first - 1])) --first;
+        beginRemoveRows(parentIndex, first, last);
+        for (int i = first; i <= last; ++i) m_nodes[children[i]].row = -1;
+        children.remove(first, last - first + 1);
+        for (int i = first; i < children.size(); ++i) m_nodes[children[i]].row = i;
+        endRemoveRows();
+        last = first - 1;
+    }
+    for (int row = 0; row < wanted.size();)
+    {
+        if (row < children.size() && children[row] == wanted[row]) { ++row; continue; }
+        int end = row + 1;
+        while (end < wanted.size() && (row >= children.size() || wanted[end] != children[row])) ++end;
+        beginInsertRows(parentIndex, row, end - 1);
+        for (int i = row; i < end; ++i) children.insert(i, wanted[i]);
+        for (int i = row; i < children.size(); ++i) m_nodes[children[i]].row = i;
+        endInsertRows();
+        row = end;
+    }
+    if (changed && parentIndex.isValid()) emit dataChanged(parentIndex, parentIndex, {Qt::ToolTipRole});
 }
 void CatalogModel::rebuild()
 {
@@ -174,7 +224,7 @@ void CatalogModel::rebuild()
     for (int group = 0; group < m_groups.size(); ++group)
     {
         const int parent = int(m_nodes.size());
-        m_nodes.append(Node{-1, group, -1, int(m_roots.size()), {}});
+        m_nodes.append(Node{-1, group, -1, int(m_roots.size()), {}, {}});
         m_roots.append(parent);
         QList<int> members;
         for (const auto &member : m_groups[group].members)
@@ -185,7 +235,7 @@ void CatalogModel::rebuild()
             const int child = int(m_nodes.size());
             const int row = int(m_nodes[parent].children.size());
             m_nodes[parent].children.append(child);
-            m_nodes.append(Node{asset, group, parent, row, {}});
+            m_nodes.append(Node{asset, group, parent, row, {}, {}});
             grouped.insert(asset);
         }
     }
@@ -193,8 +243,13 @@ void CatalogModel::rebuild()
         if (!grouped.contains(asset))
         {
             m_roots.append(int(m_nodes.size()));
-            m_nodes.append(Node{asset, -1, -1, int(m_roots.size()) - 1, {}});
+            m_nodes.append(Node{asset, -1, -1, int(m_roots.size()) - 1, {}, {}});
         }
+    m_allRoots = m_roots;
+    for (auto &node : m_nodes) node.allChildren = node.children;
+    m_assetNodes = QList<QList<int>>(m_assets.size());
+    for (int i = 0; i < m_nodes.size(); ++i)
+        if (m_nodes[i].asset >= 0) m_assetNodes[m_nodes[i].asset].append(i);
 }
 QModelIndex CatalogModel::indexForId(const QString &id, const QString &group) const
 {
@@ -202,6 +257,7 @@ QModelIndex CatalogModel::indexForId(const QString &id, const QString &group) co
     for (int i = 0; i < m_nodes.size(); ++i)
     {
         const auto &value = m_nodes[i];
+        if (value.row < 0) continue;
         const auto index = createIndex(value.row, 0, quintptr(i + 1));
         const auto groupId = value.group < 0 ? QString() : m_groups[value.group].id;
         if (value.asset < 0)

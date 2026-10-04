@@ -36,6 +36,10 @@
 #include <QStyledItemDelegate>
 #include <QStyleOptionViewItem>
 #include <QStandardPaths>
+#include <QScrollBar>
+#include "library/CatalogIndex.h"
+#include "app/CatalogWatcher.h"
+#include <QSaveFile>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
@@ -82,9 +86,15 @@ class GuiSmokeTest : public QObject
     void workingCheckboxStatesStayVisible();
     void archivedVersionsCanBeDeleted();
     void externalDropsReachEveryWorkingArea();
+    void localUpdatesPreserveViewsAndReviewChanges();
+    void externalChangesRefreshAfterSettling();
+    void refreshPreservesArchivedFileBrowsing();
 };
 #include "EmptyWorkspaceGui.inc"
 #include "VersionAndDropGui.inc"
+#include "LocalUpdatesGui.inc"
+#include "AutomaticRefreshGui.inc"
+#include "ArchivedViewGui.inc"
 void GuiSmokeTest::workingCheckboxStatesStayVisible()
 {
     QTemporaryDir tmp;

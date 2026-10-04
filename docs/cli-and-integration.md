@@ -135,7 +135,9 @@ The same metadata is packaged as **xips-capabilities.json**. **build-info.json**
 records the packaged Ela DLL SHA-256. Patch 28 changes style lifetime without an API
 or class-layout change; its source is identified by the fingerprint and patch record.
 
-State adds **library**, **workingChecks** (asset ID to relative file list) and
+State adds **library**, **workingChecks** (asset ID to relative file list),
+**workingViews** (asset ID to collapsed folder paths, selected path, horizontal
+and vertical scroll offsets), and
 **page** (0 Working files, 1 Versions), alongside **horizontalRatio** and
 **verticalRatio**. Old saved states remain accepted; an empty map is a no-op.
 Call setContext with the current host workspace, then restoreState; the state

@@ -45,6 +45,11 @@ target_link_libraries(tst_working_model PRIVATE xips_app Qt6::Test)
 xips_enable_strict_warnings(tst_working_model)
 add_test(NAME working_model COMMAND tst_working_model -o -,txt)
 
+add_executable(tst_catalog_model tst_catalog_model.cpp)
+target_link_libraries(tst_catalog_model PRIVATE xips_app Qt6::Test)
+xips_enable_strict_warnings(tst_catalog_model)
+add_test(NAME catalog_model COMMAND tst_catalog_model -o -,txt)
+
 add_executable(tst_cli tst_cli.cpp)
 target_compile_definitions(tst_cli
     PRIVATE
@@ -60,7 +65,8 @@ target_compile_definitions(tst_gui_smoke
         XIPS_EXAMPLE_LIBRARY="${CMAKE_SOURCE_DIR}/examples/library"
 )
 target_link_libraries(tst_gui_smoke PRIVATE xips_app Qt6::Test)
-add_test(NAME gui_smoke COMMAND tst_gui_smoke -o -,txt)
+add_test(NAME gui_smoke COMMAND tst_gui_smoke -o -,txt
+    -o ${CMAKE_CURRENT_BINARY_DIR}/gui-smoke.xml,junitxml)
 
 add_executable(tst_user_journey tst_user_journey.cpp)
 set_target_properties(tst_user_journey PROPERTIES FOLDER "tests")
@@ -84,8 +90,8 @@ endif()
 get_filename_component(_xips_qt_bin_dir "${_xips_qt_core_location}" DIRECTORY)
 get_filename_component(_xips_qt_prefix "${_xips_qt_bin_dir}/.." ABSOLUTE)
 get_filename_component(_xips_compiler_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-set(_xips_tests core snapshots workflows cli gui_smoke user_journey native interactions working_model embedded)
-set(_xips_gui_tests gui_smoke user_journey native interactions working_model embedded)
+set(_xips_tests core snapshots workflows cli gui_smoke user_journey native interactions working_model catalog_model embedded)
+set(_xips_gui_tests gui_smoke user_journey native interactions working_model catalog_model embedded)
 if(TARGET xips_suite)
     add_executable(tst_suite tst_suite.cpp)
     target_compile_definitions(tst_suite PRIVATE XIPS_RUNTIME_PATH="$<TARGET_FILE:SuiteApp::suite-runtime>")
