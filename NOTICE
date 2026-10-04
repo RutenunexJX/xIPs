@@ -1,0 +1,15 @@
+xIPs
+Copyright 2026 RutenunexJX
+
+The original application code is licensed under the Apache License, Version 2.0.
+See LICENSE. This grant does not replace the licenses of third-party code,
+fonts, data or other material listed in THIRD-PARTY-NOTICES.md.
+
+Asset provenance and any unresolved attribution are recorded in
+docs/ASSET-PROVENANCE.md. Assets marked pending are not represented as cleared
+for public redistribution by this notice. No trademark rights are granted.
+
+The project includes ElaWidgetTools (Copyright 2024 Liniyous; MIT), its bundled
+Font Awesome Free font (Fonticons, Inc.; SIL OFL 1.1), and compatibility changes
+originating in ZeroSlack (Copyright 2026 RutenunexJX; Apache-2.0).
+Keep their original copyright and license notices with redistributed copies.

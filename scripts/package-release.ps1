@@ -77,6 +77,7 @@ foreach ($name in @('xips.ico', 'xips-256.png', 'DESIGN.md')) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot "assets/icons/$name") -Destination $icons
 }
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/LICENSE') -Destination (Join-Path $licenses 'ElaWidgetTools-MIT.txt')
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/ZeroSlack-Apache-2.0.txt') -Destination (Join-Path $licenses 'ZeroSlack-Apache-2.0.txt')
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/Font/FontAwesome-LICENSE.txt') -Destination (Join-Path $licenses 'FontAwesome.txt')
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/UPSTREAM-REVISION.md') -Destination (Join-Path $licenses 'ElaWidgetTools-provenance.md')
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/patches') -Destination (Join-Path $licenses 'ElaWidgetTools-patches') -Recurse
@@ -88,7 +89,7 @@ foreach ($name in @('COPYING3', 'COPYING3.LIB', 'COPYING.RUNTIME')) {
 }
 Copy-Item -LiteralPath (Join-Path $CompilerDirectory 'licenses/winpthreads/COPYING') -Destination (Join-Path $licenses 'winpthreads-COPYING.txt')
 Copy-Item -LiteralPath (Join-Path $CompilerDirectory 'licenses/mingw-w64/COPYING.MinGW-w64.txt') -Destination (Join-Path $licenses 'MinGW-w64-COPYING.txt')
-foreach ($name in @('README.md', 'CHANGELOG.md', 'THIRD-PARTY-NOTICES.md')) {
+foreach ($name in @('README.md', 'CHANGELOG.md', 'LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.md')) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $name) -Destination $outputRoot
 }
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs') -Destination (Join-Path $outputRoot 'docs') -Recurse

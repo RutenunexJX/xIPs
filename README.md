@@ -233,3 +233,11 @@ See [Ela capabilities and validation](docs/ela-integration.md) for the shared AB
 component boundaries, interaction regression, and catalog performance measurements.
 
 See [Qt Creator](docs/qt-creator.md), [manifest format](docs/manifest-format.md), and [integration contract](docs/cli-and-integration.md).
+
+
+## License and public-release status
+
+Original application code is licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE).
+Third-party code, fonts and data retain their licenses in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[Asset provenance](docs/ASSET-PROVENANCE.md) records the known sources and unresolved permissions.
+[Public-release review](docs/PUBLIC-RELEASE-REVIEW.md) lists the checks still required before publication.
