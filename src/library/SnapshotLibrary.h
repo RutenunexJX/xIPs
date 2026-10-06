@@ -107,6 +107,8 @@ class SnapshotLibrary
     static QString suggestedCategory(const QStringList &sources);
     static QString categoryLabel(const QString &category);
     static QString revisionLabel(const Snapshot &snapshot);
+    // Cached metadata only: exact IDs take precedence over decimal sequence aliases.
+    static QList<Snapshot> matchingRevisions(const CatalogAsset &asset, const QString &selector);
     static SnapshotResult create(const QString &library, const CatalogDefinition &definition);
     static SnapshotResult setDefinition(const CatalogAsset &asset, const CatalogDefinition &definition);
     static SnapshotResult addReference(const CatalogAsset &asset, const QString &revision,

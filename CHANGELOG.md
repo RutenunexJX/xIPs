@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.9.1 — 2026-10-07
+
+- Enable SuiteApp SDK 1.0.1 in the formal build while retaining independent operation when Runtime is absent.
+- Share revision selection between the library and SDK provider; resolve unambiguous numeric aliases to stable IDs and reject ambiguous selectors.
+
 ## 2.9.0 — 2026-10-04
 
 - Refresh affected IPs automatically after external edits or synchronized changes, coalescing file events and retrying incomplete writes without losing operation errors.

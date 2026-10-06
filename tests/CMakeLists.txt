@@ -94,9 +94,14 @@ set(_xips_tests core snapshots workflows cli gui_smoke user_journey native inter
 set(_xips_gui_tests gui_smoke user_journey native interactions working_model catalog_model embedded)
 if(TARGET xips_suite)
     add_executable(tst_suite tst_suite.cpp)
-    target_compile_definitions(tst_suite PRIVATE XIPS_RUNTIME_PATH="$<TARGET_FILE:SuiteApp::suite-runtime>")
+    target_compile_definitions(tst_suite PRIVATE
+        XIPS_RUNTIME_PATH="$<TARGET_FILE:SuiteApp::suite-runtime>"
+        XIPS_GUI_PATH="$<TARGET_FILE:xips>"
+        XIPS_TEST_VERSION="${PROJECT_VERSION}")
+    add_dependencies(tst_suite xips xips_browser)
     target_link_libraries(tst_suite PRIVATE xips_suite Qt6::Test)
-    add_test(NAME suite COMMAND tst_suite)
+    add_test(NAME suite COMMAND tst_suite -o -,txt
+        -o ${CMAKE_CURRENT_BINARY_DIR}/suite.xml,junitxml)
     list(APPEND _xips_tests suite)
     list(APPEND _xips_gui_tests suite)
 endif()

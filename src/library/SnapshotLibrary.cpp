@@ -372,14 +372,7 @@ void verify(const QString &root, const Snapshot &snapshot)
 }
 Snapshot selected(const CatalogAsset &asset, const QString &id)
 {
-    for (const auto &snapshot : asset.snapshots)
-        if (snapshot.id == id)
-            return snapshot;
-    // Decimal selectors remain accepted when unambiguous; receipts always use the unique ID.
-    QList<Snapshot> matches;
-    for (const auto &snapshot : asset.snapshots)
-        if (QString::number(snapshot.sequence) == id)
-            matches.append(snapshot);
+    const auto matches = SnapshotLibrary::matchingRevisions(asset, id);
     require(matches.size() <= 1, QStringLiteral("Ambiguous revision number; choose its unique ID."));
     if (matches.size() == 1)
         return matches.first();
@@ -1200,6 +1193,17 @@ SnapshotResult SnapshotLibrary::update(const CatalogAsset &asset, const QStringL
             publishSnapshot(asset.root, asset.id, result.snapshot);
             result.asset = load(asset.root, asset.library);
         });
+}
+QList<Snapshot> SnapshotLibrary::matchingRevisions(const CatalogAsset &asset, const QString &selector)
+{
+    for (const auto &snapshot : asset.snapshots)
+        if (snapshot.id == selector)
+            return {snapshot};
+    QList<Snapshot> matches;
+    for (const auto &snapshot : asset.snapshots)
+        if (QString::number(snapshot.sequence) == selector)
+            matches.append(snapshot);
+    return matches;
 }
 QString SnapshotLibrary::revisionLabel(const Snapshot &snapshot)
 {

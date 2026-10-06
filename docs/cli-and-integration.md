@@ -164,13 +164,14 @@ model indexes. Standalone windows retain their direct splitter layout.
 | Contract | Behavior |
 | --- | --- |
 | `xips://show` | Current library metadata. |
-| `xips://asset/<id>?revision=<n>` | Cached asset metadata and selected revision; omission selects the highest retained revision. |
+| `xips://asset/<id>?revision=<revision-id-or-number>` | Cached asset metadata; exact IDs or unambiguous decimal revision numbers are accepted, and the response uses the canonical ID. Omission selects the highest retained revision. |
 | `xips.library.open` | Show the application. |
 | `xips.asset.open` | Show the application and select the exact asset/revision. |
 | `xips.library` | Native ABI v1 surface, with external application fallback. |
 
 Resource metadata reports **contentVerified: false** alongside the recorded
 digest. It is not permission to edit or a substitute for verification during Use.
+Ambiguous decimal revision numbers return **revision_ambiguous**; use the unique revision ID.
 Loading catalogs return **provider_busy**; missing assets and revisions return
 structured errors. No suite action writes the library or materializes files.
 

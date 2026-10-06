@@ -122,16 +122,14 @@ QJsonObject SuiteIntegration::processRequest(const QJsonObject &request) {
     if (!asset->snapshots.isEmpty()) {
       auto selected = asset->snapshots.last();
       if (!revision.isEmpty()) {
-        bool found = false;
-        for (const auto &candidate : asset->snapshots)
-          if (candidate.id == revision) {
-            selected = candidate;
-            found = true;
-            break;
-          }
-        if (!found)
+        const auto matches = SnapshotLibrary::matchingRevisions(*asset, revision);
+        if (matches.size() > 1)
+          return fail("revision_ambiguous",
+                      "The revision number is ambiguous. Use its unique ID.");
+        if (matches.isEmpty())
           return fail("revision_not_found",
                       "The selected revision is unavailable.");
+        selected = matches.first();
       }
       resource.insert("revision", selected.id);
       resource.insert("contentHash", selected.hash);
@@ -153,7 +151,7 @@ QJsonObject SuiteIntegration::processRequest(const QJsonObject &request) {
   }
   if (activation->action == ActivationAction::OpenAsset) {
     panel->restoreState(
-        {{"assetId", activation->value}, {"revision", revision}});
+        {{"assetId", activation->value}, {"revision", resource.value("revision").toString()}});
   }
   window->showNormal();
   window->raise();

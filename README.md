@@ -194,7 +194,7 @@ The portable component lives at **AppSuite/Apps/xIPs/** and uses the shared
 **Apps/Runtime/suite-runtime.exe** for optional discovery and routing.
 
 When built with the SuiteApp SDK, startup registers **xips** as a provider for
-**xips://show** and **xips://asset/<id>?revision=<n>**. Suite actions open the
+**xips://show** and **xips://asset/<id>?revision=<revision-id-or-number>**. Suite actions open the
 library or select an asset; **xips.library** declares the native panel and an
 external fallback. Resource resolution returns cached metadata only, without
 exposing private file paths or verifying payloads. File copying remains an explicit
