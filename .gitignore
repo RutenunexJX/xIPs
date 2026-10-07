@@ -59,3 +59,6 @@ compile_commands.json
 *creator.user*
 
 *_qmlcache.qrc
+
+# Machine-specific release settings
+/release-profile.local.yaml

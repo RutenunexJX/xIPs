@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.12.0 — 2026-10-08
+
+- Set a version name while importing a dropped folder into a new or existing Module, IP or Project; leave it empty for automatic naming.
+- Persist import names using the existing revision-label metadata, and create a separate version when identical content is imported with a new name.
+- Reject invalid or duplicate names before publishing or removing sources; roll back imported files and labels if metadata or archival publication fails.
+
 ## 2.11.0 — 2026-10-08
 
 - Edit archived version names with Edit version, a double-click on the version, or F2; keep custom names after refresh and reopening.

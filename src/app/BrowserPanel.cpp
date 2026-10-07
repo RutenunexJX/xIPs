@@ -1382,10 +1382,18 @@ void BrowserPanel::importFolders(const QStringList &paths, const QString &prefer
         transfer->addItem(QStringLiteral("Copy (keep source files)"), false);
         transfer->addItem(QStringLiteral("Move (remove selected source files after archival)"), true);
         form.body->addWidget(transfer);
+        auto *versionRow = new QHBoxLayout;
+        auto *version = new EnglishLineEdit(&form);
+        version->setObjectName("importVersion");
+        version->setMaxLength(128);
+        version->setAccessibleName(QStringLiteral("Version"));
+        version->setToolTip(QStringLiteral("Version name, e.g. v1.0.0. Leave empty for an automatic name."));
+        versionRow->addWidget(version, 1);
         auto *note = new EnglishLineEdit(&form);
         note->setObjectName("importNote");
         note->setPlaceholderText(QStringLiteral("Version note (optional)"));
-        form.body->addWidget(note);
+        versionRow->addWidget(note, 1);
+        form.body->addLayout(versionRow);
         auto *summary = new ElaText(&form);
         summary->setObjectName("importSummary");
         summary->setTextPixelSize(13);
@@ -1397,6 +1405,10 @@ void BrowserPanel::importFolders(const QStringList &paths, const QString &prefer
             const auto selected = files->checkedFiles();
             const bool creating = destination->currentData().toString().isEmpty();
             newEntry->setVisible(creating);
+            qint64 sequence = 1;
+            for (const auto &asset : targets)
+                if (asset.id == destination->currentData().toString()) { sequence = asset.nextSequence; break; }
+            version->setPlaceholderText(QStringLiteral("Version (automatic: rev%1)").arg(sequence));
             form.acceptButton->setEnabled(!selected.isEmpty() && (!creating || !name->text().trimmed().isEmpty()));
             summary->setText(QStringLiteral("%1 of %2 files selected · creates a saved version")
                 .arg(selected.size()).arg(prepared.preview.files.size()));
@@ -1414,6 +1426,7 @@ void BrowserPanel::importFolders(const QStringList &paths, const QString &prefer
         request.sources = paths;
         request.move = transfer->currentData().toBool();
         request.note = note->text();
+        request.version = version->text();
         request.selection.files = files->checkedFiles();
         for (const auto &file : request.selection.files)
             request.selection.objects.insert(file, prepared.preview.objects.value(file));

@@ -12,7 +12,7 @@ The interface uses Ela controls and shares ZeroSlack's compact panel layout. All
 4. Check the files to include. A folder checkbox selects its descendants; **All** selects or clears every file. Browsing a row does not change its checkbox. Checks survive refreshes and version switches, and missing files are removed from the selection. Click **Create version** (**Ctrl+S**), review the included files and the added, modified or omitted files compared with the previous version, and optionally add a note. Omitting a file from a version keeps its working copy. Zero checked files cannot create a version. This explicit save creates **rev1**, followed by **rev2** and later versions; unchanged content creates no extra version unless joining parallel heads.
 5. Use **Versions** to select a saved version, then **Copy to project** to copy exactly that version's files to a new destination. The copies are independently editable. Continue adding or editing working files and create another version without changing earlier versions.
 
-Dragging a folder anywhere in the panel opens **Import folder**. Choose a new Module/IP/Project or an existing entry with a writable working folder, check the incoming files to include, and choose **Copy** or **Move**. **Import and archive** imports only the checked files and immediately saves that exact selection as a version. Folder names and nested paths are retained. Copy keeps originals; Move removes each checked source only after the working copy and saved version verify. Unchecked or locked source files remain, and retained sources are reported. Cancel makes no changes. File conflicts never overwrite existing content.
+Dragging a folder anywhere in the panel opens **Import folder**. Choose a new Module/IP/Project or an existing entry with a writable working folder, check the incoming files to include, and choose **Copy** or **Move**. Set **Version** before importing (for example, `v1.0.0`), or leave it empty for the automatic `revN` name. **Import and archive** imports only the checked files and immediately saves that exact selection with the chosen version name. Names must be unique within the entry; importing identical files under a new name creates a separate version. Folder names and nested paths are retained. Copy keeps originals; Move removes each checked source only after the working copy and saved version verify. Unchecked or locked source files remain, and retained sources are reported. Cancel makes no changes. File conflicts never overwrite existing content.
 
 Dropdown lists use compact rows. Click the text, empty area or arrow to open or close the list.
 
@@ -231,7 +231,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
 and the SuiteApp SDK enabled. For an explicitly standalone release, configure
 **XIPS_ENABLE_SUITEAPP=OFF** and pass **-Standalone** to the packaging script.
-The release tag **v2.11.0** must identify HEAD.
+The release tag **v2.12.0** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell
@@ -245,8 +245,18 @@ The formal delivery is the runnable directory
 **E:/PinloomRoot/AppPackage/AppSuite/Apps/xIPs/**. Each application has its own
 directory under **Apps/**. Deploy the prepared directory there, preserve the other
 applications, and update the suite manifest and checksum inventory.
-Do not create ZIP archives or backups of the old formal package. **build/packages/xIPs** is only
-the staging location. The package does not include or modify the user's library.
+Do not create ZIP archives. Build each release in a new staging directory under
+**build/packages/**. Before replacement, preserve and verify a recoverable backup of the
+old xIPs package and the affected suite indexes outside the formal directory. Replace
+only managed xIPs files and its index entries; retain unknown files and other applications.
+The package does not include or modify the user's library.
+
+The repository owner authorized automatic delivery on 2026-10-08: after each completed
+xIPs development round and its required checks, build and verify the formal package,
+push the release commit on **origin/main** with its matching **v<version>** tag, and
+replace the xIPs formal package above. This standing authorization applies only to xIPs
+and may be overridden by the owner's instructions for a later round.
+Machine-specific settings are retained in the ignored **release-profile.local.yaml**.
 See [release notes](CHANGELOG.md).
 See [Ela capabilities and validation](docs/ela-integration.md) for the shared ABI,
 component boundaries, interaction regression, and catalog performance measurements.

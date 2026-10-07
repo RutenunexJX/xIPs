@@ -95,6 +95,7 @@ struct ImportRequest
     PayloadPreview selection;
     bool move = false;
     QString note;
+    QString version;
 };
 
 struct SnapshotResult

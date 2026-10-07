@@ -29,6 +29,7 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     whenVisible(&panel, "folderImportForm", [&](QWidget *form)
     {
         form->findChild<ElaComboBox *>("importTransfer")->setCurrentIndex(1);
+        form->findChild<QLineEdit *>("importVersion")->setText("cancelled");
         qobject_cast<QDialog *>(form)->reject(); rejected = true;
     });
     dropFolder(&panel, source);
@@ -50,6 +51,11 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
         model->setData(model->fileIndex("incoming/rtl/top.sv"), Qt::Checked, Qt::CheckStateRole);
         QCOMPARE(model->checkedFiles(), QStringList{"incoming/rtl/top.sv"});
         QCOMPARE(form->findChild<ElaComboBox *>("importTransfer")->currentData().toBool(), false);
+        auto *version = form->findChild<QLineEdit *>("importVersion");
+        QVERIFY(version && version->isVisible());
+        QVERIFY(version->text().isEmpty());
+        QVERIFY(version->placeholderText().contains("rev1"));
+        version->setText("v1.0.0");
         form->findChild<ElaLineEdit *>("importNote")->setText("selected project files");
         const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
         if (!screenshots.isEmpty())
@@ -79,6 +85,7 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     QVERIFY(first.ok);
     QCOMPARE(first.snapshot.files, project.workingFiles);
     QCOMPARE(first.snapshot.note, QString("selected project files"));
+    QCOMPARE(SnapshotLibrary::revisionLabel(first.snapshot), QString("v1.0.0"));
     QVERIFY(QFileInfo::exists(source + "/rtl/top.sv"));
     QVERIFY(QFileInfo::exists(source + "/rtl/unused.sv"));
 
@@ -99,10 +106,18 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     {
         auto *destination = form->findChild<ElaComboBox *>("importDestination");
         QCOMPARE(destination->currentData().toString(), project.id);
+        auto *version = form->findChild<QLineEdit *>("importVersion");
+        QVERIFY(version && version->isVisible());
+        QVERIFY(version->placeholderText().contains("rev2"));
+        version->setText("v2.0.0");
         destination->setCurrentIndex(0);
+        QVERIFY(version->placeholderText().contains("rev1"));
         QVERIFY(form->findChild<ElaLineEdit *>("importName")->isVisible());
         destination->setCurrentIndex(destination->findData(project.id));
         QVERIFY(!form->findChild<ElaLineEdit *>("importName")->isVisible());
+        QVERIFY(version->isVisible());
+        QCOMPARE(version->text(), QString("v2.0.0"));
+        QVERIFY(version->placeholderText().contains("rev2"));
         auto *model = qobject_cast<WorkingFilesModel *>(form->findChild<ElaTreeView *>("importFiles")->model());
         model->checkAll(false);
         model->setData(model->fileIndex("next/readme.txt"), Qt::Checked, Qt::CheckStateRole);
@@ -122,6 +137,7 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     const auto latest = SnapshotLibrary::verifySnapshot(project, SnapshotLibrary::heads(project).first());
     QVERIFY(latest.ok);
     QCOMPARE(latest.snapshot.sequence, 2);
+    QCOMPARE(SnapshotLibrary::revisionLabel(latest.snapshot), QString("v2.0.0"));
     QCOMPARE(latest.snapshot.files, QStringList{"next/readme.txt"});
     QVERIFY(SnapshotLibrary::verifySnapshot(project, first.snapshot.id).ok);
     QCOMPARE(panel.findChild<ElaTableView *>("revisionTable")->model()->rowCount(), 2);

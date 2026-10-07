@@ -422,7 +422,11 @@ class EmbeddedTest final : public QObject
         QDragEnterEvent enter(dropPoint, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(working->viewport(), &enter); QVERIFY(enter.isAccepted());
         QDropEvent drop(dropPoint, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-        whenVisible(&owner, "folderImportForm", [](QWidget *form) { click(form, "formAccept"); });
+        whenVisible(&owner, "folderImportForm", [](QWidget *form)
+        {
+            form->findChild<QLineEdit *>("importVersion")->setText("drop-v1.0");
+            click(form, "formAccept");
+        });
         QApplication::sendEvent(working->viewport(), &drop); QVERIFY(drop.isAccepted()); QTRY_VERIFY(!busy(panel));
         auto *model = working->model();
         QVERIFY(fileIndex(model, "top.sv").isValid()); QVERIFY(fileIndex(model, "rtl/sub/helper.sv").isValid());
@@ -442,6 +446,7 @@ class EmbeddedTest final : public QObject
         auto *versions = panel->findChild<QAbstractItemView *>("revisionTable");
         QCOMPARE(versions->model()->rowCount(), 1);
         QCOMPARE(versions->model()->index(0, 1).data().toString(), QString("Archived"));
+        QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("drop-v1.0"));
         const auto pinnedVersion = state(panel)["revision"].toString();
         whenVisible(&owner, "renameRevisionForm", [](QWidget *form)
         {

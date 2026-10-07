@@ -166,6 +166,7 @@ class WorkflowTest : public QObject
         request.selection.files = request.selection.objects.keys();
         request.move = move;
         request.note = "selected import";
+        request.version = "  v1.0.0  ";
         CatalogDefinition definition; definition.name = "imported"; definition.category = category;
         const auto created = SnapshotLibrary::create(library, definition, &request);
         QVERIFY2(created.ok, qPrintable(created.error));
@@ -174,6 +175,7 @@ class WorkflowTest : public QObject
         QCOMPARE(created.snapshot.sequence, 1);
         QCOMPARE(created.snapshot.files, request.selection.files);
         QCOMPARE(created.snapshot.note, request.note);
+        QCOMPARE(SnapshotLibrary::revisionLabel(created.snapshot), QString("v1.0.0"));
         QCOMPARE(created.asset.workingFiles, request.selection.files);
         QVERIFY(SnapshotLibrary::verifySnapshot(created.asset, created.snapshot.id).ok);
         QCOMPARE(get(created.asset.root + "/incoming folder/rtl/top.sv"), QByteArray("top"));
@@ -184,6 +186,7 @@ class WorkflowTest : public QObject
         const auto reloaded = SnapshotLibrary::scan(library);
         QCOMPARE(reloaded.assets.size(), 1);
         QCOMPARE(reloaded.assets.first().category, category);
+        QCOMPARE(SnapshotLibrary::revisionLabel(reloaded.assets.first().snapshots.first()), QString("v1.0.0"));
         QVERIFY(reloaded.problems.isEmpty());
         const auto firstManifest = get(created.asset.historyRoot + "/.xips/revisions/" + created.snapshot.id + ".json");
 
@@ -191,9 +194,13 @@ class WorkflowTest : public QObject
         put(next + "/readme.txt", "second batch");
         request.sources = {next};
         request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.version = "v2.0.0";
         const auto extended = SnapshotLibrary::importAndSave(created.asset, request);
         QVERIFY2(extended.ok, qPrintable(extended.error));
         QCOMPARE(extended.snapshot.sequence, 2);
+        QCOMPARE(SnapshotLibrary::revisionLabel(extended.snapshot), QString("v2.0.0"));
+        QCOMPARE(SnapshotLibrary::revisionLabel(SnapshotLibrary::verifySnapshot(
+            SnapshotLibrary::scan(library).assets.first(), extended.snapshot.id).snapshot), QString("v2.0.0"));
         QCOMPARE(extended.snapshot.parents, QStringList{created.snapshot.id});
         QCOMPARE(extended.snapshot.files, QStringList{"next/readme.txt"});
         QCOMPARE(extended.asset.workingFiles.size(), 3);
@@ -213,11 +220,107 @@ class WorkflowTest : public QObject
             request.selection = preview.preview;
             request.selection.objects.remove("incoming folder/unused.txt");
             request.selection.files = request.selection.objects.keys();
+            request.version.clear();
             const auto previousFiles = SnapshotLibrary::importAndSave(extended.asset, request);
             QVERIFY2(previousFiles.ok, qPrintable(previousFiles.error));
             QVERIFY(!previousFiles.unchanged);
             QCOMPARE(previousFiles.snapshot.sequence, 3);
+            QCOMPARE(SnapshotLibrary::revisionLabel(previousFiles.snapshot), QString("rev3"));
         }
+    }
+    void folderImportVersionValidationPreservesFiles()
+    {
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), source = tmp.filePath("incoming");
+        QVERIFY(QDir().mkpath(library));
+        put(source + "/top.sv", "first");
+        ImportRequest request; request.sources = {source};
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.version = "v1.0.0";
+        CatalogDefinition definition; definition.name = "versions"; definition.category = "project";
+        const auto first = SnapshotLibrary::create(library, definition, &request);
+        QVERIFY2(first.ok, qPrintable(first.error));
+        const auto metadataPath = first.asset.historyRoot + "/.xips.json";
+        const auto metadata = get(metadataPath);
+        const auto next = tmp.filePath("next");
+        put(next + "/more.sv", "must stay at source");
+        request.sources = {next};
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.move = true;
+        definition.name = "invalid_version";
+        for (const auto &name : QStringList{QString(129, 'v'), "line\nbreak", QString("control") + QChar(1), QString("line") + QChar(0x2028) + "break"})
+        {
+            request.version = name;
+            QVERIFY(!SnapshotLibrary::create(library, definition, &request).ok);
+            QVERIFY(!SnapshotLibrary::importAndSave(first.asset, request).ok);
+            QVERIFY(!QFileInfo::exists(library + "/invalid_version"));
+            QCOMPARE(get(metadataPath), metadata);
+            QVERIFY(!QFileInfo::exists(first.asset.root + "/next/more.sv"));
+            QCOMPARE(get(next + "/more.sv"), QByteArray("must stay at source"));
+        }
+        request.version = "V1.0.0";
+        const auto duplicate = SnapshotLibrary::importAndSave(first.asset, request);
+        QVERIFY(!duplicate.ok);
+        QVERIFY(duplicate.error.contains("already uses this name"));
+        QCOMPARE(get(metadataPath), metadata);
+        QVERIFY(!QFileInfo::exists(first.asset.root + "/next/more.sv"));
+        QCOMPARE(get(next + "/more.sv"), QByteArray("must stay at source"));
+        request.version = "v2.0.0";
+        const auto renamed = SnapshotLibrary::renameSnapshot(first.asset, first.snapshot.id, "renamed");
+        QVERIFY(renamed.ok);
+        QVERIFY(!SnapshotLibrary::importAndSave(first.asset, request).ok);
+        QCOMPARE(get(next + "/more.sv"), QByteArray("must stay at source"));
+        const auto saved = SnapshotLibrary::importAndSave(renamed.asset, request);
+        QVERIFY2(saved.ok, qPrintable(saved.error));
+        QVERIFY(!QFileInfo::exists(next));
+        QCOMPARE(SnapshotLibrary::revisionLabel(saved.snapshot), QString("v2.0.0"));
+        QCOMPARE(saved.asset.document.value("revisionLabels").toObject().size(), 2);
+        QVERIFY(SnapshotLibrary::verifySnapshot(saved.asset, first.snapshot.id).ok);
+    }
+    void folderImportNewNameCreatesVersionForIdenticalFiles()
+    {
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), source = tmp.filePath("incoming");
+        QVERIFY(QDir().mkpath(library));
+        put(source + "/top.sv", "same content");
+        ImportRequest request; request.sources = {source};
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.version = "v1.0.0";
+        CatalogDefinition definition; definition.name = "versions";
+        const auto first = SnapshotLibrary::create(library, definition, &request);
+        QVERIFY2(first.ok, qPrintable(first.error));
+        const auto manifestPath = first.asset.historyRoot + "/.xips/revisions/" + first.snapshot.id + ".json";
+        const auto manifest = get(manifestPath);
+        request.version = "v2.0.0";
+        const auto second = SnapshotLibrary::importAndSave(first.asset, request);
+        QVERIFY2(second.ok, qPrintable(second.error));
+        QVERIFY(!second.unchanged);
+        QVERIFY(first.snapshot.id != second.snapshot.id);
+        QCOMPARE(second.snapshot.sequence, 2);
+        QCOMPARE(second.snapshot.hash, first.snapshot.hash);
+        QCOMPARE(second.snapshot.parents, QStringList{first.snapshot.id});
+        QCOMPARE(SnapshotLibrary::revisionLabel(second.snapshot), QString("v2.0.0"));
+        QCOMPARE(get(manifestPath), manifest);
+        auto reopened = SnapshotLibrary::scan(library).assets.first();
+        QCOMPARE(reopened.document.value("revisionLabels").toObject().size(), 2);
+        QCOMPARE(SnapshotLibrary::revisionLabel(SnapshotLibrary::verifySnapshot(reopened, first.snapshot.id).snapshot), QString("v1.0.0"));
+        QCOMPARE(SnapshotLibrary::revisionLabel(SnapshotLibrary::verifySnapshot(reopened, second.snapshot.id).snapshot), QString("v2.0.0"));
+        QCOMPARE(SnapshotLibrary::heads(reopened), QStringList{second.snapshot.id});
+        const auto duplicate = SnapshotLibrary::importAndSave(reopened, request);
+        QVERIFY(duplicate.ok && duplicate.unchanged);
+        QCOMPARE(duplicate.snapshot.id, second.snapshot.id);
+        request.version = "   ";
+        const auto automatic = SnapshotLibrary::importAndSave(reopened, request);
+        QVERIFY(automatic.ok && automatic.unchanged);
+        QCOMPARE(SnapshotLibrary::revisionLabel(automatic.snapshot), QString("v2.0.0"));
+        request.version = "rev3";
+        const auto defaultName = SnapshotLibrary::importAndSave(reopened, request);
+        QVERIFY2(defaultName.ok, qPrintable(defaultName.error));
+        QCOMPARE(SnapshotLibrary::revisionLabel(defaultName.snapshot), QString("rev3"));
+        QVERIFY(!defaultName.asset.document.value("revisionLabels").toObject().contains(defaultName.snapshot.id));
+        const auto exported = SnapshotLibrary::exportSnapshot(defaultName.asset, first.snapshot.id, tmp.filePath("exported"));
+        QVERIFY(exported.ok);
+        QCOMPARE(get(exported.exportedPath), QByteArray("same content"));
     }
     void folderImportFailuresPreserveSourcesAndDestination()
     {
@@ -279,11 +382,44 @@ class WorkflowTest : public QObject
         request.selection = SnapshotLibrary::previewImport(request.sources).preview;
         request.move = true;
         put(created.asset.historyRoot + "/.xips/revisions", "blocks revision directory");
+        const auto metadataPath = created.asset.historyRoot + "/.xips.json";
+        const auto metadata = get(metadataPath);
+        request.version = "v1.0.0";
         const auto failed = SnapshotLibrary::importAndSave(created.asset, request);
         QVERIFY(!failed.ok);
         QVERIFY(!QFileInfo::exists(created.asset.root + "/incoming/top.sv"));
         QCOMPARE(get(source + "/top.sv"), QByteArray("keep source"));
+        QCOMPARE(get(metadataPath), metadata);
         QVERIFY(SnapshotLibrary::heads(SnapshotLibrary::scan(library).assets.first()).isEmpty());
+    }
+    void folderImportMetadataFailureRollsBackWorkingFiles()
+    {
+#ifdef Q_OS_WIN
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), source = tmp.filePath("incoming");
+        QVERIFY(QDir().mkpath(library));
+        CatalogDefinition definition; definition.name = "empty";
+        const auto created = SnapshotLibrary::create(library, definition);
+        QVERIFY(created.ok);
+        put(source + "/top.sv", "keep source");
+        ImportRequest request; request.sources = {source}; request.move = true; request.version = "v1.0.0";
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        const auto path = created.asset.historyRoot + "/.xips.json";
+        const auto metadata = get(path);
+        const auto nativePath = QDir::toNativeSeparators(path);
+        const auto handle = CreateFileW(reinterpret_cast<LPCWSTR>(nativePath.utf16()),
+            GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        QVERIFY(handle != INVALID_HANDLE_VALUE);
+        const auto release = qScopeGuard([&] { CloseHandle(handle); });
+        const auto failed = SnapshotLibrary::importAndSave(created.asset, request);
+        QVERIFY(!failed.ok);
+        QCOMPARE(get(path), metadata);
+        QCOMPARE(get(source + "/top.sv"), QByteArray("keep source"));
+        QVERIFY(!QFileInfo::exists(created.asset.root + "/incoming/top.sv"));
+        QVERIFY(SnapshotLibrary::heads(SnapshotLibrary::scan(library).assets.first()).isEmpty());
+#else
+        QSKIP("Uses Windows file-sharing locks");
+#endif
     }
     void movingOverlappingSelectionsRemovesEachSourceOnce()
     {
