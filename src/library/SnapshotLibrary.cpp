@@ -102,6 +102,13 @@ bool validCategory(const QString &category)
                        QStringLiteral("other")}
         .contains(category);
 }
+bool validRevisionLabel(const QString &label)
+{
+    return !label.isEmpty() && label == label.trimmed() && label.size() <= 128 &&
+        std::none_of(label.cbegin(), label.cend(), [](QChar c)
+        { return c.category() == QChar::Other_Control || c.category() == QChar::Separator_Line ||
+                 c.category() == QChar::Separator_Paragraph; });
+}
 Snapshot parseSnapshot(const QJsonObject &object)
 {
     Snapshot result{object.value("id").toString(), object.value("note").toString(),
@@ -258,6 +265,25 @@ CatalogAsset load(const QString &root, const QString &library)
         std::sort(asset.snapshots.begin(), asset.snapshots.end(), [](const auto &a, const auto &b)
                   { return a.sequence != b.sequence ? a.sequence < b.sequence
                        : a.created != b.created ? a.created < b.created : a.id < b.id; });
+        const auto labels = asset.document.value("revisionLabels");
+        if (!labels.isUndefined() && !labels.isObject())
+        {
+            asset.historyIncomplete = true;
+            asset.problems.append(QStringLiteral("Invalid version labels: %1").arg(child(root, ".xips.json")));
+        }
+        const auto customLabels = labels.toObject();
+        for (auto &snapshot : asset.snapshots)
+        {
+            const auto label = customLabels.value(snapshot.id);
+            if (label.isUndefined()) continue;
+            if (label.isString() && validRevisionLabel(label.toString())) snapshot.label = label.toString();
+            else
+            {
+                asset.historyIncomplete = true;
+                asset.problems.append(QStringLiteral("Invalid version label for %1: %2")
+                    .arg(snapshot.id, child(root, ".xips.json")));
+            }
+        }
         const auto workingArea = asset.document.value("workingArea").toString();
         const bool emptyWorkspace = asset.document.contains("source") &&
             (workingArea == "managed" || workingArea == "linked");
@@ -1209,6 +1235,7 @@ QList<Snapshot> SnapshotLibrary::matchingRevisions(const CatalogAsset &asset, co
 }
 QString SnapshotLibrary::revisionLabel(const Snapshot &snapshot)
 {
+    if (!snapshot.label.isEmpty()) return snapshot.label;
     return snapshot.sequence > 0 ? QStringLiteral("rev%1").arg(snapshot.sequence)
                                  : QStringLiteral("rev%1").arg(snapshot.id);
 }
@@ -2100,6 +2127,48 @@ SnapshotResult SnapshotLibrary::saveReceipt(const SnapshotResult &exported, cons
         }
         else ContentStore::publishJson(destination, receipt);
         result.exportedPath = absolute(destination);
+    });
+}
+SnapshotResult SnapshotLibrary::renameSnapshot(const CatalogAsset &asset, const QString &revision,
+                                               const QString &label)
+{
+    return operation([&](auto &result)
+    {
+        require(asset.referencePath.isEmpty(), QStringLiteral("Edit the version in its owning library."));
+        require(!asset.legacy && revision != "current" && revision != "working",
+                QStringLiteral("Choose an archived version."));
+        const auto name = label.trimmed();
+        require(validRevisionLabel(name), QStringLiteral("Enter a version name of 1 to 128 characters without line breaks or control characters."));
+        LibraryLock lock(asset.library);
+        const auto root = asset.discovered ? asset.historyRoot : asset.root;
+        require(!root.isEmpty(), QStringLiteral("This asset has no saved history."));
+        const auto path = child(root, ".xips.json");
+        const auto original = bytes(path);
+        const auto current = load(root, asset.library);
+        healthyHistory(current);
+        require(!current.legacy && current.id == asset.id && current.document == asset.document &&
+                    QJsonDocument::fromJson(original).object() == current.document,
+                QStringLiteral("Version details changed. Refresh and retry."));
+        const auto snapshot = selected(current, revision);
+        require(toJson(snapshot) == toJson(selected(asset, revision)),
+                QStringLiteral("The selected version changed. Refresh and retry."));
+        if (revisionLabel(snapshot) == name) result.unchanged = true;
+        else
+        {
+            for (const auto &other : current.snapshots)
+                require(other.id == snapshot.id || revisionLabel(other).compare(name, Qt::CaseInsensitive) != 0,
+                        QStringLiteral("Another version already uses this name."));
+            auto document = current.document;
+            auto labels = document.value("revisionLabels").toObject();
+            auto defaultSnapshot = snapshot; defaultSnapshot.label.clear();
+            if (name == revisionLabel(defaultSnapshot)) labels.remove(snapshot.id);
+            else labels.insert(snapshot.id, name);
+            if (labels.isEmpty()) document.remove("revisionLabels");
+            else document.insert("revisionLabels", labels);
+            writeJson(path, document, &original);
+        }
+        result.asset = resolveAsset(asset);
+        result.snapshot = selected(result.asset, snapshot.id);
     });
 }
 SnapshotResult SnapshotLibrary::eraseSnapshot(const CatalogAsset &asset, const QString &revision,

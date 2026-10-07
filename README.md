@@ -119,6 +119,8 @@ Folder selection, refresh, asset actions and reported issues have visible contro
 In **Versions**, select an archived version and click **Delete version**. The confirmation
 identifies the IP and version. You can also delete the last version: the IP, working files,
 groups and metadata remain, and you can create another version from the checked files.
+Double-click a version name, press **F2** while the version list is focused, or choose **Edit version** to rename an archived version (for example, `rev1` to `v1.0.0`). Names persist after refresh and reopening. Working files, saved contents, creation order and pinned references remain unchanged. Version names must be nonempty and distinct within the asset; referenced versions are edited in their owning library.
+
 Deletion records hide removed versions after refresh or reopen; immutable history and shared
 content are retained for synchronization. Later versions keep increasing their numbers.
 References cannot delete versions in the owning catalog. Existing project copies stay unchanged.
@@ -229,7 +231,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
 and the SuiteApp SDK enabled. For an explicitly standalone release, configure
 **XIPS_ENABLE_SUITEAPP=OFF** and pass **-Standalone** to the packaging script.
-The release tag **v2.10.0** must identify HEAD.
+The release tag **v2.11.0** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell

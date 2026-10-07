@@ -199,7 +199,7 @@ QString CatalogIndex::generation(const QList<CatalogAsset> &assets)
         add(QString::number(asset.snapshots.size()));
         for (const auto &revision : asset.snapshots)
             for (const auto &part : {revision.id, QString::number(revision.sequence),
-                 revision.created.toString(Qt::ISODateWithMs), revision.note, revision.hash}) add(part);
+                 revision.created.toString(Qt::ISODateWithMs), revision.note, revision.hash, revision.label}) add(part);
     }
     return QString::fromLatin1(hash.result().toHex());
 }

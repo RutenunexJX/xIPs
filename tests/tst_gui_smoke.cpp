@@ -90,6 +90,7 @@ class GuiSmokeTest : public QObject
     void emptyIpImportCheckAndCreateVersions();
     void workingCheckboxStatesStayVisible();
     void archivedVersionsCanBeDeleted();
+    void archivedVersionNamesCanBeEdited();
     void externalDropsReachEveryWorkingArea();
     void folderImportSelectsProjectFilesAndTransfer();
     void localUpdatesPreserveViewsAndReviewChanges();
@@ -98,6 +99,7 @@ class GuiSmokeTest : public QObject
 };
 #include "EmptyWorkspaceGui.inc"
 #include "VersionAndDropGui.inc"
+#include "VersionNamesGui.inc"
 #include "FolderImportGui.inc"
 #include "LocalUpdatesGui.inc"
 #include "AutomaticRefreshGui.inc"

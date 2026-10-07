@@ -442,6 +442,15 @@ class EmbeddedTest final : public QObject
         auto *versions = panel->findChild<QAbstractItemView *>("revisionTable");
         QCOMPARE(versions->model()->rowCount(), 1);
         QCOMPARE(versions->model()->index(0, 1).data().toString(), QString("Archived"));
+        const auto pinnedVersion = state(panel)["revision"].toString();
+        whenVisible(&owner, "renameRevisionForm", [](QWidget *form)
+        {
+            form->findChild<QLineEdit *>("revisionLabel")->setText("v1.0.0");
+            click(form, "formAccept");
+        });
+        click(panel, "renameRevisionButton"); QTRY_VERIFY(!busy(panel));
+        QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("v1.0.0"));
+        QCOMPARE(state(panel)["revision"].toString(), pinnedVersion);
         const auto saved = SnapshotLibrary::scan(root); QCOMPARE(saved.assets.size(), 3);
         const auto asset = *std::find_if(saved.assets.begin(), saved.assets.end(), [&](const auto &a) { return a.id == assetId; });
         QCOMPARE(SnapshotLibrary::verifySnapshot(asset, state(panel)["revision"].toString()).snapshot.files,

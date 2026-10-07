@@ -106,6 +106,7 @@ class BrowserPanel final : public QWidget
     void openSourceFolder();
     void updateActions();
     void removeMembership();
+    void renameVersion();
     void deleteAsset(bool whole);
     void showIssues();
     void detailsDialog();
@@ -181,6 +182,7 @@ class BrowserPanel final : public QWidget
     ElaToolButton *m_edit = nullptr;
     ElaToolButton *m_remove = nullptr;
     ElaToolButton *m_changeReference = nullptr;
+    ElaToolButton *m_renameRevision = nullptr;
     ElaToolButton *m_deleteRevision = nullptr;
     ElaToolButton *m_deleteAsset = nullptr;
     ElaToolButton *m_renameGroup = nullptr;

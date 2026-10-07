@@ -278,7 +278,7 @@ QString versionText(const CatalogAsset &asset, const Snapshot &snapshot)
                                         : QStringLiteral("Legacy version %1").arg(snapshot.id);
     QString label = SnapshotLibrary::revisionLabel(snapshot);
     if (std::count_if(asset.snapshots.cbegin(), asset.snapshots.cend(),
-            [&](const auto &other) { return other.sequence == snapshot.sequence; }) > 1)
+            [&](const auto &other) { return SnapshotLibrary::revisionLabel(other).compare(label, Qt::CaseInsensitive) == 0; }) > 1)
         label += " · " + snapshot.id.left(8);
     return label;
 }
@@ -766,10 +766,21 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     labels->addWidget(versionLabel);
     labels->addWidget(new ElaText(QStringLiteral("Status"), 12, m_versionSection), 1);
     versionHeader->addWidget(versionLabels, 1);
-    m_deleteRevision = actionButton(m_versionSection, "deleteRevisionButton", UiIcon::Trash, QStringLiteral("Delete version"));
-    m_deleteRevision->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_deleteRevision->setFixedWidth(m_deleteRevision->fontMetrics().horizontalAdvance(m_deleteRevision->text()) + 34);
-    versionHeader->addWidget(m_deleteRevision);
+    auto *versionActions = new QWidget(m_versionSection);
+    versionActions->setObjectName("versionActions");
+    auto *versionButtons = new QHBoxLayout(versionActions);
+    versionButtons->setContentsMargins(0, 0, 0, 0);
+    versionButtons->setSpacing(4);
+    m_renameRevision = actionButton(versionActions, "renameRevisionButton", UiIcon::Edit, QStringLiteral("Edit version"),
+        QStringLiteral("Edit the selected version name (double-click the version or press F2)"));
+    m_deleteRevision = actionButton(versionActions, "deleteRevisionButton", UiIcon::Trash, QStringLiteral("Delete version"));
+    for (auto *button : {m_renameRevision, m_deleteRevision})
+    {
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setFixedWidth(button->fontMetrics().horizontalAdvance(button->text()) + 34);
+        versionButtons->addWidget(button);
+    }
+    versionHeader->addWidget(versionActions);
     versionLayout->addLayout(versionHeader);
     m_versions = new ElaTableView(m_versionSection);
     m_versions->setObjectName("revisionTable");
@@ -902,6 +913,9 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     connect(m_list->selectionModel(), &QItemSelectionModel::currentChanged, this,
             &BrowserPanel::selectCurrent);
     connect(m_versions->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &BrowserPanel::selectVersion);
+    connect(m_versions, &QAbstractItemView::doubleClicked, this, [this](const QModelIndex &index)
+    { if (index.column() == 0) renameVersion(); });
+    connect(m_renameRevision, &QToolButton::clicked, this, &BrowserPanel::renameVersion);
     connect(m_pages, &QTabWidget::currentChanged, this, [this] { updateActions(); });
     connect(m_workingModel, &WorkingFilesModel::checkedFilesChanged, this, &BrowserPanel::rememberChecks);
     connect(m_checkAll, &QCheckBox::clicked, this, [this](bool checked) { m_workingModel->checkAll(checked); });
@@ -1014,6 +1028,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     shortcut(QKeySequence(Qt::Key_Enter), m_files, [this] { openFile(); });
     shortcut(QKeySequence(Qt::Key_Return), m_workingFiles, [this] { openFile(); });
     shortcut(QKeySequence(Qt::Key_Enter), m_workingFiles, [this] { openFile(); });
+    shortcut(QKeySequence(Qt::Key_F2), m_versions, [this] { renameVersion(); });
     shortcut(QKeySequence(Qt::Key_F2), m_list, [this]
     {
         const auto index = m_list->currentIndex();
@@ -1148,9 +1163,11 @@ void BrowserPanel::adaptEmbeddedLayout()
     m_workingActions->setStretch(1, stacked ? 0 : 1);
     m_workingActions->setAlignment(m_workingActions->itemAt(0)->widget(), stacked ? Qt::AlignLeft : Qt::Alignment());
     m_workingActions->setAlignment(m_workingActions->itemAt(2)->widget(), stacked ? Qt::AlignLeft : Qt::Alignment());
+    m_renameRevision->setToolButtonStyle(stacked ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
+    m_renameRevision->setFixedWidth(stacked ? 28 : m_renameRevision->fontMetrics().horizontalAdvance(m_renameRevision->text()) + 34);
     m_versionHeader->setDirection(stacked ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
     m_versionHeader->setStretch(0, stacked ? 0 : 1);
-    m_versionHeader->setAlignment(m_deleteRevision, stacked ? Qt::AlignLeft : Qt::Alignment());
+    m_versionHeader->setAlignment(m_deleteRevision->parentWidget(), stacked ? Qt::AlignLeft : Qt::Alignment());
     updateVersionHeight();
 }
 void BrowserPanel::updateVersionHeight()
@@ -1811,7 +1828,7 @@ void BrowserPanel::showDetails(const CatalogAsset &asset)
             item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             item->setData(it->id, Qt::UserRole);
             item->setData(editing, Qt::UserRole + 1);
-            item->setData(editing ? text : text + QStringLiteral(", read-only"), Qt::AccessibleTextRole);
+            item->setData(row.isEmpty() ? text : text + QStringLiteral(", read-only"), Qt::AccessibleTextRole);
             item->setToolTip(tooltip);
             row.append(item);
         }
@@ -2752,8 +2769,10 @@ void BrowserPanel::updateActions()
     m_edit->setEnabled(!m_busy && !m_selected.historyIncomplete);
     m_remove->setEnabled(!m_busy && (reference || (!m_selected.historyRoot.isEmpty() && !m_selected.historyIncomplete)));
     m_changeReference->setEnabled(!m_busy);
-    m_deleteRevision->setEnabled(!m_busy && !m_loadingDetails && asset && !reference && !m_selected.legacy &&
-        !m_selected.historyIncomplete && !m_snapshot.id.isEmpty());
+    const bool editableVersion = !m_busy && !m_loadingDetails && asset && !reference && !m_selected.legacy &&
+        !m_selected.historyIncomplete && !m_snapshot.id.isEmpty() && m_snapshot.id != "current" && m_snapshot.id != "working";
+    m_renameRevision->setEnabled(editableVersion);
+    m_deleteRevision->setEnabled(editableVersion);
     m_deleteAsset->setEnabled(!m_busy && !m_selected.historyIncomplete);
     m_renameGroup->setEnabled(!m_busy);
     m_deleteGroup->setEnabled(!m_busy);
@@ -2761,6 +2780,7 @@ void BrowserPanel::updateActions()
     m_fileSection->setVisible(asset && !m_snapshot.id.isEmpty());
     m_groupItems->setVisible(group && m_groupItems->rootIndex().isValid() &&
         m_model->rowCount(m_groupItems->rootIndex()) > 0);
+    m_renameRevision->setVisible(asset && !reference && !m_selected.legacy);
     m_deleteRevision->setVisible(asset && !reference && !m_selected.legacy);
     const QList<QPair<ElaToolButton *, bool>> controls{
         {m_openFolder, asset && m_selected.discovered},
@@ -2836,6 +2856,33 @@ void BrowserPanel::removeMembership()
     if (form.exec() != QDialog::Accepted) return;
     run(QStringLiteral("Updating catalog membership…"), [asset, source]
         { return source ? SnapshotLibrary::unregisterSource(asset) : SnapshotLibrary::removeReference(asset); });
+}
+void BrowserPanel::renameVersion()
+{
+    if (!m_renameRevision->isEnabled()) return;
+    const auto asset = m_selected;
+    const auto snapshot = m_snapshot;
+    Form form(this, QStringLiteral("Edit version"), QStringLiteral("Save"));
+    form.setObjectName("renameRevisionForm");
+    auto *label = new EnglishLineEdit(&form);
+    label->setObjectName("revisionLabel");
+    label->setMaxLength(128);
+    label->setText(SnapshotLibrary::revisionLabel(snapshot));
+    label->setPlaceholderText(QStringLiteral("e.g. v1.0.0"));
+    label->setAccessibleName(QStringLiteral("Version"));
+    label->selectAll();
+    form.body->addWidget(label);
+    connect(label, &QLineEdit::textChanged, &form,
+        [&] { form.acceptButton->setEnabled(!label->text().trimmed().isEmpty()); });
+    if (form.exec() != QDialog::Accepted) return;
+    const auto name = label->text();
+    run(QStringLiteral("Saving version name…"),
+        [asset, snapshot, name] { return SnapshotLibrary::renameSnapshot(asset, snapshot.id, name); },
+        [this](const auto &result)
+        {
+            applyAssetResult(result, result.snapshot.id);
+            notice(QStringLiteral("Version renamed to %1").arg(SnapshotLibrary::revisionLabel(result.snapshot)));
+        }, true);
 }
 void BrowserPanel::deleteAsset(bool whole)
 {

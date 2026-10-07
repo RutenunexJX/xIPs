@@ -23,6 +23,8 @@ struct Snapshot
     QMap<QString, ContentObject> objects;
     qint64 sequence = 0;
     QStringList parents;
+    // Display-only override; immutable revision manifests never contain this field.
+    QString label;
 };
 
 struct CatalogAsset
@@ -155,6 +157,8 @@ class SnapshotLibrary
                                const QString &category, const QString &description);
     static SnapshotResult exportSnapshot(const CatalogAsset &asset, const QString &revision,
                                          const QString &destination, const PayloadPreview *expected = nullptr);
+    static SnapshotResult renameSnapshot(const CatalogAsset &asset, const QString &revision,
+                                         const QString &label);
     static SnapshotResult eraseSnapshot(const CatalogAsset &asset, const QString &revision,
                                         bool permanent = false);
     static SnapshotResult eraseAsset(const CatalogAsset &asset, bool permanent = false);

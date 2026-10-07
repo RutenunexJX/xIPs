@@ -513,6 +513,124 @@ class WorkflowTest : public QObject
         QCOMPARE(cli.exitCode(), 0);
         QVERIFY(cli.readAllStandardOutput().contains("counter"));
     }
+    void versionNamesPreserveArchivesAndReferences_data()
+    {
+        QTest::addColumn<bool>("collected");
+        QTest::newRow("working-source") << false;
+        QTest::newRow("collected") << true;
+    }
+    void versionNamesPreserveArchivesAndReferences()
+    {
+        QFETCH(bool, collected);
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library");
+        QVERIFY(QDir().mkpath(library));
+        QString source;
+        SnapshotResult first;
+        if (collected)
+        {
+            source = tmp.filePath("external/source.sv"); put(source, "first");
+            first = SnapshotLibrary::collect(library, {source}, "versions", "module");
+        }
+        else
+        {
+            CatalogDefinition definition; definition.name = "versions";
+            auto created = SnapshotLibrary::create(library, definition); QVERIFY(created.ok);
+            source = created.asset.root + "/source.sv"; put(source, "first");
+            first = SnapshotLibrary::saveCurrent(created.asset);
+        }
+        QVERIFY2(first.ok, qPrintable(first.error));
+        const auto root = collected ? first.asset.root : first.asset.historyRoot;
+        const auto manifest = root + "/.xips/revisions/" + first.snapshot.id + ".json";
+        const auto manifestBytes = get(manifest);
+        const auto receiver = tmp.filePath("receiver"); QVERIFY(QDir().mkpath(receiver));
+        const auto reference = SnapshotLibrary::addReference(first.asset, first.snapshot.id, receiver);
+        QVERIFY2(reference.ok, qPrintable(reference.error));
+        const auto referenceBytes = get(reference.asset.referencePath);
+        auto renamed = SnapshotLibrary::renameSnapshot(first.asset, first.snapshot.id, "  v1.0.0  ");
+        QVERIFY2(renamed.ok, qPrintable(renamed.error));
+        QCOMPARE(SnapshotLibrary::revisionLabel(renamed.snapshot), QString("v1.0.0"));
+        QCOMPARE(renamed.snapshot.id, first.snapshot.id);
+        QCOMPARE(renamed.snapshot.hash, first.snapshot.hash);
+        QCOMPARE(renamed.snapshot.sequence, first.snapshot.sequence);
+        QCOMPARE(renamed.snapshot.parents, first.snapshot.parents);
+        QCOMPARE(renamed.snapshot.files, first.snapshot.files);
+        QCOMPARE(renamed.asset.nextSequence, first.asset.nextSequence);
+        QCOMPARE(SnapshotLibrary::heads(renamed.asset), SnapshotLibrary::heads(first.asset));
+        QCOMPARE(get(manifest), manifestBytes);
+        QCOMPARE(get(source), QByteArray("first"));
+        QVERIFY(CatalogIndex::generation({renamed.asset}) != CatalogIndex::generation({first.asset}));
+        const auto reopened = SnapshotLibrary::scan(library);
+        QVERIFY(reopened.problems.isEmpty()); QCOMPARE(reopened.assets.size(), 1);
+        QCOMPARE(SnapshotLibrary::revisionLabel(SnapshotLibrary::matchingRevisions(reopened.assets.first(), first.snapshot.id).first()), QString("v1.0.0"));
+        QCOMPARE(SnapshotLibrary::matchingRevisions(reopened.assets.first(), "1").first().id, first.snapshot.id);
+        const auto received = SnapshotLibrary::scan(receiver);
+        QVERIFY(received.problems.isEmpty()); QCOMPARE(received.assets.size(), 1);
+        QCOMPARE(SnapshotLibrary::revisionLabel(received.assets.first().snapshots.first()), QString("v1.0.0"));
+        QCOMPARE(received.assets.first().pinnedRevision, first.snapshot.id);
+        QCOMPARE(get(reference.asset.referencePath), referenceBytes);
+        QVERIFY(!SnapshotLibrary::renameSnapshot(received.assets.first(), first.snapshot.id, "forbidden").ok);
+        const auto exported = SnapshotLibrary::exportSnapshot(renamed.asset, first.snapshot.id, tmp.filePath("copy.sv"));
+        QVERIFY2(exported.ok, qPrintable(exported.error)); QCOMPARE(get(exported.exportedPath), QByteArray("first"));
+        put(source, "second");
+        auto next = collected ? SnapshotLibrary::update(renamed.asset, {source}) : SnapshotLibrary::saveCurrent(renamed.asset);
+        QVERIFY2(next.ok, qPrintable(next.error));
+        QCOMPARE(next.snapshot.sequence, 2);
+        QCOMPARE(next.snapshot.parents, QStringList{first.snapshot.id});
+        QCOMPARE(SnapshotLibrary::revisionLabel(next.snapshot), QString("rev2"));
+        QCOMPARE(SnapshotLibrary::revisionLabel(SnapshotLibrary::matchingRevisions(next.asset, first.snapshot.id).first()), QString("v1.0.0"));
+        const auto reset = SnapshotLibrary::renameSnapshot(next.asset, first.snapshot.id, "rev1");
+        QVERIFY2(reset.ok, qPrintable(reset.error)); QVERIFY(reset.snapshot.label.isEmpty());
+        QVERIFY(!reset.asset.document.value("revisionLabels").toObject().contains(first.snapshot.id));
+        QCOMPARE(get(manifest), manifestBytes);
+    }
+    void versionNamesRejectInvalidAndStaleEdits()
+    {
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library");
+        auto first = create(library); QVERIFY(first.ok);
+        const auto source = first.asset.root + '/' + first.snapshot.files.first();
+        put(source, "second"); auto second = SnapshotLibrary::saveCurrent(first.asset); QVERIFY(second.ok);
+        const auto metadata = first.asset.historyRoot + "/.xips.json";
+        const auto original = get(metadata);
+        for (const auto &name : QStringList{"", " \t ", "line\nbreak", QString(129, 'x'), "REV2"})
+            QVERIFY(!SnapshotLibrary::renameSnapshot(second.asset, first.snapshot.id, name).ok);
+        QVERIFY(!SnapshotLibrary::renameSnapshot(second.asset, "current", "changed").ok);
+        QVERIFY(!SnapshotLibrary::renameSnapshot(second.asset, "working", "changed").ok);
+        QCOMPARE(get(metadata), original);
+        OperationControl cancelled; QVERIFY(cancelled.cancel());
+        { OperationScope scope(&cancelled); QVERIFY(SnapshotLibrary::renameSnapshot(second.asset, first.snapshot.id, "cancelled").cancelled); }
+        QLockFile lock(library + "/.xips-library.lock"); QVERIFY(lock.tryLock());
+        QVERIFY(!SnapshotLibrary::renameSnapshot(second.asset, first.snapshot.id, "locked").ok); lock.unlock();
+        QCOMPARE(get(metadata), original);
+        auto renamed = SnapshotLibrary::renameSnapshot(second.asset, first.snapshot.id, "v1");
+        QVERIFY2(renamed.ok, qPrintable(renamed.error));
+        QVERIFY(!SnapshotLibrary::renameSnapshot(second.asset, first.snapshot.id, "stale").ok);
+        const auto same = SnapshotLibrary::renameSnapshot(renamed.asset, first.snapshot.id, "v1");
+        QVERIFY(same.ok && same.unchanged);
+        QVERIFY(!SnapshotLibrary::renameSnapshot(renamed.asset, second.snapshot.id, "V1").ok);
+        const auto savedBytes = get(metadata);
+        auto document = renamed.asset.document;
+        document.insert("revisionLabels", QJsonObject{{first.snapshot.id, 123}});
+        put(metadata, QJsonDocument(document).toJson());
+        auto damaged = SnapshotLibrary::describe(renamed.asset);
+        QVERIFY(damaged.ok && damaged.asset.historyIncomplete);
+        QVERIFY(!damaged.asset.problems.isEmpty());
+        QVERIFY(SnapshotLibrary::verifySnapshot(damaged.asset, first.snapshot.id).ok);
+        QVERIFY(!SnapshotLibrary::renameSnapshot(damaged.asset, first.snapshot.id, "blocked").ok);
+        put(metadata, savedBytes);
+        const auto removed = SnapshotLibrary::eraseSnapshot(renamed.asset, second.snapshot.id); QVERIFY(removed.ok);
+        QVERIFY(!SnapshotLibrary::renameSnapshot(renamed.asset, second.snapshot.id, "deleted").ok);
+        // Editing an archived name does not depend on the working source being present.
+        const auto movedSource = tmp.filePath("retained-working-folder");
+        QVERIFY(QDir().rename(first.asset.root, movedSource));
+        auto unavailable = SnapshotLibrary::describe(removed.asset); QVERIFY(unavailable.ok);
+        QVERIFY(!unavailable.asset.sourceProblem.isEmpty());
+        renamed = SnapshotLibrary::renameSnapshot(unavailable.asset, first.snapshot.id, "archived-v1");
+        QVERIFY2(renamed.ok, qPrintable(renamed.error));
+        QCOMPARE(SnapshotLibrary::revisionLabel(renamed.snapshot), QString("archived-v1"));
+        QCOMPARE(get(movedSource + '/' + first.snapshot.files.first()), QByteArray("second"));
+    }
     void archivedVersionDeletion_data()
     {
         QTest::addColumn<QString>("kind");

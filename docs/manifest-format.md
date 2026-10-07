@@ -96,7 +96,9 @@ links and duplicates differing only in case are rejected. Object hashes cover ra
 file bytes. The tree digest frames paths, sizes and hashes; see `ContentStore::treeHash`.
 Consumers should obtain hashes from the API/CLI.
 
-Sequence numbers are display labels. Concurrent revisions retain unique UUIDs even
+An optional `revisionLabels` object in the mutable asset `.xips.json` maps revision IDs to custom display names. Without a name, the UI displays `rev<sequence>`. Renaming atomically updates this map while retaining the immutable manifest, UUID, sequence, ancestry and content hash. Names contain 1–128 characters without line breaks or control characters. New edits reject names already displayed by another retained version. Synchronized label collisions are disambiguated by the UUID in the UI. Deleted revision labels may remain as inert metadata. Numeric selectors continue to refer to the original sequence; custom names are not identity selectors.
+
+Sequence numbers are default display labels. Concurrent revisions retain unique UUIDs even
 when their sequence numbers match. Numeric selectors reject ambiguity; project
 receipts always pin the UUID. A later save records all known heads as parents and
 captures the supplied source content; it does not merge source text.

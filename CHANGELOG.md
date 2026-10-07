@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.11.0 — 2026-10-08
+
+- Edit archived version names with Edit version, a double-click on the version, or F2; keep custom names after refresh and reopening.
+- Store version names separately from immutable archive manifests, preserving revision IDs, content hashes, creation order and pinned references.
+- Reject empty, duplicate, invalid and stale version-name edits, and retain compact actions in narrow embedded panels.
+
 ## 2.10.0 — 2026-10-07
 
 - Add Project as a distinct type alongside Module and IP in creation, editing, filtering and persisted definitions.
