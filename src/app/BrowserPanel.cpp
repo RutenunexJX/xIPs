@@ -264,7 +264,7 @@ ElaComboBox *categories(QWidget *parent, const QString &category)
 {
     auto *combo = new ElaComboBox(parent);
     combo->setObjectName("categoryCombo");
-    for (const auto &type : QStringList{"module", "ip", "artifact", "other"})
+    for (const auto &type : QStringList{"module", "ip", "project", "artifact", "other"})
         combo->addItem(SnapshotLibrary::categoryLabel(type), type);
     combo->setCurrentIndex(combo->findData(category));
     return combo;
@@ -461,12 +461,12 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     m_search->setMinimumWidth(96);
     m_search->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     toolbar->addWidget(m_search);
-    m_new = new ElaPushButton(QStringLiteral("New IP"), toolbar);
+    m_new = new ElaPushButton(QStringLiteral("New"), toolbar);
     m_new->setObjectName("newAssetButton");
     m_new->setFixedSize(90, 30);
     m_new->setIcon(uiIcon(UiIcon::Add));
     m_new->setIconSize(QSize(14, 14));
-    m_new->setToolTip(QStringLiteral("Create an IP or module (Ctrl+N)"));
+    m_new->setToolTip(QStringLiteral("Create a Module, IP or Project (Ctrl+N)"));
     enableToolTip(m_new);
     m_new->setFont(font());
     toolbar->addWidget(m_new);
@@ -491,7 +491,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     m_types->setObjectName("typeCombo");
     m_types->setAccessibleName(QStringLiteral("Asset type"));
     m_types->setFixedHeight(30);
-    for (const auto &category : QStringList{"", "module", "ip", "artifact", "other"})
+    for (const auto &category : QStringList{"", "module", "ip", "project", "artifact", "other"})
         m_types->addItem(category.isEmpty() ? QStringLiteral("All types")
                                            : SnapshotLibrary::categoryLabel(category), category);
     filters->addWidget(m_types);
@@ -844,7 +844,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     m_splitter->setStretchFactor(1, 1);
     layout->addWidget(m_splitter, 1);
     m_status =
-        new ElaText(QStringLiteral("Choose a catalog folder, then create an IP or module"), this);
+        new ElaText(QStringLiteral("Choose a catalog folder, then create a Module, IP or Project"), this);
     m_status->setObjectName("browserNotice");
     m_status->setTextPixelSize(12);
     m_status->setFixedHeight(18);
@@ -1203,8 +1203,7 @@ bool BrowserPanel::overWorkingPage(const QPoint &position) const
 void BrowserPanel::handleFileDrop(QDropEvent *event, bool working, bool import)
 {
     event->ignore();
-    if (m_busy || !event->possibleActions().testFlag(Qt::CopyAction) ||
-        (working && (m_pages->currentIndex() != 0 || !m_addFiles->isEnabled()))) return;
+    if (m_busy || !event->possibleActions().testFlag(Qt::CopyAction)) return;
     QStringList paths;
     for (const auto &url : event->mimeData()->urls())
     {
@@ -1212,10 +1211,13 @@ void BrowserPanel::handleFileDrop(QDropEvent *event, bool working, bool import)
         paths.append(url.toLocalFile());
     }
     if (paths.isEmpty()) return;
+    const bool folders = std::any_of(paths.cbegin(), paths.cend(), [](const auto &path) { return QFileInfo(path).isDir(); });
+    if (!folders && working && (m_pages->currentIndex() != 0 || !m_addFiles->isEnabled())) return;
     event->setDropAction(Qt::CopyAction);
     event->accept();
     if (!import) return;
-    if (working) importWorkingFiles(paths);
+    if (folders) importFolders(paths, working ? m_selected.id : QString());
+    else if (working) importWorkingFiles(paths);
     else
     {
         if (m_library.isEmpty()) chooseLibrary();
@@ -1286,6 +1288,153 @@ void BrowserPanel::importWorkingFiles(const QStringList &paths)
         applyAssetResult(result, QStringLiteral("current"));
     }, true);
 }
+void BrowserPanel::importFolders(const QStringList &paths, const QString &preferredAsset)
+{
+    if (m_busy || paths.isEmpty()) return;
+    if (m_library.isEmpty())
+    {
+        chooseLibrary();
+        if (m_library.isEmpty()) return;
+        auto *ready = new QTimer(this);
+        connect(ready, &QTimer::timeout, this, [this, ready, paths, preferredAsset, library = m_library]
+        {
+            if (m_busy) return;
+            ready->stop();
+            ready->deleteLater();
+            if (library == m_library) importFolders(paths, preferredAsset);
+        });
+        ready->start(50);
+        return;
+    }
+    const auto library = m_library;
+    run(QStringLiteral("Reading files to import…"), [paths] { return SnapshotLibrary::previewImport(paths); },
+        [this, paths, preferredAsset, library](const auto &prepared)
+    {
+        if (m_pendingContext || m_pendingState || library != m_library) return;
+        Form form(this, QStringLiteral("Import folder"), QStringLiteral("Import and archive"));
+        form.setObjectName("folderImportForm");
+        auto *destination = new ElaComboBox(&form);
+        destination->setObjectName("importDestination");
+        destination->addItem(QStringLiteral("Create new Module / IP / Project"), QString());
+        QList<CatalogAsset> targets;
+        for (const auto &asset : m_assets)
+            if (QStringList{"module", "ip", "project"}.contains(asset.category) &&
+                asset.discovered && asset.sourceIsDirectory && !asset.historyRoot.isEmpty() &&
+                asset.referencePath.isEmpty() && asset.sourceProblem.isEmpty() && !asset.historyIncomplete)
+            {
+                targets.append(asset);
+                destination->addItem(QStringLiteral("%1 (%2) · %3").arg(asset.name,
+                    SnapshotLibrary::categoryLabel(asset.category), QDir(library).relativeFilePath(asset.root)), asset.id);
+            }
+        const int preferred = destination->findData(preferredAsset);
+        if (preferred >= 0) destination->setCurrentIndex(preferred);
+        form.body->addWidget(destination);
+        auto *newEntry = new QWidget(&form);
+        auto *newRow = new QHBoxLayout(newEntry);
+        newRow->setContentsMargins(0, 0, 0, 0);
+        auto *name = new EnglishLineEdit(newEntry);
+        name->setObjectName("importName");
+        name->setPlaceholderText(QStringLiteral("New entry name"));
+        name->setText(QFileInfo(paths.first()).fileName());
+        auto *type = new ElaComboBox(newEntry);
+        type->setObjectName("importType");
+        for (const auto &category : QStringList{"module", "ip", "project"})
+            type->addItem(SnapshotLibrary::categoryLabel(category), category);
+        newRow->addWidget(name, 1);
+        newRow->addWidget(type);
+        form.body->addWidget(newEntry);
+        form.message(QStringLiteral("Choose files to import and include in this version."));
+        auto *all = new ElaCheckBox(QStringLiteral("All files"), &form);
+        all->setObjectName("importAllFiles");
+        all->setChecked(true);
+        form.body->addWidget(all);
+        auto *tree = new ElaTreeView(&form);
+        tree->setObjectName("importFiles");
+        tree->setHeaderHidden(true);
+        tree->setMinimumHeight(150);
+        tree->setMaximumHeight(300);
+        tree->setUniformRowHeights(true);
+        auto *files = new WorkingFilesModel(tree);
+        files->setFiles(prepared.preview.files,
+            QSet<QString>(prepared.preview.files.cbegin(), prepared.preview.files.cend()), true);
+        tree->setModel(files);
+        tree->expandAll();
+        form.body->addWidget(tree, 1);
+        auto *transfer = new ElaComboBox(&form);
+        transfer->setObjectName("importTransfer");
+        transfer->addItem(QStringLiteral("Copy (keep source files)"), false);
+        transfer->addItem(QStringLiteral("Move (remove selected source files after archival)"), true);
+        form.body->addWidget(transfer);
+        auto *note = new EnglishLineEdit(&form);
+        note->setObjectName("importNote");
+        note->setPlaceholderText(QStringLiteral("Version note (optional)"));
+        form.body->addWidget(note);
+        auto *summary = new ElaText(&form);
+        summary->setObjectName("importSummary");
+        summary->setTextPixelSize(13);
+        summary->setTextFormat(Qt::PlainText);
+        summary->setWordWrap(true);
+        form.body->addWidget(summary);
+        const auto update = [&]
+        {
+            const auto selected = files->checkedFiles();
+            const bool creating = destination->currentData().toString().isEmpty();
+            newEntry->setVisible(creating);
+            form.acceptButton->setEnabled(!selected.isEmpty() && (!creating || !name->text().trimmed().isEmpty()));
+            summary->setText(QStringLiteral("%1 of %2 files selected · creates a saved version")
+                .arg(selected.size()).arg(prepared.preview.files.size()));
+            const QSignalBlocker blocker(all);
+            all->setCheckState(selected.isEmpty() ? Qt::Unchecked
+                : selected.size() == prepared.preview.files.size() ? Qt::Checked : Qt::PartiallyChecked);
+        };
+        connect(all, &QCheckBox::clicked, files, &WorkingFilesModel::checkAll);
+        connect(files, &WorkingFilesModel::checkedFilesChanged, &form, update);
+        connect(destination, &QComboBox::currentIndexChanged, &form, update);
+        connect(name, &QLineEdit::textChanged, &form, update);
+        update();
+        if (form.exec() != QDialog::Accepted || m_pendingContext || m_pendingState) return;
+        ImportRequest request;
+        request.sources = paths;
+        request.move = transfer->currentData().toBool();
+        request.note = note->text();
+        request.selection.files = files->checkedFiles();
+        for (const auto &file : request.selection.files)
+            request.selection.objects.insert(file, prepared.preview.objects.value(file));
+        CatalogDefinition definition;
+        definition.name = name->text();
+        definition.category = type->currentData().toString();
+        CatalogAsset target;
+        for (const auto &asset : targets)
+            if (asset.id == destination->currentData().toString()) { target = asset; break; }
+        const auto group = m_activeGroup;
+        run(QStringLiteral("Importing and archiving files…"), [library, definition, target, request, group]
+        {
+            auto result = target.id.isEmpty() ? SnapshotLibrary::create(library, definition, &request)
+                                             : SnapshotLibrary::importAndSave(target, request);
+            if (result.ok && target.id.isEmpty() && !group.isEmpty())
+            {
+                const auto membership = CatalogGroups::setMember(library, group, result.asset.id, true);
+                if (!membership.ok)
+                {
+                    result.ok = false;
+                    result.error = QStringLiteral("Files archived, but could not add the entry to the group: %1").arg(membership.error);
+                    result.retainedPath = result.asset.root;
+                }
+            }
+            return result;
+        }, [this](const auto &result)
+        {
+            if (!result.retainedSources.isEmpty() && !m_pendingContext && !m_pendingState)
+            {
+                Form retained(this, QStringLiteral("Files archived; some sources retained"), QStringLiteral("Close"));
+                retained.message(QStringLiteral("These source files could not be removed or changed during the move:\n%1")
+                    .arg(result.retainedSources.join('\n')));
+                retained.exec();
+            }
+            applyAssetResult(result, QStringLiteral("current"));
+        }, true);
+    });
+}
 bool BrowserPanel::applyPendingContext()
 {
     if (m_busy) return false;
@@ -1312,7 +1461,7 @@ void BrowserPanel::refreshCatalog(bool automatic, bool full, const QStringList &
     if (m_busy) return;
     if (m_library.isEmpty())
     {
-        if (!automatic) notice(QStringLiteral("Choose a catalog folder, then create an IP or module."));
+        if (!automatic) notice(QStringLiteral("Choose a catalog folder, then create a Module, IP or Project."));
         return;
     }
     const QString library = m_library,
@@ -2142,7 +2291,7 @@ void BrowserPanel::createAsset()
 {
     if (m_busy) return;
     if (m_library.isEmpty()) { chooseLibrary(); return; }
-    Form form(this, QStringLiteral("New IP or module"), QStringLiteral("Create"));
+    Form form(this, QStringLiteral("New Module, IP or Project"), QStringLiteral("Create"));
     auto *name = new EnglishLineEdit(&form);
     name->setObjectName("newAssetName");
     name->setPlaceholderText(QStringLiteral("Name, e.g. uart_rx"));
@@ -2151,10 +2300,11 @@ void BrowserPanel::createAsset()
     type->setObjectName("newAssetType");
     type->addItem(QStringLiteral("Module"), "module");
     type->addItem(QStringLiteral("IP"), "ip");
+    type->addItem(QStringLiteral("Project"), "project");
     form.body->addWidget(type);
     auto *mode = new ElaComboBox(&form);
     mode->setObjectName("newAssetMode");
-    mode->addItem(QStringLiteral("Empty IP / module"), "new");
+    mode->addItem(QStringLiteral("Empty working folder"), "new");
     mode->addItem(QStringLiteral("Register existing folder"), "folder");
     mode->addItem(QStringLiteral("Register existing file"), "file");
     form.body->addWidget(mode);
@@ -2263,7 +2413,7 @@ void BrowserPanel::collectPaths(const QStringList &paths)
     form.body->addWidget(name);
     form.body->addWidget(category);
     form.message(paths.join('\n'));
-    form.message(QStringLiteral("Creates rev1. Module and IP assets exclude build folders; "
+    form.message(QStringLiteral("Creates rev1. Module, IP and Project assets exclude build folders; "
                                 "Artifact assets include the selected outputs."));
     connect(name, &QLineEdit::textChanged, &form,
             [&] { form.acceptButton->setEnabled(!name->text().trimmed().isEmpty()); });

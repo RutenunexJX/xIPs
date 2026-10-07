@@ -1,0 +1,104 @@
+diff --git a/Development/ElaComboBoxStyle.cpp b/Development/ElaComboBoxStyle.cpp
+index 887a28d..2237662 100644
+--- a/Development/ElaComboBoxStyle.cpp
++++ b/Development/ElaComboBoxStyle.cpp
+@@ -78,7 +78,7 @@ void ElaComboBoxStyle::drawControl(ControlElement element, const QStyleOption* o
+         //覆盖高亮
+         if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
+         {
+-            int margin = 2;
++            int margin = 1;
+             painter->save();
+             painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+             painter->setPen(Qt::NoPen);
+@@ -195,6 +195,15 @@ void ElaComboBoxStyle::drawComplexControl(ComplexControl control, const QStyleOp
+     QProxyStyle::drawComplexControl(control, option, painter, widget);
+ }
+ 
++QStyle::SubControl ElaComboBoxStyle::hitTestComplexControl(ComplexControl control, const QStyleOptionComplex* option, const QPoint& position, const QWidget* widget) const
++{
++    if (control == CC_ComboBox)
++        if (const auto* combo = qstyleoption_cast<const QStyleOptionComboBox*>(option))
++            if (!combo->editable && combo->rect.contains(position))
++                return SC_ComboBoxArrow;
++    return QProxyStyle::hitTestComplexControl(control, option, position, widget);
++}
++
+ QRect ElaComboBoxStyle::subControlRect(ComplexControl cc, const QStyleOptionComplex* opt, SubControl sc, const QWidget* widget) const
+ {
+     switch (cc)
+@@ -241,7 +250,7 @@ QSize ElaComboBoxStyle::sizeFromContents(ContentsType type, const QStyleOption*
+     case QStyle::CT_ItemViewItem:
+     {
+         QSize itemSize = QProxyStyle::sizeFromContents(type, option, size, widget);
+-        itemSize.setHeight(35);
++        itemSize.setHeight(qMax(24, option->fontMetrics.height() + 6));
+         return itemSize;
+     }
+     case QStyle::CT_ComboBox:
+diff --git a/Development/ElaComboBoxStyle.h b/Development/ElaComboBoxStyle.h
+index 1696fef..97be5e7 100644
+--- a/Development/ElaComboBoxStyle.h
++++ b/Development/ElaComboBoxStyle.h
+@@ -16,6 +16,7 @@ public:
+     void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+     void drawComplexControl(ComplexControl control, const QStyleOptionComplex* option, QPainter* painter, const QWidget* widget = nullptr) const override;
+ 
++    SubControl hitTestComplexControl(ComplexControl control, const QStyleOptionComplex* option, const QPoint& position, const QWidget* widget = nullptr) const override;
+     QRect subControlRect(ComplexControl cc, const QStyleOptionComplex* opt, SubControl sc, const QWidget* widget) const override;
+     QSize sizeFromContents(ContentsType type, const QStyleOption* option, const QSize& size, const QWidget* widget) const override;
+ 
+diff --git a/ElaComboBox.cpp b/ElaComboBox.cpp
+index 118088d..17c4189 100644
+--- a/ElaComboBox.cpp
++++ b/ElaComboBox.cpp
+@@ -140,6 +140,7 @@ void ElaComboBox::showPopup()
+     finishPopupAnimation();
+     // Repeated show requests settle the existing popup without adding padding again.
+     if (view()->isVisible()) return;
++    if (d->_popup) d->_popup->setAttribute(Qt::WA_NoMouseReplay, false);
+     QPointer<ElaComboBox> alive(this);
+     const bool oldEffects = qApp->isEffectEnabled(Qt::UI_AnimateCombo);
+     qApp->setEffectEnabled(Qt::UI_AnimateCombo, false);
+@@ -192,9 +193,29 @@ void ElaComboBox::hidePopup()
+     animateIndicator(false);
+ }
+ 
++void ElaComboBox::mousePressEvent(QMouseEvent* event)
++{
++    if (event->button() == Qt::LeftButton && !isEditable() && view()->isVisible()) {
++        hidePopup();
++        event->accept();
++        return;
++    }
++    QComboBox::mousePressEvent(event);
++}
++
+ bool ElaComboBox::eventFilter(QObject* watched, QEvent* event)
+ {
+     Q_D(ElaComboBox);
++    if (!isEditable() && view()->isVisible() && event->type() == QEvent::MouseButtonPress &&
++        (watched == d->_popup || watched == view() || watched == view()->viewport())) {
++        const auto* mouse = static_cast<QMouseEvent*>(event);
++        if (mouse->button() == Qt::LeftButton && rect().contains(mapFromGlobal(mouse->globalPosition().toPoint()))) {
++            if (d->_popup) d->_popup->setAttribute(Qt::WA_NoMouseReplay);
++            hidePopup();
++            event->accept();
++            return true;
++        }
++    }
+     if (watched == d->_popup && event->type() == QEvent::Hide) {
+         finishPopupAnimation();
+         animateIndicator(false);
+diff --git a/ElaComboBox.h b/ElaComboBox.h
+index 681292e..4d9b329 100644
+--- a/ElaComboBox.h
++++ b/ElaComboBox.h
+@@ -24,6 +24,7 @@ protected:
+     virtual void showPopup() override;
+     virtual void hidePopup() override;
+     virtual void paintEvent(QPaintEvent* event) override;
++    void mousePressEvent(QMouseEvent* event) override;
+     bool eventFilter(QObject* watched, QEvent* event) override;
+     void hideEvent(QHideEvent* event) override;
+     void resizeEvent(QResizeEvent* event) override;

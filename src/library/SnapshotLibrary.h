@@ -87,6 +87,14 @@ struct PayloadPreview
     qsizetype unchanged = 0;
 };
 
+struct ImportRequest
+{
+    QStringList sources;
+    PayloadPreview selection;
+    bool move = false;
+    QString note;
+};
+
 struct SnapshotResult
 {
     bool ok = false;
@@ -94,6 +102,7 @@ struct SnapshotResult
     bool unchanged = false;
     QString error;
     QString retainedPath;
+    QStringList retainedSources;
     CatalogAsset asset;
     Snapshot snapshot;
     QString exportedPath;
@@ -109,7 +118,8 @@ class SnapshotLibrary
     static QString revisionLabel(const Snapshot &snapshot);
     // Cached metadata only: exact IDs take precedence over decimal sequence aliases.
     static QList<Snapshot> matchingRevisions(const CatalogAsset &asset, const QString &selector);
-    static SnapshotResult create(const QString &library, const CatalogDefinition &definition);
+    static SnapshotResult create(const QString &library, const CatalogDefinition &definition,
+                                 const ImportRequest *request = nullptr);
     static SnapshotResult setDefinition(const CatalogAsset &asset, const CatalogDefinition &definition);
     static SnapshotResult addReference(const CatalogAsset &asset, const QString &revision,
                                        const QString &destinationLibrary);
@@ -117,6 +127,8 @@ class SnapshotLibrary
                                       const PayloadPreview *expected = nullptr);
     static SnapshotResult previewSave(const CatalogAsset &asset, const QStringList &sources = {});
     static SnapshotResult importFiles(const CatalogAsset &asset, const QStringList &sources);
+    static SnapshotResult previewImport(const QStringList &sources);
+    static SnapshotResult importAndSave(const CatalogAsset &asset, const ImportRequest &request);
     static SnapshotResult previewSelected(const CatalogAsset &asset, const QStringList &files);
     static SnapshotResult saveSelected(const CatalogAsset &asset, const QStringList &files,
                                        const QString &note = {}, const PayloadPreview *expected = nullptr);

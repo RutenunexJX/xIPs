@@ -98,7 +98,7 @@ QStringList strings(const QJsonArray &array)
 }
 bool validCategory(const QString &category)
 {
-    return QStringList{QStringLiteral("module"), QStringLiteral("ip"), QStringLiteral("artifact"),
+    return QStringList{QStringLiteral("module"), QStringLiteral("ip"), QStringLiteral("project"), QStringLiteral("artifact"),
                        QStringLiteral("other")}
         .contains(category);
 }
@@ -979,6 +979,8 @@ QString SnapshotLibrary::categoryLabel(const QString &category)
         return "IP";
     if (category == "module")
         return "Module";
+    if (category == "project")
+        return "Project";
     if (category == "artifact")
         return QStringLiteral("Artifact");
     return QStringLiteral("Other");
@@ -1333,12 +1335,165 @@ SnapshotResult SnapshotLibrary::saveSelected(const CatalogAsset &asset, const QS
         saveSourceRevision(asset, note, result, {}, expected, &files);
     });
 }
-SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefinition &definition)
+namespace
+{
+QMap<QString, InputFile> importInputs(const QStringList &sources, const QString &targetRoot = {},
+                                      bool strict = false)
+{
+    require(!sources.isEmpty(), QStringLiteral("Choose files or a folder to add."));
+    QMap<QString, InputFile> planned;
+    for (const auto &source : sources)
+    {
+        safePath(source);
+        const QFileInfo info(source);
+        require(info.isDir() || info.isFile(), QStringLiteral("Source unavailable: %1").arg(source));
+        if (!targetRoot.isEmpty())
+            require(info.isDir() ? !files::isWithin(targetRoot, source) && !files::isWithin(source, targetRoot)
+                                 : (!strict || !files::isWithin(source, targetRoot)),
+                    QStringLiteral("Choose sources outside the destination working folder."));
+        QStringList relatives;
+        if (info.isDir()) enumerate(source, source, relatives, true, true);
+        else relatives = {info.fileName()};
+        for (const auto &relative : relatives)
+        {
+            const auto target = info.isDir() ? info.fileName() + '/' + relative : relative;
+            const auto parts = target.toCaseFolded().split('/');
+            require(!target.isEmpty() && QDir::cleanPath(target) == target && !QDir::isAbsolutePath(target) &&
+                !target.startsWith("../") && !target.contains(':') && !target.contains('\\') &&
+                !parts.contains(".xips") && !parts.contains(".git") &&
+                !std::any_of(parts.cbegin(), parts.cend(), [](const auto &part) { return part.startsWith(".xips-"); }) &&
+                !parts.contains(".xips.json") && !parts.contains(".snapshot.json"),
+                QStringLiteral("Reserved or invalid working file path: %1").arg(target));
+            const InputFile input{info.isDir() ? child(source, relative) : absolute(source), target};
+            const auto key = target.toCaseFolded();
+            if (planned.contains(key))
+                require((!strict || absolute(planned.value(key).source) == absolute(input.source)) &&
+                            ContentStore::fingerprint(planned.value(key).source) == ContentStore::fingerprint(input.source),
+                        QStringLiteral("Conflicting imports: %1. Rename one source and retry.").arg(target));
+            else planned.insert(key, input);
+        }
+    }
+    require(!planned.isEmpty(), QStringLiteral("The selected sources contain no files to add."));
+    return planned;
+}
+void selectImports(QMap<QString, InputFile> &planned, const PayloadPreview &selection)
+{
+    require(!selection.files.isEmpty() && selection.files == selection.objects.keys(),
+            QStringLiteral("Select at least one file to import and archive."));
+    QMap<QString, InputFile> selected;
+    for (const auto &file : selection.files)
+    {
+        const auto key = file.toCaseFolded();
+        require(planned.contains(key) && planned.value(key).relative == file && !selected.contains(key),
+                QStringLiteral("Selected source is no longer available: %1. Review again.").arg(file));
+        selected.insert(key, planned.value(key));
+    }
+    planned = selected;
+}
+QMap<QString, ContentObject> stageImports(const QString &targetRoot, const QString &stageRoot,
+                                          const QMap<QString, InputFile> &planned,
+                                          bool linked, const PayloadPreview *selection)
+{
+    QMap<QString, ContentObject> staged;
+    for (const auto &input : planned)
+    {
+        const auto parts = input.relative.toCaseFolded().split('/');
+        if (linked)
+            for (int i = 0; i < parts.size(); ++i)
+                require(!parts[i].startsWith('.') && (i == parts.size() - 1 || !files::isIgnoredDirectory(parts[i])),
+                        QStringLiteral("This registered source excludes hidden/build paths: %1. Nothing was added.").arg(input.relative));
+        const auto destination = child(targetRoot, input.relative);
+        safePath(destination);
+        require(files::isWithin(destination, targetRoot), QStringLiteral("Invalid import destination."));
+        const auto expected = ContentStore::fingerprint(input.source);
+        require(!selection || selection->objects.value(input.relative) == expected,
+                QStringLiteral("Source changed after review: %1. Review the import again.").arg(input.source));
+        if (QFileInfo::exists(destination))
+        {
+            require(QFileInfo(destination).isFile() && ContentStore::fingerprint(destination) == expected,
+                    QStringLiteral("Already exists with different content: %1. Rename the incoming file or folder and retry; nothing was overwritten.").arg(input.relative));
+            continue;
+        }
+        auto parent = QFileInfo(destination).absolutePath();
+        while (parent != absolute(targetRoot))
+        {
+            require(!QFileInfo::exists(parent) || QFileInfo(parent).isDir(),
+                    QStringLiteral("A file blocks the destination folder: %1").arg(parent));
+            const auto relativeParent = QDir(targetRoot).relativeFilePath(parent).toCaseFolded();
+            require(!planned.contains(relativeParent), QStringLiteral("Conflicting file and folder names: %1").arg(relativeParent));
+            parent = QFileInfo(parent).absolutePath();
+        }
+        const auto stagedPath = child(stageRoot, input.relative);
+        ContentStore::makeDirectory(QFileInfo(stagedPath).absolutePath());
+        QFile in(input.source), out(stagedPath);
+        require(in.open(QIODevice::ReadOnly) && out.open(QIODevice::WriteOnly | QIODevice::NewOnly),
+                QStringLiteral("Cannot copy %1").arg(input.source));
+        while (!in.atEnd())
+        {
+            OperationScope::checkpoint(QStringLiteral("Adding %1").arg(input.relative), in.pos(), expected.size);
+            const auto block = in.read(1024 * 1024);
+            require(in.error() == QFileDevice::NoError && out.write(block) == block.size(), QStringLiteral("Import failed: %1").arg(input.relative));
+        }
+        require(out.flush(), QStringLiteral("Cannot flush imported file: %1").arg(input.relative));
+        in.close(); out.close();
+        require(ContentStore::fingerprint(input.source) == expected && ContentStore::fingerprint(stagedPath) == expected,
+                QStringLiteral("Source changed while adding files: %1").arg(input.source));
+        staged.insert(input.relative, expected);
+    }
+    return staged;
+}
+void finishImport(const ImportRequest &request, const QMap<QString, InputFile> &planned, SnapshotResult &result)
+{
+    if (!request.move) return;
+    // The immutable version and destination must both verify before any source is removed.
+    verifySaved(result.asset, result.snapshot);
+    for (const auto &input : planned)
+        require(ContentStore::fingerprint(child(result.asset.root, input.relative)) == result.snapshot.objects.value(input.relative),
+                QStringLiteral("Imported destination changed; source files retained: %1").arg(input.relative));
+    QSet<QString> processedSources;
+    for (const auto &input : planned)
+    {
+        auto sourceKey = absolute(input.source);
+#ifdef Q_OS_WIN
+        sourceKey = sourceKey.toCaseFolded();
+#endif
+        if (processedSources.contains(sourceKey)) continue;
+        processedSources.insert(sourceKey);
+        try
+        {
+            safePath(input.source);
+            require(!files::isWithin(input.source, result.asset.root) &&
+                        ContentStore::fingerprint(input.source) == result.snapshot.objects.value(input.relative) &&
+                        QFile::remove(input.source),
+                    QStringLiteral("Cannot remove source"));
+        }
+        catch (...)
+        {
+            result.retainedSources.append(input.source);
+            continue;
+        }
+        // Only remove empty parents inside a dropped folder; never its ancestors.
+        for (const auto &source : request.sources)
+        {
+            if (!QFileInfo(source).isDir() || !files::isWithin(input.source, source)) continue;
+            auto parent = QFileInfo(input.source).absolutePath();
+            while (files::isWithin(parent, source))
+            {
+                if (!QDir().rmdir(parent) || absolute(parent) == absolute(source)) break;
+                parent = QFileInfo(parent).absolutePath();
+            }
+        }
+    }
+}
+}
+SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefinition &definition,
+                                       const ImportRequest *request)
 {
     return operation([&](auto &result)
     {
         const auto metadata = definitionFields(definition);
-        require(definition.category == "module" || definition.category == "ip", QStringLiteral("Choose Module or IP."));
+        require(QStringList{"module", "ip", "project"}.contains(definition.category), QStringLiteral("Choose Module, IP or Project."));
+        require(!request || definition.source.isEmpty(), QStringLiteral("Imported files need a new working folder."));
         LibraryLock lock(library);
         const bool managed = definition.source.isEmpty();
         QString source = managed ? availableRoot(library, definition.name) : absolute(definition.source);
@@ -1383,7 +1538,19 @@ SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefi
         document.insert("source", QJsonObject{{"path", relative}, {"directory", directory}});
         if (!existing) document.insert("workingArea", managed ? "managed" : "linked");
         document.insert("registered", true);
-        // Stage both the empty working directory and its catalog definition before publishing.
+        require(!request || !existing, QStringLiteral("A previous entry uses this working path. Choose another name."));
+        QMap<QString, InputFile> planned;
+        if (request)
+        {
+            planned = importInputs(request->sources, source, true);
+            selectImports(planned, request->selection);
+            stageImports(source, sourceStage->path(), planned, false, &request->selection);
+            QList<InputFile> inputs;
+            for (const auto &input : planned) inputs.append({child(sourceStage->path(), input.relative), input.relative});
+            result.snapshot = storeInputs(library, inputs, 1, request->note, {});
+            require(result.snapshot.objects == request->selection.objects, QStringLiteral("Imported files changed. Review again."));
+        }
+        // Stage working files, the definition and optional revision before publication.
         ContentStore::makeDirectory(QFileInfo(destination).absolutePath());
         QTemporaryDir historyStage(child(QFileInfo(destination).absolutePath(), ".pending-XXXXXX"));
         require(historyStage.isValid(), QStringLiteral("Cannot stage catalog entry"));
@@ -1392,6 +1559,7 @@ SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefi
         require(staged.open(QIODevice::WriteOnly) && staged.write(data) == data.size() && staged.flush(),
                 QStringLiteral("Cannot stage catalog metadata"));
         staged.close();
+        if (request) publishSnapshot(historyStage.path(), document.value("id").toString(), result.snapshot);
         OperationScope::publish();
         if (managed)
         {
@@ -1413,10 +1581,13 @@ SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefi
         }
         else historyStage.setAutoRemove(false);
         result.asset = currentSource(attachHistory(load(destination, library)));
+        if (request) finishImport(*request, planned, result);
         result.retainedPath.clear();
     });
 }
-SnapshotResult SnapshotLibrary::importFiles(const CatalogAsset &asset, const QStringList &sources)
+namespace
+{
+SnapshotResult importWorking(const CatalogAsset &asset, const QStringList &sources, const ImportRequest *request)
 {
     return operation([&](auto &result)
     {
@@ -1426,83 +1597,24 @@ SnapshotResult SnapshotLibrary::importFiles(const CatalogAsset &asset, const QSt
         LibraryLock lock(asset.library);
         auto current = currentSource(asset);
         healthyHistory(current);
-        QMap<QString, InputFile> planned;
-        for (const auto &source : sources)
-        {
-            safePath(source);
-            const QFileInfo info(source);
-            require(info.isDir() || info.isFile(), QStringLiteral("Source unavailable: %1").arg(source));
-            require(!info.isDir() || (!files::isWithin(asset.root, source) && !files::isWithin(source, asset.root)),
-                    QStringLiteral("Choose a folder outside this IP's working area."));
-            QStringList relatives;
-            if (info.isDir()) enumerate(source, source, relatives, true, true);
-            else relatives = {info.fileName()};
-            for (const auto &relative : relatives)
-            {
-                const auto target = info.isDir() ? info.fileName() + '/' + relative : relative;
-                const auto parts = target.toCaseFolded().split('/');
-                if (current.document.value("workingArea") != "managed")
-                {
-                    for (int i = 0; i < parts.size(); ++i)
-                        require(!parts[i].startsWith('.') && (i == parts.size() - 1 || !files::isIgnoredDirectory(parts[i])),
-                                QStringLiteral("This registered source excludes hidden/build paths: %1. Nothing was added.").arg(target));
-                }
-                require(!target.isEmpty() && QDir::cleanPath(target) == target && !QDir::isAbsolutePath(target) &&
-                    !target.startsWith("../") && !target.contains(':') && !target.contains('\\') &&
-                    !parts.contains(".xips") && !parts.contains(".git") &&
-                    !std::any_of(parts.cbegin(), parts.cend(), [](const auto &part) { return part.startsWith(".xips-"); }) &&
-                    !parts.contains(".xips.json") && !parts.contains(".snapshot.json"),
-                    QStringLiteral("Reserved or invalid working file path: %1").arg(target));
-                const InputFile input{info.isDir() ? child(source, relative) : source, target};
-                const auto key = target.toCaseFolded();
-                if (planned.contains(key))
-                    require(ContentStore::fingerprint(planned.value(key).source) == ContentStore::fingerprint(input.source),
-                            QStringLiteral("Conflicting imports: %1. Rename one source and retry.").arg(target));
-                else planned.insert(key, input);
-            }
-        }
-        require(!planned.isEmpty(), QStringLiteral("The selected sources contain no files to add."));
+        if (request)
+            require(!current.historyRoot.isEmpty() && current.document == asset.document &&
+                        parentRevisions(current) == parentRevisions(asset),
+                    QStringLiteral("The destination changed. Refresh and review again."));
+        auto planned = importInputs(sources, asset.root, request != nullptr);
+        if (request) selectImports(planned, request->selection);
         ContentStore::makeDirectory(child(asset.library, ".xips/imports"));
         QTemporaryDir stage(child(asset.library, ".xips/imports/.pending-XXXXXX"));
         require(stage.isValid(), QStringLiteral("Cannot stage imported files."));
-        QMap<QString, ContentObject> staged;
-        for (const auto &input : planned)
+        const auto staged = stageImports(asset.root, stage.path(), planned,
+            current.document.value("workingArea") != "managed", request ? &request->selection : nullptr);
+        if (request)
         {
-            const auto destination = child(asset.root, input.relative);
-            safePath(destination);
-            require(files::isWithin(destination, asset.root), QStringLiteral("Invalid import destination."));
-            const auto expected = ContentStore::fingerprint(input.source);
-            if (QFileInfo::exists(destination))
-            {
-                require(QFileInfo(destination).isFile() && ContentStore::fingerprint(destination) == expected,
-                        QStringLiteral("Already exists with different content: %1. Rename the incoming file or folder and retry; nothing was overwritten.").arg(input.relative));
-                continue;
-            }
-            auto parent = QFileInfo(destination).absolutePath();
-            while (parent != absolute(asset.root))
-            {
-                require(!QFileInfo::exists(parent) || QFileInfo(parent).isDir(),
-                        QStringLiteral("A file blocks the destination folder: %1").arg(parent));
-                const auto relativeParent = QDir(asset.root).relativeFilePath(parent).toCaseFolded();
-                require(!planned.contains(relativeParent), QStringLiteral("Conflicting file and folder names: %1").arg(relativeParent));
-                parent = QFileInfo(parent).absolutePath();
-            }
-            const auto stagedPath = child(stage.path(), input.relative);
-            ContentStore::makeDirectory(QFileInfo(stagedPath).absolutePath());
-            QFile in(input.source), out(stagedPath);
-            require(in.open(QIODevice::ReadOnly) && out.open(QIODevice::WriteOnly | QIODevice::NewOnly),
-                    QStringLiteral("Cannot copy %1").arg(input.source));
-            while (!in.atEnd())
-            {
-                OperationScope::checkpoint(QStringLiteral("Adding %1").arg(input.relative), in.pos(), expected.size);
-                const auto block = in.read(1024 * 1024);
-                require(in.error() == QFileDevice::NoError && out.write(block) == block.size(), QStringLiteral("Import failed: %1").arg(input.relative));
-            }
-            require(out.flush(), QStringLiteral("Cannot flush imported file: %1").arg(input.relative));
-            in.close(); out.close();
-            require(ContentStore::fingerprint(input.source) == expected && ContentStore::fingerprint(stagedPath) == expected,
-                    QStringLiteral("Source changed while adding files: %1").arg(input.source));
-            staged.insert(input.relative, expected);
+            QList<InputFile> inputs;
+            for (const auto &input : planned)
+                inputs.append({child(staged.contains(input.relative) ? stage.path() : asset.root, input.relative), input.relative});
+            result.snapshot = storeInputs(asset.library, inputs, current.nextSequence, request->note, parentRevisions(current));
+            require(result.snapshot.objects == request->selection.objects, QStringLiteral("Imported files changed. Review again."));
         }
         // No original is modified. A failed batch removes only the new files it published.
         QStringList published, directories;
@@ -1527,6 +1639,21 @@ SnapshotResult SnapshotLibrary::importFiles(const CatalogAsset &asset, const QSt
                         QStringLiteral("Destination changed or cannot be written: %1").arg(it.key()));
                 published.append(it.key());
             }
+            if (request)
+            {
+                for (const auto &input : planned)
+                    require(ContentStore::fingerprint(child(asset.root, input.relative)) == result.snapshot.objects.value(input.relative),
+                            QStringLiteral("Imported files changed before archival: %1").arg(input.relative));
+                require(parentRevisions(currentSource(current)) == result.snapshot.parents,
+                        QStringLiteral("Versions changed during import. Refresh and retry."));
+                const auto history = load(current.historyRoot, asset.library);
+                if (result.snapshot.parents.size() == 1 && sameContent(history, history.snapshots.last(), result.snapshot))
+                {
+                    verifySaved(history, history.snapshots.last());
+                    result.snapshot = history.snapshots.last();
+                }
+                else publishSnapshot(current.historyRoot, current.id, result.snapshot);
+            }
         }
         catch (...)
         {
@@ -1542,11 +1669,37 @@ SnapshotResult SnapshotLibrary::importFiles(const CatalogAsset &asset, const QSt
             for (auto it = directories.crbegin(); it != directories.crend(); ++it) QDir().rmdir(*it);
             throw;
         }
-        result.unchanged = staged.isEmpty();
+        result.unchanged = staged.isEmpty() && (!request ||
+            std::any_of(current.snapshots.cbegin(), current.snapshots.cend(),
+                [&](const auto &snapshot) { return snapshot.id == result.snapshot.id; }));
         result.preview.files = staged.keys();
         if (!staged.isEmpty()) result.retainedPath = asset.root;
         result.asset = currentSource(current);
+        if (request) finishImport(*request, planned, result);
         result.retainedPath.clear();
+    });
+}
+}
+SnapshotResult SnapshotLibrary::importFiles(const CatalogAsset &asset, const QStringList &sources)
+{
+    return importWorking(asset, sources, nullptr);
+}
+SnapshotResult SnapshotLibrary::importAndSave(const CatalogAsset &asset, const ImportRequest &request)
+{
+    return importWorking(asset, request.sources, &request);
+}
+SnapshotResult SnapshotLibrary::previewImport(const QStringList &sources)
+{
+    return operation([&](auto &result)
+    {
+        const auto planned = importInputs(sources, {}, true);
+        for (const auto &input : planned)
+        {
+            const auto object = ContentStore::fingerprint(input.source);
+            result.preview.objects.insert(input.relative, object);
+            result.preview.bytes += object.size;
+        }
+        result.preview.files = result.preview.objects.keys();
     });
 }
 SnapshotResult SnapshotLibrary::setDefinition(const CatalogAsset &asset, const CatalogDefinition &definition)

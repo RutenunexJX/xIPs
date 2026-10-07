@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.10.0 — 2026-10-07
+
+- Add Project as a distinct type alongside Module and IP in creation, editing, filtering and persisted definitions.
+- Import dropped folders into a new or existing writable Module, IP or Project, with an exact file selection and a choice of copy or move; confirmation imports the selected files and immediately creates an archived version.
+- Publish and verify the archive before removing moved sources, preserve unchecked or changed source files, reject conflicting destination content, and roll back newly imported files when archive creation fails.
+- Make dropdown rows compact and allow a click on the text, blank area or arrow to expand or collapse the list.
+
 ## 2.9.1 — 2026-10-07
 
 - Enable SuiteApp SDK 1.0.1 in the formal build while retaining independent operation when Runtime is absent.

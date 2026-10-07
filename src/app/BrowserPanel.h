@@ -88,6 +88,7 @@ class BrowserPanel final : public QWidget
     void chooseLibrary();
     void addSources();
     void createAsset();
+    void importFolders(const QStringList &paths, const QString &preferredAsset = {});
     void createGroup();
     void renameGroup(const QString &id);
     void groupMenu(const QPoint &position);

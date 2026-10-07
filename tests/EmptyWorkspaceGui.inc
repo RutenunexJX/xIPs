@@ -75,9 +75,11 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
     QDragEnterEvent enter(QPoint(30, 30), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(working->viewport(), &enter); QVERIFY(enter.isAccepted());
     QDropEvent drop(QPointF(30, 30), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    whenVisible(&panel, "folderImportForm", [&](QWidget *form)
+    { form->findChild<ElaPushButton *>("formAccept")->click(); });
     QApplication::sendEvent(working->viewport(), &drop); QVERIFY(drop.isAccepted());
     QTRY_VERIFY(!panel.isCatalogBusy());
-    QCOMPARE(model->fileCount(), 4); QCOMPARE(versions->model()->rowCount(), 0); QVERIFY(!create->isEnabled());
+    QCOMPARE(model->fileCount(), 4); QCOMPARE(versions->model()->rowCount(), 1); QVERIFY(!create->isEnabled());
     put(external + "/extra.v", "extra"); put(external + "/docs/nested/readme.txt", "readme");
     for (const auto &item : QList<QPair<QString, QString>>{{"addFilesButton", external + "/extra.v"},
                                                         {"addFolderButton", external + "/docs"}})
@@ -90,7 +92,7 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
         });
         panel.findChild<QToolButton *>(item.first)->click(); QTRY_VERIFY(!panel.isCatalogBusy());
     }
-    QCOMPARE(model->fileCount(), 6); QCOMPARE(versions->model()->rowCount(), 0);
+    QCOMPARE(model->fileCount(), 6); QCOMPARE(versions->model()->rowCount(), 1);
     auto *all = panel.findChild<ElaCheckBox *>("checkAllFiles");
     all->click(); QCOMPARE(model->checkedFiles().size(), 6);
     all->click(); QVERIFY(model->checkedFiles().isEmpty()); QVERIFY(!create->isEnabled());
@@ -106,7 +108,7 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
     bool rejected = false;
     whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
     { qobject_cast<QDialog *>(form)->reject(); rejected = true; });
-    create->click(); QTRY_VERIFY(rejected && !panel.isCatalogBusy()); QCOMPARE(versions->model()->rowCount(), 0);
+    create->click(); QTRY_VERIFY(rejected && !panel.isCatalogBusy()); QCOMPARE(versions->model()->rowCount(), 1);
     const auto saveVersion = [&]
     {
         whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
@@ -122,9 +124,9 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
     const auto previousTheme = eTheme->getThemeMode();
     eTheme->setThemeMode(ElaThemeType::Dark); capture("working-selection-dark"); eTheme->setThemeMode(previousTheme);
     saveVersion(); QTRY_VERIFY(!panel.isCatalogBusy());
-    QCOMPARE(versions->model()->rowCount(), 1);
+    QCOMPARE(versions->model()->rowCount(), 2);
     const auto first = versions->currentIndex().data(Qt::UserRole).toString();
-    QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("rev1"));
+    QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("rev2"));
     QCOMPARE(versions->model()->index(0, 1).data().toString(), QString("Archived"));
     QCOMPARE(model->checkedFiles(), selected);
     const auto asset = SnapshotLibrary::scan(library).assets.first();
@@ -138,8 +140,8 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
     QCOMPARE(get(copy + "/rtl/sub/helper.sv"), QByteArray("helper"));
     QVERIFY(!QFileInfo::exists(copy + "/rtl/top.sv")); QVERIFY(!QFileInfo::exists(copy + "/extra.v"));
     put(asset.root + "/notes.txt", "second notes");
-    saveVersion(); QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(versions->model()->rowCount(), 2);
-    QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("rev2")); QCOMPARE(get(manifest), firstBytes);
+    saveVersion(); QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(versions->model()->rowCount(), 3);
+    QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("rev3")); QCOMPARE(get(manifest), firstBytes);
     versions->setCurrentIndex(revisionIndex(versions, first));
     FileOpenCapture opened;
     auto *files = panel.findChild<ElaListView *>("fileList"); files->setCurrentIndex(files->model()->index(0, 0));
@@ -150,7 +152,7 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
     put(external + "/notes.txt", "conflicting external");
     panel.importWorkingFiles({external + "/notes.txt"}); QTRY_VERIFY(!panel.isCatalogBusy());
     QVERIFY(panel.findChild<ElaText *>("browserNotice")->property("error").toBool());
-    QCOMPARE(get(asset.root + "/notes.txt"), QByteArray("second notes")); QCOMPARE(versions->model()->rowCount(), 2);
+    QCOMPARE(get(asset.root + "/notes.txt"), QByteArray("second notes")); QCOMPARE(versions->model()->rowCount(), 3);
     QVERIFY(QFile::remove(asset.root + "/notes.txt")); panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(model->checkedFiles(), QStringList{"rtl/sub/helper.sv"});
     QCOMPARE(get(external + "/rtl/top.sv"), QByteArray("original top"));

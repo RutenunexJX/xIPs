@@ -24,6 +24,7 @@ protected:
     virtual void showPopup() override;
     virtual void hidePopup() override;
     virtual void paintEvent(QPaintEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
     void hideEvent(QHideEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;

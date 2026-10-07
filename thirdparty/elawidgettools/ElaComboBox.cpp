@@ -140,6 +140,7 @@ void ElaComboBox::showPopup()
     finishPopupAnimation();
     // Repeated show requests settle the existing popup without adding padding again.
     if (view()->isVisible()) return;
+    if (d->_popup) d->_popup->setAttribute(Qt::WA_NoMouseReplay, false);
     QPointer<ElaComboBox> alive(this);
     const bool oldEffects = qApp->isEffectEnabled(Qt::UI_AnimateCombo);
     qApp->setEffectEnabled(Qt::UI_AnimateCombo, false);
@@ -192,9 +193,29 @@ void ElaComboBox::hidePopup()
     animateIndicator(false);
 }
 
+void ElaComboBox::mousePressEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton && !isEditable() && view()->isVisible()) {
+        hidePopup();
+        event->accept();
+        return;
+    }
+    QComboBox::mousePressEvent(event);
+}
+
 bool ElaComboBox::eventFilter(QObject* watched, QEvent* event)
 {
     Q_D(ElaComboBox);
+    if (!isEditable() && view()->isVisible() && event->type() == QEvent::MouseButtonPress &&
+        (watched == d->_popup || watched == view() || watched == view()->viewport())) {
+        const auto* mouse = static_cast<QMouseEvent*>(event);
+        if (mouse->button() == Qt::LeftButton && rect().contains(mapFromGlobal(mouse->globalPosition().toPoint()))) {
+            if (d->_popup) d->_popup->setAttribute(Qt::WA_NoMouseReplay);
+            hidePopup();
+            event->accept();
+            return true;
+        }
+    }
     if (watched == d->_popup && event->type() == QEvent::Hide) {
         finishPopupAnimation();
         animateIndicator(false);

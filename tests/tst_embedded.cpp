@@ -371,7 +371,7 @@ class EmbeddedTest final : public QObject
         { qobject_cast<QLineEdit *>(field)->setText("AXI"); click(field->window(), "formAccept"); });
         click(panel, "newGroupButton"); QTRY_VERIFY(!busy(panel));
         const auto groupState = state(panel); QVERIFY(!groupState["groupId"].toString().isEmpty());
-        for (const auto &kind : {QString("module"), QString("ip")})
+        for (const auto &kind : {QString("module"), QString("ip"), QString("project")})
         {
             QVERIFY(restore(panel, groupState));
             whenVisible(&owner, "newAssetName", [kind](QWidget *field)
@@ -388,7 +388,7 @@ class EmbeddedTest final : public QObject
         const auto ipState = state(panel); const auto assetId = ipState["assetId"].toString();
         QVERIFY(restore(panel, groupState));
         auto *members = panel->findChild<QAbstractItemView *>("groupMembers");
-        QCOMPARE(members->model()->rowCount(members->rootIndex()), 2);
+        QCOMPARE(members->model()->rowCount(members->rootIndex()), 3);
         members->setCurrentIndex(members->model()->index(0, 0, members->rootIndex()));
         QTest::keyClick(members, Qt::Key_Return);
         QVERIFY(!state(panel)["assetId"].toString().isEmpty());
@@ -422,6 +422,7 @@ class EmbeddedTest final : public QObject
         QDragEnterEvent enter(dropPoint, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(working->viewport(), &enter); QVERIFY(enter.isAccepted());
         QDropEvent drop(dropPoint, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        whenVisible(&owner, "folderImportForm", [](QWidget *form) { click(form, "formAccept"); });
         QApplication::sendEvent(working->viewport(), &drop); QVERIFY(drop.isAccepted()); QTRY_VERIFY(!busy(panel));
         auto *model = working->model();
         QVERIFY(fileIndex(model, "top.sv").isValid()); QVERIFY(fileIndex(model, "rtl/sub/helper.sv").isValid());
@@ -441,7 +442,7 @@ class EmbeddedTest final : public QObject
         auto *versions = panel->findChild<QAbstractItemView *>("revisionTable");
         QCOMPARE(versions->model()->rowCount(), 1);
         QCOMPARE(versions->model()->index(0, 1).data().toString(), QString("Archived"));
-        const auto saved = SnapshotLibrary::scan(root); QCOMPARE(saved.assets.size(), 2);
+        const auto saved = SnapshotLibrary::scan(root); QCOMPARE(saved.assets.size(), 3);
         const auto asset = *std::find_if(saved.assets.begin(), saved.assets.end(), [&](const auto &a) { return a.id == assetId; });
         QCOMPARE(SnapshotLibrary::verifySnapshot(asset, state(panel)["revision"].toString()).snapshot.files,
                  QStringList{"rtl/sub/helper.sv"});

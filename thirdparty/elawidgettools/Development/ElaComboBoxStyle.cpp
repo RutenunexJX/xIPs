@@ -78,7 +78,7 @@ void ElaComboBoxStyle::drawControl(ControlElement element, const QStyleOption* o
         //覆盖高亮
         if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
         {
-            int margin = 2;
+            int margin = 1;
             painter->save();
             painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
             painter->setPen(Qt::NoPen);
@@ -195,6 +195,15 @@ void ElaComboBoxStyle::drawComplexControl(ComplexControl control, const QStyleOp
     QProxyStyle::drawComplexControl(control, option, painter, widget);
 }
 
+QStyle::SubControl ElaComboBoxStyle::hitTestComplexControl(ComplexControl control, const QStyleOptionComplex* option, const QPoint& position, const QWidget* widget) const
+{
+    if (control == CC_ComboBox)
+        if (const auto* combo = qstyleoption_cast<const QStyleOptionComboBox*>(option))
+            if (!combo->editable && combo->rect.contains(position))
+                return SC_ComboBoxArrow;
+    return QProxyStyle::hitTestComplexControl(control, option, position, widget);
+}
+
 QRect ElaComboBoxStyle::subControlRect(ComplexControl cc, const QStyleOptionComplex* opt, SubControl sc, const QWidget* widget) const
 {
     switch (cc)
@@ -241,7 +250,7 @@ QSize ElaComboBoxStyle::sizeFromContents(ContentsType type, const QStyleOption* 
     case QStyle::CT_ItemViewItem:
     {
         QSize itemSize = QProxyStyle::sizeFromContents(type, option, size, widget);
-        itemSize.setHeight(35);
+        itemSize.setHeight(qMax(24, option->fontMetrics.height() + 6));
         return itemSize;
     }
     case QStyle::CT_ComboBox:

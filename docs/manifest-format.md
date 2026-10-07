@@ -37,7 +37,7 @@ an individual source does not silently reassign its existing history.
 ```
 
 `source` is present only for original-file histories. Optional description and tags
-are retained. Categories are module, ip, artifact or other. New writes require
+are retained. Categories are module, ip, project, artifact or other. New writes require
 schema 3; this change does not migrate existing libraries.
 
 Registered source metadata can include `registered: false`. Scans omit that registration

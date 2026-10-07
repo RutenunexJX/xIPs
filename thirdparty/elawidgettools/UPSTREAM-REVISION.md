@@ -337,5 +337,14 @@ rendering and actual checkbox clicks/Space toggles are covered by the xIPs GUI
 regression. This private drawing change preserves the p27 public ABI. Patch SHA-256:
 `cdaac7814d29a8074509481b6cb6f99d4bce21a5eb42eaadbb022505b42a51c4`.
 
+Apply `patches/32-xips-compact-combo-toggle.patch` after patch 31.
+Non-editable combo hit testing covers the entire control. Repeated presses close
+the popup both on the control and through popup mouse capture, without replaying
+the close as a new open. Popup rows use a 24-pixel minimum with font-aware height
+and smaller highlight insets. Qt still owns selection, editable text and keyboard
+handling; the p27 capability ABI and MIT/OFL notices remain unchanged.
+Patch SHA-256:
+`3b39e5e9f75608d4e05eeedc12bf75a92d872b40ada3597fcde1a064e6fa7b56`.
+
 Both `LICENSE` (ElaWidgetTools) and `Font/FontAwesome-LICENSE.txt` must
 accompany redistributed binaries.

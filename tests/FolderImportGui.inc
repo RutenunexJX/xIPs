@@ -1,0 +1,128 @@
+void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library"), source = tmp.filePath("incoming");
+    QVERIFY(QDir().mkpath(library));
+    const auto put = [](const QString &path, const QByteArray &value)
+    {
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || file.write(value) != value.size()) qFatal("Fixture write failed");
+    };
+    put(source + "/rtl/top.sv", "top");
+    put(source + "/rtl/unused.sv", "unused");
+    BrowserPanel panel;
+    panel.resize(800, 640); panel.show(); panel.setContext(library, {});
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    const auto dropFolder = [&](QWidget *target, const QString &path)
+    {
+        QMimeData mime; mime.setUrls({QUrl::fromLocalFile(path)});
+        const QPoint position(20, 20);
+        QDragEnterEvent enter(position, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(target, &enter);
+        QDropEvent drop(position, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(target, &drop);
+        QVERIFY(enter.isAccepted() && drop.isAccepted());
+        QCOMPARE(drop.dropAction(), Qt::CopyAction);
+    };
+    bool rejected = false;
+    whenVisible(&panel, "folderImportForm", [&](QWidget *form)
+    {
+        form->findChild<ElaComboBox *>("importTransfer")->setCurrentIndex(1);
+        qobject_cast<QDialog *>(form)->reject(); rejected = true;
+    });
+    dropFolder(&panel, source);
+    QTRY_VERIFY(rejected && !panel.isCatalogBusy());
+    QVERIFY(SnapshotLibrary::scan(library).assets.isEmpty());
+    QVERIFY(QFileInfo::exists(source + "/rtl/top.sv"));
+
+    bool reviewed = false;
+    whenVisible(&panel, "folderImportForm", [&](QWidget *form)
+    {
+        QCOMPARE(form->findChild<ElaComboBox *>("importDestination")->count(), 1);
+        form->findChild<ElaLineEdit *>("importName")->setText("board_project");
+        auto *type = form->findChild<ElaComboBox *>("importType");
+        QVERIFY(type->findData("project") >= 0);
+        type->setCurrentIndex(type->findData("project"));
+        auto *model = qobject_cast<WorkingFilesModel *>(form->findChild<ElaTreeView *>("importFiles")->model());
+        model->checkAll(false);
+        QVERIFY(!form->findChild<ElaPushButton *>("formAccept")->isEnabled());
+        model->setData(model->fileIndex("incoming/rtl/top.sv"), Qt::Checked, Qt::CheckStateRole);
+        QCOMPARE(model->checkedFiles(), QStringList{"incoming/rtl/top.sv"});
+        QCOMPARE(form->findChild<ElaComboBox *>("importTransfer")->currentData().toBool(), false);
+        form->findChild<ElaLineEdit *>("importNote")->setText("selected project files");
+        const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
+        if (!screenshots.isEmpty())
+        {
+            QDir().mkpath(screenshots);
+            QTest::qWait(100);
+            QVERIFY(form->grab().save(screenshots + "/folder-import-project.png"));
+            static_cast<QComboBox *>(type)->showPopup();
+            type->finishPopupAnimation();
+            QCoreApplication::processEvents();
+            QVERIFY(type->view()->window()->grab().save(screenshots + "/folder-import-types.png"));
+            static_cast<QComboBox *>(type)->hidePopup();
+        }
+        reviewed = true;
+        form->findChild<ElaPushButton *>("formAccept")->click();
+    });
+    dropFolder(&panel, source);
+    QTRY_VERIFY(reviewed && !panel.isCatalogBusy());
+    auto catalog = SnapshotLibrary::scan(library);
+    QCOMPARE(catalog.assets.size(), 1);
+    auto project = catalog.assets.first();
+    QCOMPARE(project.category, QString("project"));
+    QCOMPARE(project.name, QString("board_project"));
+    QCOMPARE(project.workingFiles, QStringList{"incoming/rtl/top.sv"});
+    QCOMPARE(SnapshotLibrary::heads(project).size(), 1);
+    const auto first = SnapshotLibrary::verifySnapshot(project, SnapshotLibrary::heads(project).first());
+    QVERIFY(first.ok);
+    QCOMPARE(first.snapshot.files, project.workingFiles);
+    QCOMPARE(first.snapshot.note, QString("selected project files"));
+    QVERIFY(QFileInfo::exists(source + "/rtl/top.sv"));
+    QVERIFY(QFileInfo::exists(source + "/rtl/unused.sv"));
+
+    auto *types = panel.findChild<ElaComboBox *>("typeCombo");
+    QVERIFY(types->findData("project") >= 0);
+    types->setCurrentIndex(types->findData("project"));
+    QCOMPARE(panel.saveState().value("category").toString(), QString("project"));
+    QCOMPARE(panel.saveState().value("assetId").toString(), project.id);
+    const auto savedState = panel.saveState();
+    panel.restoreState(savedState);
+    QCOMPARE(panel.saveState().value("category").toString(), QString("project"));
+
+    const auto next = tmp.filePath("next");
+    put(next + "/readme.txt", "move selected");
+    put(next + "/keep.txt", "retain unchecked");
+    reviewed = false;
+    whenVisible(&panel, "folderImportForm", [&](QWidget *form)
+    {
+        auto *destination = form->findChild<ElaComboBox *>("importDestination");
+        QCOMPARE(destination->currentData().toString(), project.id);
+        destination->setCurrentIndex(0);
+        QVERIFY(form->findChild<ElaLineEdit *>("importName")->isVisible());
+        destination->setCurrentIndex(destination->findData(project.id));
+        QVERIFY(!form->findChild<ElaLineEdit *>("importName")->isVisible());
+        auto *model = qobject_cast<WorkingFilesModel *>(form->findChild<ElaTreeView *>("importFiles")->model());
+        model->checkAll(false);
+        model->setData(model->fileIndex("next/readme.txt"), Qt::Checked, Qt::CheckStateRole);
+        form->findChild<ElaComboBox *>("importTransfer")->setCurrentIndex(1);
+        reviewed = true;
+        form->findChild<ElaPushButton *>("formAccept")->click();
+    });
+    auto *working = panel.findChild<ElaTreeView *>("workingFiles");
+    dropFolder(working->viewport(), next);
+    QTRY_VERIFY(reviewed && !panel.isCatalogBusy());
+    project = SnapshotLibrary::scan(library).assets.first();
+    QVERIFY(!QFileInfo::exists(next + "/readme.txt"));
+    QVERIFY(QFileInfo::exists(next + "/keep.txt"));
+    QVERIFY(QFileInfo::exists(project.root + "/next/readme.txt"));
+    QVERIFY(!QFileInfo::exists(project.root + "/next/keep.txt"));
+    QCOMPARE(project.workingFiles.size(), 2);
+    const auto latest = SnapshotLibrary::verifySnapshot(project, SnapshotLibrary::heads(project).first());
+    QVERIFY(latest.ok);
+    QCOMPARE(latest.snapshot.sequence, 2);
+    QCOMPARE(latest.snapshot.files, QStringList{"next/readme.txt"});
+    QVERIFY(SnapshotLibrary::verifySnapshot(project, first.snapshot.id).ok);
+    QCOMPARE(panel.findChild<ElaTableView *>("revisionTable")->model()->rowCount(), 2);
+}

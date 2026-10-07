@@ -18,6 +18,10 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QSemaphore>
+#include <QSettings>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 #include <QSplitter>
 #include <QStringListModel>
 #include <QTemporaryDir>
@@ -87,8 +91,15 @@ void dragSplitter(QSplitter *split, int distance)
 class Interactions final : public QObject
 {
     Q_OBJECT
+    QTemporaryDir settings;
   private slots:
-    void initTestCase() { initializeEla(); }
+    void initTestCase()
+    {
+        QVERIFY(settings.isValid());
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
+        initializeEla();
+    }
     void comboInterruptsAndDestroys()
     {
         QWidget window;
@@ -123,6 +134,63 @@ class Interactions final : public QObject
         static_cast<QComboBox *>(combo)->showPopup();
         delete combo;
         QTest::qWait(220);
+    }
+    void comboEntireControlTogglesCompactPopup()
+    {
+        QWidget window;
+        window.resize(450, 350);
+        auto *combo = new ElaComboBox(&window);
+        QFont font(QStringLiteral("Segoe UI")); font.setPixelSize(13); combo->setFont(font);
+        combo->setGeometry(20, 20, 300, 30);
+        combo->addItems({"Module", "IP", "Project", "Artifact", "Other"});
+        window.show();
+#ifdef Q_OS_WIN
+        if (QGuiApplication::platformName() == "windows" &&
+            !IsWindowVisible(reinterpret_cast<HWND>(window.winId())))
+        { window.hide(); window.show(); }
+#endif
+        qInfo() << "Combo platform" << QGuiApplication::platformName() << "DPR" << window.devicePixelRatioF();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QSignalSpy activated(combo, qOverload<int>(&QComboBox::activated));
+        for (const QPoint point : {QPoint(10, 15), QPoint(60, 15), QPoint(200, 15), QPoint(282, 15)})
+        {
+            QTest::mouseClick(combo, Qt::LeftButton, {}, point);
+            QVERIFY2(combo->view()->isVisible(), "The text, blank area and arrow must all open the popup");
+            combo->finishPopupAnimation();
+            const auto first = combo->view()->visualRect(combo->model()->index(0, 0));
+            QVERIFY2(first.height() >= combo->fontMetrics().height() && first.height() <= 28,
+                     "Popup rows must fit their text without excessive vertical space");
+            const auto shots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
+            if (!shots.isEmpty() && point.x() == 10)
+            {
+                QDir().mkpath(shots);
+                QVERIFY(combo->view()->window()->grab().save(shots + "/compact-combo.png"));
+            }
+            QTest::mouseClick(combo, Qt::LeftButton, {}, point);
+            QVERIFY2(!combo->view()->isVisible(), "Clicking the open control must close its popup");
+            QCOMPARE(combo->currentIndex(), 0);
+            QTest::mouseClick(combo, Qt::LeftButton, {}, point);
+            combo->finishPopupAnimation();
+            auto* popup = combo->view()->window();
+            QTest::mouseClick(popup, Qt::LeftButton, {}, popup->mapFromGlobal(combo->mapToGlobal(point)));
+            QVERIFY2(!combo->view()->isVisible(), "Popup mouse capture must also close on a control click");
+        }
+        QCOMPARE(activated.count(), 0);
+        QTest::mouseClick(combo, Qt::LeftButton, {}, QPoint(100, 15));
+        combo->finishPopupAnimation();
+        const auto item = combo->model()->index(2, 0);
+        const auto itemPoint = combo->view()->visualRect(item).center();
+        QMouseEvent hover(QEvent::MouseMove, itemPoint, combo->view()->viewport()->mapToGlobal(itemPoint),
+            Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(combo->view()->viewport(), &hover);
+        QCOMPARE(combo->view()->currentIndex(), item);
+        QTest::mouseClick(combo->view()->viewport(), Qt::LeftButton, {}, combo->view()->visualRect(item).center());
+        QCOMPARE(combo->currentText(), QString("Project"));
+        QCOMPARE(activated.count(), 1);
+        QVERIFY(!combo->view()->isVisible());
+        combo->setEnabled(false);
+        QTest::mouseClick(combo, Qt::LeftButton, {}, QPoint(60, 15));
+        QVERIFY(!combo->view()->isVisible());
     }
     void comboItemsFitAfterRepeatedOpening()
     {

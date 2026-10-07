@@ -40,6 +40,7 @@
 #include "library/CatalogIndex.h"
 #include "app/CatalogWatcher.h"
 #include <QSaveFile>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
@@ -60,9 +61,13 @@ class FileOpenCapture : public QObject
 class GuiSmokeTest : public QObject
 {
     Q_OBJECT
+    QTemporaryDir settings;
   private slots:
     void initTestCase()
     {
+        QVERIFY(settings.isValid());
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
         QStandardPaths::setTestModeEnabled(true);
         QFontDatabase::addApplicationFont(
             QDir(qEnvironmentVariable("WINDIR")).filePath("Fonts/segoeui.ttf"));
@@ -86,12 +91,14 @@ class GuiSmokeTest : public QObject
     void workingCheckboxStatesStayVisible();
     void archivedVersionsCanBeDeleted();
     void externalDropsReachEveryWorkingArea();
+    void folderImportSelectsProjectFilesAndTransfer();
     void localUpdatesPreserveViewsAndReviewChanges();
     void externalChangesRefreshAfterSettling();
     void refreshPreservesArchivedFileBrowsing();
 };
 #include "EmptyWorkspaceGui.inc"
 #include "VersionAndDropGui.inc"
+#include "FolderImportGui.inc"
 #include "LocalUpdatesGui.inc"
 #include "AutomaticRefreshGui.inc"
 #include "ArchivedViewGui.inc"

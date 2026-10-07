@@ -1,16 +1,20 @@
 # xIPs
 
-xIPs is a small, local library for reusable FPGA assets: Module, IP, Artifact, or Other.
-It manages explicitly created IP/module definitions, working sources, immutable revisions and shared references.
+xIPs is a small, local library for reusable FPGA assets: Module, IP, Project, Artifact, or Other.
+It manages explicitly created Module/IP/Project definitions, working sources, immutable revisions and shared references.
 The interface uses Ela controls and shares ZeroSlack's compact panel layout. All application text is English.
 
 ## Everyday workflow
 
 1. Choose the catalog root once. Only explicitly created, registered or referenced entries appear; loose source files never become catalog entries automatically.
-2. Click **New IP**, choose IP or Module, and enter a name. This creates an empty working folder and catalog definition, with no HDL template or saved version. Empty entries persist across refreshes and restarts. Registering an existing file/folder inside the root is optional and also creates no version automatically.
-3. In **Working files**, use **Add files** or **Add folder**, or drag files and folders into the file area. Files are copied into this IP's working folder with their nested paths; external originals stay unchanged. Identical duplicates are skipped, and conflicting names are reported without overwriting existing files. Adding files does not create a version.
+2. Click **New**, choose Module, IP or Project, and enter a name. This creates an empty working folder and catalog definition, with no HDL template or saved version. Empty entries persist across refreshes and restarts. Registering an existing file/folder inside the root is optional and also creates no version automatically.
+3. In **Working files**, use **Add files** or **Add folder**, or drag individual files into the file area. These actions copy files into the working folder without creating a version. Identical duplicates are skipped, and conflicting names are reported without overwriting existing files.
 4. Check the files to include. A folder checkbox selects its descendants; **All** selects or clears every file. Browsing a row does not change its checkbox. Checks survive refreshes and version switches, and missing files are removed from the selection. Click **Create version** (**Ctrl+S**), review the included files and the added, modified or omitted files compared with the previous version, and optionally add a note. Omitting a file from a version keeps its working copy. Zero checked files cannot create a version. This explicit save creates **rev1**, followed by **rev2** and later versions; unchanged content creates no extra version unless joining parallel heads.
 5. Use **Versions** to select a saved version, then **Copy to project** to copy exactly that version's files to a new destination. The copies are independently editable. Continue adding or editing working files and create another version without changing earlier versions.
+
+Dragging a folder anywhere in the panel opens **Import folder**. Choose a new Module/IP/Project or an existing entry with a writable working folder, check the incoming files to include, and choose **Copy** or **Move**. **Import and archive** imports only the checked files and immediately saves that exact selection as a version. Folder names and nested paths are retained. Copy keeps originals; Move removes each checked source only after the working copy and saved version verify. Unchecked or locked source files remain, and retained sources are reported. Cancel makes no changes. File conflicts never overwrite existing content.
+
+Dropdown lists use compact rows. Click the text, empty area or arrow to open or close the list.
 
 **Working files** and **Versions** are separate tabs. The version table contains only
 saved snapshots, with **Version** and **Status: Archived** plus a lock. Double-click a file,
@@ -148,7 +152,7 @@ Every use verifies the selected content before publishing a copy. Missing object
 cloud synchronization cause an explicit error until the content arrives.
 Source files remain untouched. Existing destination files are never overwritten.
 
-Module and IP collections omit common generated folders, including build and ip_user_files.
+Module, IP and Project collections omit common generated folders, including build and ip_user_files.
 Artifact collections retain generated output folders. All categories exclude .git, .xips and xIPs metadata.
 The collection dialog identifies this policy before copying.
 
@@ -225,7 +229,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
 and the SuiteApp SDK enabled. For an explicitly standalone release, configure
 **XIPS_ENABLE_SUITEAPP=OFF** and pass **-Standalone** to the packaging script.
-The release tag **v2.7.0** must identify HEAD.
+The release tag **v2.10.0** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell
@@ -236,7 +240,7 @@ The script includes Qt/Ela dependencies, the icon, notices, **build-info.json**,
 **xips-capabilities.json**, replayable Ela patches, and **SHA256SUMS.txt**.
 The package records its exact clean source commit and Ela source/DLL fingerprints.
 The formal delivery is the runnable directory
-**D:/PinloomRoot/AppPackage/AppSuite/Apps/xIPs/**. Each application has its own
+**E:/PinloomRoot/AppPackage/AppSuite/Apps/xIPs/**. Each application has its own
 directory under **Apps/**. Deploy the prepared directory there, preserve the other
 applications, and update the suite manifest and checksum inventory.
 Do not create ZIP archives or backups of the old formal package. **build/packages/xIPs** is only

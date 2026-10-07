@@ -67,6 +67,8 @@ screen, and settles repeated visible show requests without growing the popup.
 The implementation patch level is 30; the patch and upstream license records
 remain in the formal package.
 
+Patch 32, `32-xips-compact-combo-toggle.patch`, uses compact font-aware popup rows and lets the entire non-editable combo open or close the list. Repeated clicks also close it while the popup owns mouse capture; normal item selection and editable text handling remain with Qt.
+
 The ABI remains native surface v1 with `;ela=454cac2d-p27`. This names the required
 API level; the source digest identifies additional compatible lifetime fixes.
 The DLL directly references new combo/menu lifecycle exports. Capabilities JSON

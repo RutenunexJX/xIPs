@@ -10,6 +10,10 @@
 #include <QTemporaryDir>
 #include <QtTest>
 #include <thread>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <QScopeGuard>
+#endif
 using namespace xips;
 namespace
 {
@@ -39,12 +43,19 @@ class WorkflowTest : public QObject
     QTemporaryDir cache;
   private slots:
     void initTestCase() { qputenv("XIPS_TEST_CACHE_ROOT", cache.path().toUtf8()); }
+    void emptyWorkspaceImportsAndExactVersions_data()
+    {
+        QTest::addColumn<QString>("category");
+        for (const auto &category : QStringList{"module", "ip", "project"})
+            QTest::newRow(qPrintable(category)) << category;
+    }
     void emptyWorkspaceImportsAndExactVersions()
     {
+        QFETCH(QString, category);
         QTemporaryDir tmp;
         const auto library = tmp.filePath("library");
         QVERIFY(QDir().mkpath(library));
-        CatalogDefinition definition; definition.name = "empty_ip"; definition.category = "ip";
+        CatalogDefinition definition; definition.name = "empty_ip"; definition.category = category;
         const auto created = SnapshotLibrary::create(library, definition);
         QVERIFY2(created.ok, qPrintable(created.error));
         QVERIFY(created.snapshot.id.isEmpty());
@@ -64,6 +75,7 @@ class WorkflowTest : public QObject
             .value("data").toObject().value("assets").toArray();
         QCOMPARE(reloaded.size(), 1);
         QCOMPARE(reloaded.first().toObject().value("id").toString(), created.asset.id);
+        QCOMPARE(reloaded.first().toObject().value("category").toString(), category);
         QVERIFY(reloaded.first().toObject().value("version").toString().isEmpty());
         QVERIFY(!SnapshotLibrary::previewSelected(created.asset, {}).ok);
         QVERIFY(!SnapshotLibrary::saveSelected(created.asset, {}).ok);
@@ -126,6 +138,198 @@ class WorkflowTest : public QObject
         CatalogDefinition invalid; invalid.name = "invalid"; invalid.source = metadataRoot;
         QVERIFY(!SnapshotLibrary::create(library, invalid).ok);
         QCOMPARE(SnapshotLibrary::scan(library).assets.size(), 1);
+    }
+    void folderImportCreatesAndExtendsAssets_data()
+    {
+        QTest::addColumn<QString>("category");
+        QTest::addColumn<bool>("move");
+        for (const auto &category : QStringList{"module", "ip", "project"})
+            for (bool move : {false, true})
+                QTest::newRow(qPrintable(category + (move ? "-move" : "-copy"))) << category << move;
+    }
+    void folderImportCreatesAndExtendsAssets()
+    {
+        QFETCH(QString, category);
+        QFETCH(bool, move);
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), source = tmp.filePath("incoming folder");
+        QVERIFY(QDir().mkpath(library));
+        put(source + "/rtl/top.sv", "top");
+        put(source + "/rtl/nested/helper.sv", "helper");
+        put(source + "/unused.txt", "retain");
+        ImportRequest request;
+        request.sources = {source};
+        const auto preview = SnapshotLibrary::previewImport(request.sources);
+        QVERIFY2(preview.ok, qPrintable(preview.error));
+        request.selection = preview.preview;
+        request.selection.objects.remove("incoming folder/unused.txt");
+        request.selection.files = request.selection.objects.keys();
+        request.move = move;
+        request.note = "selected import";
+        CatalogDefinition definition; definition.name = "imported"; definition.category = category;
+        const auto created = SnapshotLibrary::create(library, definition, &request);
+        QVERIFY2(created.ok, qPrintable(created.error));
+        QVERIFY(created.retainedSources.isEmpty());
+        QCOMPARE(created.asset.category, category);
+        QCOMPARE(created.snapshot.sequence, 1);
+        QCOMPARE(created.snapshot.files, request.selection.files);
+        QCOMPARE(created.snapshot.note, request.note);
+        QCOMPARE(created.asset.workingFiles, request.selection.files);
+        QVERIFY(SnapshotLibrary::verifySnapshot(created.asset, created.snapshot.id).ok);
+        QCOMPARE(get(created.asset.root + "/incoming folder/rtl/top.sv"), QByteArray("top"));
+        QCOMPARE(QFileInfo::exists(source + "/rtl/top.sv"), !move);
+        QCOMPARE(QFileInfo::exists(source + "/rtl/nested/helper.sv"), !move);
+        QCOMPARE(get(source + "/unused.txt"), QByteArray("retain"));
+        QVERIFY(!QFileInfo::exists(created.asset.root + "/incoming folder/unused.txt"));
+        const auto reloaded = SnapshotLibrary::scan(library);
+        QCOMPARE(reloaded.assets.size(), 1);
+        QCOMPARE(reloaded.assets.first().category, category);
+        QVERIFY(reloaded.problems.isEmpty());
+        const auto firstManifest = get(created.asset.historyRoot + "/.xips/revisions/" + created.snapshot.id + ".json");
+
+        const auto next = tmp.filePath("next");
+        put(next + "/readme.txt", "second batch");
+        request.sources = {next};
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        const auto extended = SnapshotLibrary::importAndSave(created.asset, request);
+        QVERIFY2(extended.ok, qPrintable(extended.error));
+        QCOMPARE(extended.snapshot.sequence, 2);
+        QCOMPARE(extended.snapshot.parents, QStringList{created.snapshot.id});
+        QCOMPARE(extended.snapshot.files, QStringList{"next/readme.txt"});
+        QCOMPARE(extended.asset.workingFiles.size(), 3);
+        QCOMPARE(QFileInfo::exists(next), !move);
+        QCOMPARE(get(created.asset.historyRoot + "/.xips/revisions/" + created.snapshot.id + ".json"), firstManifest);
+        QVERIFY(SnapshotLibrary::verifySnapshot(extended.asset, created.snapshot.id).ok);
+        const auto exported = SnapshotLibrary::exportSnapshot(extended.asset, extended.snapshot.id, tmp.filePath("exported"));
+        QVERIFY(exported.ok);
+        QCOMPARE(get(exported.exportedPath), QByteArray("second batch"));
+        if (!move)
+        {
+            const auto duplicate = SnapshotLibrary::importAndSave(extended.asset, request);
+            QVERIFY2(duplicate.ok, qPrintable(duplicate.error));
+            QVERIFY(duplicate.unchanged);
+            QCOMPARE(duplicate.snapshot.id, extended.snapshot.id);
+            request.sources = {source};
+            request.selection = preview.preview;
+            request.selection.objects.remove("incoming folder/unused.txt");
+            request.selection.files = request.selection.objects.keys();
+            const auto previousFiles = SnapshotLibrary::importAndSave(extended.asset, request);
+            QVERIFY2(previousFiles.ok, qPrintable(previousFiles.error));
+            QVERIFY(!previousFiles.unchanged);
+            QCOMPARE(previousFiles.snapshot.sequence, 3);
+        }
+    }
+    void folderImportFailuresPreserveSourcesAndDestination()
+    {
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), source = tmp.filePath("incoming");
+        QVERIFY(QDir().mkpath(library));
+        put(source + "/top.sv", "reviewed");
+        ImportRequest request;
+        request.sources = {source};
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.move = true;
+        CatalogDefinition definition; definition.name = "project"; definition.category = "project";
+        OperationControl cancellation; QVERIFY(cancellation.cancel());
+        {
+            OperationScope scope(&cancellation);
+            QVERIFY(SnapshotLibrary::create(library, definition, &request).cancelled);
+        }
+        QVERIFY(SnapshotLibrary::scan(library).assets.isEmpty());
+        put(source + "/top.sv", "changed after review");
+        auto failed = SnapshotLibrary::create(library, definition, &request);
+        QVERIFY(!failed.ok);
+        QVERIFY(SnapshotLibrary::scan(library).assets.isEmpty());
+        QVERIFY(!QFileInfo::exists(library + "/project"));
+        QCOMPARE(get(source + "/top.sv"), QByteArray("changed after review"));
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.move = false;
+        const auto created = SnapshotLibrary::create(library, definition, &request);
+        QVERIFY2(created.ok, qPrintable(created.error));
+
+        put(source + "/aaa-new.sv", "new");
+        put(source + "/top.sv", "conflicting");
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.move = true;
+        failed = SnapshotLibrary::importAndSave(created.asset, request);
+        QVERIFY(!failed.ok);
+        QVERIFY(!QFileInfo::exists(created.asset.root + "/incoming/aaa-new.sv"));
+        QCOMPARE(get(created.asset.root + "/incoming/top.sv"), QByteArray("changed after review"));
+        QCOMPARE(get(source + "/top.sv"), QByteArray("conflicting"));
+        QCOMPARE(get(source + "/aaa-new.sv"), QByteArray("new"));
+        QCOMPARE(SnapshotLibrary::heads(SnapshotLibrary::scan(library).assets.first()), QStringList{created.snapshot.id});
+        request.sources = {created.asset.root};
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        QVERIFY(!SnapshotLibrary::importAndSave(created.asset, request).ok);
+        QVERIFY(QFileInfo::exists(created.asset.root + "/incoming/top.sv"));
+        definition.category = "unknown";
+        QVERIFY(!SnapshotLibrary::create(library, definition).ok);
+    }
+    void folderImportArchiveFailureRollsBackWorkingFiles()
+    {
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), source = tmp.filePath("incoming");
+        QVERIFY(QDir().mkpath(library));
+        CatalogDefinition definition; definition.name = "empty";
+        const auto created = SnapshotLibrary::create(library, definition);
+        QVERIFY(created.ok);
+        put(source + "/top.sv", "keep source");
+        ImportRequest request;
+        request.sources = {source};
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.move = true;
+        put(created.asset.historyRoot + "/.xips/revisions", "blocks revision directory");
+        const auto failed = SnapshotLibrary::importAndSave(created.asset, request);
+        QVERIFY(!failed.ok);
+        QVERIFY(!QFileInfo::exists(created.asset.root + "/incoming/top.sv"));
+        QCOMPARE(get(source + "/top.sv"), QByteArray("keep source"));
+        QVERIFY(SnapshotLibrary::heads(SnapshotLibrary::scan(library).assets.first()).isEmpty());
+    }
+    void movingOverlappingSelectionsRemovesEachSourceOnce()
+    {
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), folder = tmp.filePath("incoming");
+        QVERIFY(QDir().mkpath(library));
+        put(folder + "/top.sv", "selected twice");
+        ImportRequest request;
+        request.sources = {folder, folder + "/top.sv"};
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.move = true;
+        CatalogDefinition definition; definition.name = "overlap";
+        const auto result = SnapshotLibrary::create(library, definition, &request);
+        QVERIFY2(result.ok, qPrintable(result.error));
+        QVERIFY(result.retainedSources.isEmpty());
+        QCOMPARE(result.snapshot.files, (QStringList{"incoming/top.sv", "top.sv"}));
+        QCOMPARE(get(result.asset.root + "/incoming/top.sv"), QByteArray("selected twice"));
+        QCOMPARE(get(result.asset.root + "/top.sv"), QByteArray("selected twice"));
+        QVERIFY(!QFileInfo::exists(folder));
+        QVERIFY(SnapshotLibrary::verifySnapshot(result.asset, result.snapshot.id).ok);
+    }
+    void movingLockedSourceKeepsArchivedCopy()
+    {
+#ifdef Q_OS_WIN
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), source = tmp.filePath("incoming/top.sv");
+        QVERIFY(QDir().mkpath(library));
+        put(source, "locked source");
+        const auto handle = CreateFileW(reinterpret_cast<LPCWSTR>(source.utf16()), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        QVERIFY(handle != INVALID_HANDLE_VALUE);
+        const auto closeHandle = qScopeGuard([&] { CloseHandle(handle); });
+        ImportRequest request;
+        request.sources = {QFileInfo(source).absolutePath()};
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        request.move = true;
+        CatalogDefinition definition; definition.name = "locked_move"; definition.category = "project";
+        const auto result = SnapshotLibrary::create(library, definition, &request);
+        QVERIFY2(result.ok, qPrintable(result.error));
+        QCOMPARE(result.retainedSources, QStringList{source});
+        QCOMPARE(get(source), QByteArray("locked source"));
+        QCOMPARE(get(result.asset.root + "/incoming/top.sv"), QByteArray("locked source"));
+        QVERIFY(SnapshotLibrary::verifySnapshot(result.asset, result.snapshot.id).ok);
+#else
+        QSKIP("Windows source sharing semantics");
+#endif
     }
     void damagedRevisionAndEmptySourceKeepHealthyHistory()
     {

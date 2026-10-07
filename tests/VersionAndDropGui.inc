@@ -144,6 +144,9 @@ void GuiSmokeTest::externalDropsReachEveryWorkingArea()
         QMimeData mime; QByteArray uriList;
         for (const auto &path : paths) uriList += QUrl::fromLocalFile(path).toEncoded() + "\r\n";
         mime.setData("text/uri-list", uriList);
+        if (std::any_of(paths.cbegin(), paths.cend(), [](const auto &path) { return QFileInfo(path).isDir(); }))
+            whenVisible(&panel, "folderImportForm", [](QWidget *form)
+            { form->findChild<ElaPushButton *>("formAccept")->click(); });
         return chain(target, position, mime);
     };
     QCOMPARE(model->fileCount(), 0);
@@ -173,7 +176,7 @@ void GuiSmokeTest::externalDropsReachEveryWorkingArea()
     put(external + "/fallback.sv", "fallback");
     QVERIFY(dropPaths(&panel, tree->viewport()->mapTo(&panel, blank()), {external + "/fallback.sv"}));
     QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 10);
-    QCOMPARE(versions->model()->rowCount(), 0);
+    QCOMPARE(versions->model()->rowCount(), 2);
     for (const auto &file : initial) QCOMPARE(get(created.asset.root + '/' + file), get(external + '/' + file));
     QTest::mouseClick(panel.findChild<ElaCheckBox *>("checkAllFiles"), Qt::LeftButton);
     QCOMPARE(model->checkedFiles().size(), 10);
@@ -183,7 +186,7 @@ void GuiSmokeTest::externalDropsReachEveryWorkingArea()
     whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
     { form->findChild<ElaPushButton *>("formAccept")->click(); });
     panel.findChild<QToolButton *>("updateButton")->click(); QTRY_VERIFY(!panel.isCatalogBusy());
-    QCOMPARE(versions->model()->rowCount(), 1);
+    QCOMPARE(versions->model()->rowCount(), 3);
     const auto revision = versions->currentIndex().data(Qt::UserRole).toString();
     const auto archived = SnapshotLibrary::verifySnapshot(created.asset, revision); QVERIFY(archived.ok);
     QCOMPARE(archived.snapshot.files.size(), 10);
@@ -196,7 +199,7 @@ void GuiSmokeTest::externalDropsReachEveryWorkingArea()
     QTRY_VERIFY(!panel.isCatalogBusy()); QVERIFY(panel.findChild<ElaText *>("browserNotice")->property("error").toBool());
     QCOMPARE(get(created.asset.root + "/two.sv"), QByteArray("two.sv"));
     QCOMPARE(get(external + "/two.sv"), QByteArray("conflicting original"));
-    QCOMPARE(versions->model()->rowCount(), 1);
+    QCOMPARE(versions->model()->rowCount(), 4);
     QCOMPARE(SnapshotLibrary::verifySnapshot(created.asset, revision).snapshot.hash, archived.snapshot.hash);
     definition.name = "empty_hint"; const auto another = SnapshotLibrary::create(library, definition); QVERIFY(another.ok);
     panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy()); panel.revealAsset(another.asset.id);
