@@ -567,6 +567,47 @@ CatalogAsset readReference(const QString &path)
     asset.pinnedRevision = pinned.id;
     return asset;
 }
+QStringList inactiveWorkingFiles(const CatalogAsset &history)
+{
+    if (history.document.value("workingArea") != "managed") return {};
+    const auto stored = history.document.value("inactiveWorkingFiles");
+    if (!stored.isUndefined())
+    {
+        require(stored.isArray(), QStringLiteral("Invalid working file selection."));
+        const auto paths = strings(stored.toArray());
+        for (const auto &path : paths)
+            require(!path.isEmpty() && !QDir::isAbsolutePath(path) && QDir::cleanPath(path) == path &&
+                        path != "." && path != ".." && !path.startsWith("../") &&
+                        !path.contains('\\') && !path.contains(':'),
+                    QStringLiteral("Invalid working file selection."));
+        return paths;
+    }
+    // Older folder imports kept each version under a separate top-level folder.
+    if (history.historyIncomplete || SnapshotLibrary::heads(history).size() != 1) return {};
+    QSet<QString> roots;
+    QString latest;
+    for (const auto &snapshot : history.snapshots)
+    {
+        if (snapshot.id == "current" || snapshot.id == "working") continue;
+        QSet<QString> folders;
+        for (const auto &path : snapshot.files)
+        {
+            if (!path.contains('/')) return {};
+            folders.insert(path.section('/', 0, 0));
+        }
+        if (folders.size() != 1) return {};
+        latest = *folders.cbegin();
+        roots.insert(latest);
+    }
+    if (roots.size() < 2) return {};
+    QSet<QString> retired;
+    for (const auto &snapshot : history.snapshots)
+        if (snapshot.id != "current" && snapshot.id != "working")
+            for (const auto &path : snapshot.files)
+                if (path.section('/', 0, 0) != latest) retired.insert(path);
+    auto paths = retired.values(); paths.sort();
+    return paths;
+}
 CatalogAsset currentSource(const CatalogAsset &asset)
 {
     existingDirectory(asset.library);
@@ -591,6 +632,9 @@ CatalogAsset currentSource(const CatalogAsset &asset)
     else if (history.document.value("workingArea") == "managed")
     {
         enumerate(asset.root, asset.root, working, true, true);
+        QSet<QString> inactive;
+        for (const auto &path : inactiveWorkingFiles(history)) inactive.insert(path.toCaseFolded());
+        working.removeIf([&](const auto &path) { return inactive.contains(path.toCaseFolded()); });
         working.sort();
     }
     else working = directorySources(asset.root);
@@ -771,6 +815,42 @@ void append(QJsonObject &document, const Snapshot &snapshot)
     revisions.append(toJson(snapshot));
     document.insert("revisions", revisions);
     document.insert("nextRevision", snapshot.id.toLongLong() + 1);
+}
+QString sourceHistoryRoot(const QString &library, const QString &source, bool directory)
+{
+    const auto relative = QDir(library).relativeFilePath(source);
+    auto identity = relative;
+#ifdef Q_OS_WIN
+    identity = identity.toCaseFolded();
+#endif
+    const auto key = QUuid::createUuidV5(QUuid("89a7fef0-e3aa-4d2a-9334-62d3bb4f3e1f"),
+        ((directory ? "directory:" : "file:") + identity).toUtf8()).toString(QUuid::WithoutBraces);
+    const auto histories = child(library, ".xips/assets");
+    safePath(histories);
+    QString found;
+    for (const auto &entry : QDir(histories).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
+    {
+        OperationScope::checkpoint();
+        QJsonObject document;
+        try { document = readJson(child(entry.absoluteFilePath(), ".xips.json")); }
+        catch (const OperationCancelled &) { throw; }
+        catch (...) { continue; }
+        const auto location = document.value("source").toObject();
+        auto registered = location.value("path").toString();
+#ifdef Q_OS_WIN
+        registered = registered.toCaseFolded();
+#endif
+        if (registered != identity || location.value("directory").toBool() != directory) continue;
+        require(found.isEmpty(), QStringLiteral("Conflicting source histories: %1").arg(source));
+        found = entry.absoluteFilePath();
+    }
+    if (!found.isEmpty()) return found;
+    const auto original = child(histories, key);
+    if (!QFileInfo::exists(original)) return original;
+    // A renamed source keeps this history location so external references stay valid.
+    const auto retained = load(original, library);
+    require(retained.document.contains("source"), QStringLiteral("Source history location is occupied."));
+    return child(histories, unique({}));
 }
 QString availableRoot(const QString &library, const QString &name)
 {
@@ -1287,15 +1367,8 @@ void saveSourceRevision(const CatalogAsset &asset, const QString &note, Snapshot
         auto current = currentSource(asset);
         healthyHistory(current);
         const QString relative = QDir(asset.library).relativeFilePath(asset.root);
-        QString identity = relative;
-#ifdef Q_OS_WIN
-        identity = identity.toCaseFolded();
-#endif
-        const auto sourceKey = QUuid::createUuidV5(QUuid("89a7fef0-e3aa-4d2a-9334-62d3bb4f3e1f"),
-            ((asset.sourceIsDirectory ? "directory:" : "file:") + identity).toUtf8())
-                            .toString(QUuid::WithoutBraces);
         const auto destination = asset.historyRoot.isEmpty()
-            ? child(asset.library, ".xips/assets/" + sourceKey) : asset.historyRoot;
+            ? sourceHistoryRoot(asset.library, asset.root, asset.sourceIsDirectory) : asset.historyRoot;
         const bool existing = QFileInfo::exists(destination);
         const auto id = existing ? load(destination, asset.library).id : unique({});
         const auto previous = existing ? load(destination, asset.library) : CatalogAsset{};
@@ -1570,13 +1643,7 @@ SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefi
         }
         const auto relative = QDir(library).relativeFilePath(source);
         require(!relative.toCaseFolded().split('/').contains(".xips"), QStringLiteral("Choose source files outside catalog metadata."));
-        auto identity = relative;
-#ifdef Q_OS_WIN
-        identity = identity.toCaseFolded();
-#endif
-        const auto key = QUuid::createUuidV5(QUuid("89a7fef0-e3aa-4d2a-9334-62d3bb4f3e1f"),
-            ((directory ? "directory:" : "file:") + identity).toUtf8()).toString(QUuid::WithoutBraces);
-        const auto destination = child(library, ".xips/assets/" + key);
+        const auto destination = sourceHistoryRoot(library, source, directory);
         const bool existing = QFileInfo::exists(destination);
         auto document = existing ? load(destination, library).document : newDocument(unique({}), definition.name, definition.category);
         const auto originalDocument = document;
@@ -1585,6 +1652,7 @@ SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefi
         for (auto it = metadata.begin(); it != metadata.end(); ++it) document.insert(it.key(), it.value());
         document.insert("source", QJsonObject{{"path", relative}, {"directory", directory}});
         if (!existing) document.insert("workingArea", managed ? "managed" : "linked");
+        if (!existing && managed) document.insert("inactiveWorkingFiles", QJsonArray{});
         document.insert("registered", true);
         require(!request || !existing, QStringLiteral("A previous entry uses this working path. Choose another name."));
         QMap<QString, InputFile> planned;
@@ -1664,6 +1732,18 @@ SnapshotResult importWorking(const CatalogAsset &asset, const QStringList &sourc
         const auto staged = stageImports(asset.root, stage.path(), planned,
             current.document.value("workingArea") != "managed", request ? &request->selection : nullptr);
         auto document = current.document;
+        if (document.value("workingArea") == "managed")
+        {
+            QMap<QString, QString> inactive;
+            for (const auto &path : inactiveWorkingFiles(current)) inactive.insert(path.toCaseFolded(), path);
+            if (request)
+                for (const auto &snapshot : current.snapshots)
+                    if (snapshot.id != "current" && snapshot.id != "working")
+                        for (const auto &path : snapshot.files) inactive.insert(path.toCaseFolded(), path);
+            for (auto it = planned.cbegin(); it != planned.cend(); ++it) inactive.remove(it.key().toCaseFolded());
+            auto paths = inactive.values(); paths.sort();
+            document.insert("inactiveWorkingFiles", QJsonArray::fromStringList(paths));
+        }
         bool reuseVersion = false;
         if (request)
         {
@@ -1718,29 +1798,29 @@ SnapshotResult importWorking(const CatalogAsset &asset, const QStringList &sourc
                 const auto history = load(current.historyRoot, asset.library);
                 require(history.document == current.document && parentRevisions(history) == parentRevisions(current),
                         QStringLiteral("Versions changed during import. Refresh and retry."));
-                if (!reuseVersion)
+            }
+            const auto path = child(current.historyRoot, ".xips.json");
+            const bool changed = document != current.document;
+            if (changed)
+            {
+                const auto original = bytes(path);
+                require(QJsonDocument::fromJson(original).object() == current.document,
+                        QStringLiteral("Version details changed. Refresh and retry."));
+                writeJson(path, document, &original);
+            }
+            try
+            {
+                if (request && !reuseVersion) publishSnapshot(current.historyRoot, current.id, result.snapshot);
+            }
+            catch (...)
+            {
+                if (changed)
                 {
-                    const auto path = child(current.historyRoot, ".xips.json");
-                    const bool named = document != current.document;
-                    if (named)
-                    {
-                        const auto original = bytes(path);
-                        require(QJsonDocument::fromJson(original).object() == current.document,
-                                QStringLiteral("Version details changed. Refresh and retry."));
-                        writeJson(path, document, &original);
-                    }
-                    try { publishSnapshot(current.historyRoot, current.id, result.snapshot); }
-                    catch (...)
-                    {
-                        if (named)
-                        {
-                            const auto expected = QJsonDocument(document).toJson(QJsonDocument::Indented);
-                            try { writeJson(path, current.document, &expected); }
-                            catch (...) { result.retainedPath = current.historyRoot; }
-                        }
-                        throw;
-                    }
+                    const auto expected = QJsonDocument(document).toJson(QJsonDocument::Indented);
+                    try { writeJson(path, current.document, &expected); }
+                    catch (...) { result.retainedPath = current.historyRoot; }
                 }
+                throw;
             }
         }
         catch (...)
@@ -1757,7 +1837,7 @@ SnapshotResult importWorking(const CatalogAsset &asset, const QStringList &sourc
             for (auto it = directories.crbegin(); it != directories.crend(); ++it) QDir().rmdir(*it);
             throw;
         }
-        result.unchanged = staged.isEmpty() && (!request ||
+        result.unchanged = staged.isEmpty() && document == current.document && (!request ||
             std::any_of(current.snapshots.cbegin(), current.snapshots.cend(),
                 [&](const auto &snapshot) { return snapshot.id == result.snapshot.id; }));
         result.preview.files = staged.keys();
@@ -1806,8 +1886,87 @@ SnapshotResult SnapshotLibrary::setDefinition(const CatalogAsset &asset, const C
         auto document = current.document;
         for (auto it = fields.begin(); it != fields.end(); ++it)
             document.insert(it.key(), it.value());
-        writeJson(child(root, ".xips.json"), document, &original);
-        result.asset = resolveAsset(asset);
+        auto updated = asset;
+        const auto name = fields.value("name").toString();
+        const bool renameFolder = asset.discovered && asset.sourceIsDirectory &&
+            QFileInfo(asset.root).fileName() != name &&
+            (name != current.name || document.value("workingArea") == "managed");
+        QString location = asset.root;
+        if (renameFolder)
+        {
+            const QRegularExpression invalid(QStringLiteral("[<>:\"/\\\\|?*\\x00-\\x1f]"));
+            const QRegularExpression reserved(QStringLiteral("^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\.|$)"),
+                                               QRegularExpression::CaseInsensitiveOption);
+            require(name != "." && name != ".." && name.compare(".xips", Qt::CaseInsensitive) != 0 && !name.endsWith('.') &&
+                        !invalid.match(name).hasMatch() && !reserved.match(name).hasMatch(),
+                    QStringLiteral("Choose a valid working folder name."));
+            existingDirectory(asset.root);
+            require(files::isWithin(asset.root, asset.library) && absolute(asset.root) != absolute(asset.library),
+                    QStringLiteral("Cannot rename the library root or a source outside it."));
+            for (const auto &entry : QDir(child(asset.library, ".xips/assets")).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
+            {
+                OperationScope::checkpoint();
+                if (absolute(entry.absoluteFilePath()) == absolute(root)) continue;
+                QJsonObject other;
+                try { other = readJson(child(entry.absoluteFilePath(), ".xips.json")); }
+                catch (const OperationCancelled &) { throw; }
+                catch (...) { continue; }
+                const auto relative = other.value("source").toObject().value("path").toString();
+                require(relative.isEmpty() || !files::isWithin(child(asset.library, relative), asset.root),
+                        QStringLiteral("This folder contains another registered source."));
+            }
+            updated.root = child(QFileInfo(asset.root).absolutePath(), name);
+            safePath(updated.root);
+            require(files::isWithin(updated.root, asset.library) && absolute(updated.root) != absolute(asset.library),
+                    QStringLiteral("Working folder must remain inside the library."));
+            bool caseOnly = false;
+#ifdef Q_OS_WIN
+            caseOnly = asset.root.compare(updated.root, Qt::CaseInsensitive) == 0 && asset.root != updated.root;
+#endif
+            require(caseOnly || !QFileInfo::exists(updated.root), QStringLiteral("A folder with this name already exists."));
+            const auto otherHistory = sourceHistoryRoot(asset.library, updated.root, true);
+            require(!QFileInfo::exists(otherHistory) || absolute(otherHistory) == absolute(root),
+                    QStringLiteral("Another entry already uses this working folder name."));
+            auto source = document.value("source").toObject();
+            source.insert("path", QDir(asset.library).relativeFilePath(updated.root));
+            document.insert("source", source);
+            require(bytes(child(root, ".xips.json")) == original, QStringLiteral("IP details changed. Refresh and retry."));
+            OperationScope::publish();
+            if (caseOnly)
+            {
+                const auto temporary = child(QFileInfo(asset.root).absolutePath(), unique(".xips-rename-"));
+                safePath(temporary);
+                require(files::isWithin(temporary, asset.library) && !QFileInfo::exists(temporary) &&
+                            QDir().rename(location, temporary), QStringLiteral("Cannot rename the working folder."));
+                location = temporary;
+            }
+        }
+        try
+        {
+            if (renameFolder)
+            {
+                require(QDir().rename(location, updated.root),
+                        QStringLiteral("Cannot rename the working folder. Close files that are in use and retry."));
+                location = updated.root;
+            }
+            writeJson(child(root, ".xips.json"), document, &original);
+        }
+        catch (...)
+        {
+            if (location != asset.root)
+            {
+#ifdef Q_OS_WIN
+                if (location.compare(asset.root, Qt::CaseInsensitive) == 0)
+                {
+                    const auto temporary = child(QFileInfo(asset.root).absolutePath(), unique(".xips-rename-"));
+                    if (QDir().rename(location, temporary)) location = temporary;
+                }
+#endif
+                if (!QDir().rename(location, asset.root)) result.retainedPath = location;
+            }
+            throw;
+        }
+        result.asset = resolveAsset(updated);
     });
 }
 SnapshotResult SnapshotLibrary::addReference(const CatalogAsset &asset, const QString &revision,

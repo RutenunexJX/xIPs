@@ -2708,7 +2708,9 @@ void BrowserPanel::detailsDialog()
 {
     const auto asset = m_selected;
     Form form(this, QStringLiteral("Edit asset details"), QStringLiteral("Save"));
+    form.setObjectName("assetDetailsForm");
     auto *name = new EnglishLineEdit(&form);
+    name->setObjectName("assetDetailsName");
     name->setText(asset.name);
     auto *category = categories(&form, asset.category);
     auto *description = new EnglishPlainTextEdit(&form);
@@ -2719,6 +2721,8 @@ void BrowserPanel::detailsDialog()
     form.body->addWidget(category);
     form.body->addWidget(description);
     const auto editors = indexEditors(form, asset.indexes);
+    if (asset.discovered && asset.sourceIsDirectory)
+        form.message(QStringLiteral("Changing the name also renames the working folder."));
     if (form.exec() != QDialog::Accepted)
         return;
     CatalogDefinition definition;

@@ -167,19 +167,20 @@ void GuiSmokeTest::externalDropsReachEveryWorkingArea()
     QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 5);
     auto folder = model->fileIndex("rtl/top.sv").parent(); QVERIFY(folder.isValid());
     QVERIFY(dropPaths(tree->viewport(), tree->visualRect(folder).center(), {external + "/include", external + "/notes.txt"}));
-    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 7);
+    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 5);
+    QVERIFY(!model->fileIndex("rtl/top.sv").isValid());
     auto *page = panel.findChild<QWidget *>("workingPage");
     QVERIFY(dropPaths(page, QPoint(2, 2), {external + "/page.sv"}));
-    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 8);
+    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 6);
     QVERIFY(dropPaths(tree, QPoint(2, 2), {external + "/frame.sv"}));
-    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 9);
+    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 7);
     put(external + "/fallback.sv", "fallback");
     QVERIFY(dropPaths(&panel, tree->viewport()->mapTo(&panel, blank()), {external + "/fallback.sv"}));
-    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 10);
+    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 8);
     QCOMPARE(versions->model()->rowCount(), 2);
     for (const auto &file : initial) QCOMPARE(get(created.asset.root + '/' + file), get(external + '/' + file));
     QTest::mouseClick(panel.findChild<ElaCheckBox *>("checkAllFiles"), Qt::LeftButton);
-    QCOMPARE(model->checkedFiles().size(), 10);
+    QCOMPARE(model->checkedFiles().size(), 8);
     const auto directory = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
     if (!directory.isEmpty())
     { QDir().mkpath(directory); QTest::qWait(500); panel.grab().save(directory + "/working-files-dropped.png"); }
@@ -189,10 +190,10 @@ void GuiSmokeTest::externalDropsReachEveryWorkingArea()
     QCOMPARE(versions->model()->rowCount(), 3);
     const auto revision = versions->currentIndex().data(Qt::UserRole).toString();
     const auto archived = SnapshotLibrary::verifySnapshot(created.asset, revision); QVERIFY(archived.ok);
-    QCOMPARE(archived.snapshot.files.size(), 10);
+    QCOMPARE(archived.snapshot.files.size(), 8);
     pages->setCurrentIndex(0);
     QVERIFY(dropPaths(tree->viewport(), blank(), {external + "/rtl", external + "/two.sv"}));
-    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 10);
+    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 3);
     QVERIFY(!panel.findChild<ElaText *>("browserNotice")->property("error").toBool());
     put(external + "/two.sv", "conflicting original");
     QVERIFY(dropPaths(tree->viewport(), tree->visualRect(model->fileIndex("two.sv")).center(), {external + "/two.sv"}));

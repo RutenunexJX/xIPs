@@ -501,6 +501,41 @@ class EmbeddedTest final : public QObject
             QVERIFY(QMetaObject::invokeMethod(panel, "setDarkTheme", Q_ARG(bool, true)));
             QTest::qWait(100); QVERIFY(owner.grab().save(shots + "/embedded-working-dark-" + caseName + ".png"));
         }
+        // Exercise the shipped component's import scope and folder rename after the earlier lifecycle.
+        showPage(panel, 0);
+        working = panel->findChild<QAbstractItemView *>("workingFiles");
+        auto importFolder = [&](const QString &path)
+        {
+            expose(working);
+            const auto point = working->viewport()->rect().center();
+            QMimeData incoming; incoming.setUrls({QUrl::fromLocalFile(path)});
+            QDragEnterEvent entering(point, Qt::CopyAction, &incoming, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(working->viewport(), &entering); QVERIFY(entering.isAccepted());
+            QDropEvent dropping(point, Qt::CopyAction, &incoming, Qt::LeftButton, Qt::NoModifier);
+            whenVisible(&owner, "folderImportForm", [](QWidget *form) { click(form, "formAccept"); });
+            QApplication::sendEvent(working->viewport(), &dropping); QVERIFY(dropping.isAccepted());
+            QTRY_VERIFY(!busy(panel));
+        };
+        importFolder(tmp.filePath("external/rtl"));
+        put(tmp.filePath("next/new.sv"), "module next; endmodule");
+        importFolder(tmp.filePath("next"));
+        QVERIFY(!fileIndex(working->model(), "rtl/sub/helper.sv").isValid());
+        QVERIFY(fileIndex(working->model(), "next/new.sv").isValid());
+        QVERIFY(fileIndex(working->model(), "top.sv").isValid());
+        QCOMPARE(versions->model()->rowCount(), 2);
+        whenVisible(&owner, "assetDetailsForm", [](QWidget *form)
+        {
+            form->findChild<QLineEdit *>("assetDetailsName")->setText("renamed_project");
+            click(form, "formAccept");
+        });
+        click(panel, "editAssetButton"); QTRY_VERIFY(!busy(panel));
+        QCOMPARE(state(panel)["assetId"].toString(), assetId);
+        QVERIFY(!QFileInfo::exists(asset.root));
+        QVERIFY(QFileInfo::exists(root + "/renamed_project/rtl/sub/helper.sv"));
+        QVERIFY(QFileInfo::exists(root + "/renamed_project/next/new.sv"));
+        QVERIFY(!fileIndex(working->model(), "rtl/sub/helper.sv").isValid());
+        QVERIFY(fileIndex(working->model(), "next/new.sv").isValid());
+        QCOMPARE(versions->model()->rowCount(), 2);
     }
     void cleanupTestCase()
     {

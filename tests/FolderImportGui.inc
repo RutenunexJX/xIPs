@@ -133,7 +133,12 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     QVERIFY(QFileInfo::exists(next + "/keep.txt"));
     QVERIFY(QFileInfo::exists(project.root + "/next/readme.txt"));
     QVERIFY(!QFileInfo::exists(project.root + "/next/keep.txt"));
-    QCOMPARE(project.workingFiles.size(), 2);
+    QCOMPARE(project.workingFiles, QStringList{"next/readme.txt"});
+    auto *workingModel = qobject_cast<WorkingFilesModel *>(working->model());
+    QVERIFY(!workingModel->fileIndex("incoming/rtl/top.sv").isValid());
+    QVERIFY(workingModel->fileIndex("next/readme.txt").isValid());
+    panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(workingModel->fileCount(), 1);
     const auto latest = SnapshotLibrary::verifySnapshot(project, SnapshotLibrary::heads(project).first());
     QVERIFY(latest.ok);
     QCOMPARE(latest.snapshot.sequence, 2);
@@ -141,4 +146,27 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     QCOMPARE(latest.snapshot.files, QStringList{"next/readme.txt"});
     QVERIFY(SnapshotLibrary::verifySnapshot(project, first.snapshot.id).ok);
     QCOMPARE(panel.findChild<ElaTableView *>("revisionTable")->model()->rowCount(), 2);
+    const auto state = panel.saveState();
+    BrowserPanel reopened; reopened.resize(800, 640); reopened.show(); reopened.restoreState(state);
+    QTRY_VERIFY(!reopened.isCatalogBusy());
+    auto *reopenedModel = qobject_cast<WorkingFilesModel *>(reopened.findChild<ElaTreeView *>("workingFiles")->model());
+    QCOMPARE(reopenedModel->fileCount(), 1);
+    QVERIFY(reopenedModel->fileIndex("next/readme.txt").isValid());
+    QCOMPARE(reopened.findChild<ElaTableView *>("revisionTable")->model()->rowCount(), 2);
+    whenVisible(&reopened, "assetDetailsForm", [](QWidget *form)
+    {
+        form->findChild<QLineEdit *>("assetDetailsName")->setText("renamed_project");
+        form->findChild<ElaPushButton *>("formAccept")->click();
+    });
+    reopened.findChild<QToolButton *>("editAssetButton")->click();
+    QTRY_VERIFY(!reopened.isCatalogBusy());
+    const auto renamed = SnapshotLibrary::scan(library).assets.first();
+    QCOMPARE(renamed.name, QString("renamed_project"));
+    QCOMPARE(renamed.root, library + "/renamed_project");
+    QCOMPARE(renamed.id, project.id);
+    QVERIFY(!QFileInfo::exists(project.root));
+    QCOMPARE(reopenedModel->fileCount(), 1);
+    QCOMPARE(reopened.findChild<ElaTableView *>("revisionTable")->model()->rowCount(), 2);
+    const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
+    if (!screenshots.isEmpty()) QVERIFY(reopened.grab().save(screenshots + "/current-working-files.png"));
 }

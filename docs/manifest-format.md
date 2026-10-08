@@ -16,9 +16,12 @@ Each connection belongs to its calling thread. Test builds accept `XIPS_TEST_CAC
 
 New collected assets have `<asset>/.xips.json`. Save revision on a scanned source
 stores metadata at `.xips/assets/<source-key>/.xips.json`, with a library-relative
-source location. The directory key identifies the source path; the metadata ID is a
-separate globally unique UUID. Moving the whole library preserves its saved identity. Renaming
-an individual source does not silently reassign its existing history.
+source location. The initial directory key is derived from the source path; the metadata ID is a
+separate globally unique UUID. Moving the whole library preserves its saved identity.
+Renaming a registered working folder updates its source path while retaining the history
+directory and metadata ID, so groups and pinned references remain valid. Registration
+looks up saved source locations before allocating a new history directory. Folder moves
+are rolled back if the definition cannot be committed.
 
 ```json
 {
@@ -39,6 +42,10 @@ an individual source does not silently reassign its existing history.
 `source` is present only for original-file histories. Optional description and tags
 are retained. Categories are module, ip, project, artifact or other. New writes require
 schema 3; this change does not migrate existing libraries.
+
+Managed working areas may include an `inactiveWorkingFiles` array of normalized relative paths retained from earlier imports. Working-file enumeration excludes these paths; all other files, including newly added unarchived files, remain visible. Import and archive retires previously archived paths and activates the new selection; Add files / Add folder explicitly reactivates supplied paths. Version deletion does not alter this selection or delete physical working files. The selection and version label are committed together and restored if archive publication fails.
+
+Older managed entries without this field infer retired files only when healthy, single-head history consists of separate top-level version folders. This read-only compatibility view keeps files in the latest folder and unarchived paths visible. Linked source folders and ordinary multi-file histories retain their full working view. No source content is deleted or hashed during enumeration.
 
 Registered source metadata can include `registered: false`. Scans omit that registration
 but retain all source/history/group records. Registering the same source reactivates

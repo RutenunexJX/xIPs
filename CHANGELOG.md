@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.12.1 — 2026-10-08
+
+- Keep Working files focused on the latest imported selection and unarchived file paths; retain earlier imported files on disk and in Versions, and preserve the working selection across refreshes and reopening.
+- Read older per-version folder imports without changing their metadata; use Add files / Add folder to reactivate earlier files explicitly.
+- Rename the working directory when editing a Module, IP or Project name, including entries renamed by earlier releases; retain stable history locations, group membership and pinned references.
+- Reject invalid or occupied folder names and nested registered sources, and restore the original directory if metadata publication fails, including Windows case-only renames.
+
+
 ## 2.12.0 — 2026-10-08
 
 - Set a version name while importing a dropped folder into a new or existing Module, IP or Project; leave it empty for automatic naming.
