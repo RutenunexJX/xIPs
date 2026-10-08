@@ -136,9 +136,9 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     QCOMPARE(project.workingFiles, QStringList{"next/readme.txt"});
     auto *workingModel = qobject_cast<WorkingFilesModel *>(working->model());
     QVERIFY(!workingModel->fileIndex("incoming/rtl/top.sv").isValid());
-    QVERIFY(workingModel->fileIndex("next/readme.txt").isValid());
+    QVERIFY(!workingModel->fileIndex("next/readme.txt").isValid());
     panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy());
-    QCOMPARE(workingModel->fileCount(), 1);
+    QCOMPARE(workingModel->fileCount(), 0);
     const auto latest = SnapshotLibrary::verifySnapshot(project, SnapshotLibrary::heads(project).first());
     QVERIFY(latest.ok);
     QCOMPARE(latest.snapshot.sequence, 2);
@@ -150,8 +150,8 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     BrowserPanel reopened; reopened.resize(800, 640); reopened.show(); reopened.restoreState(state);
     QTRY_VERIFY(!reopened.isCatalogBusy());
     auto *reopenedModel = qobject_cast<WorkingFilesModel *>(reopened.findChild<ElaTreeView *>("workingFiles")->model());
-    QCOMPARE(reopenedModel->fileCount(), 1);
-    QVERIFY(reopenedModel->fileIndex("next/readme.txt").isValid());
+    QCOMPARE(reopenedModel->fileCount(), 0);
+    QVERIFY(!reopenedModel->fileIndex("next/readme.txt").isValid());
     QCOMPARE(reopened.findChild<ElaTableView *>("revisionTable")->model()->rowCount(), 2);
     whenVisible(&reopened, "assetDetailsForm", [](QWidget *form)
     {
@@ -165,7 +165,7 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     QCOMPARE(renamed.root, library + "/renamed_project");
     QCOMPARE(renamed.id, project.id);
     QVERIFY(!QFileInfo::exists(project.root));
-    QCOMPARE(reopenedModel->fileCount(), 1);
+    QCOMPARE(reopenedModel->fileCount(), 0);
     QCOMPARE(reopened.findChild<ElaTableView *>("revisionTable")->model()->rowCount(), 2);
     const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
     if (!screenshots.isEmpty()) QVERIFY(reopened.grab().save(screenshots + "/current-working-files.png"));

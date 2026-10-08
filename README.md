@@ -12,7 +12,7 @@ The interface uses Ela controls and shares ZeroSlack's compact panel layout. All
 4. Check the files to include. A folder checkbox selects its descendants; **All** selects or clears every file. Browsing a row does not change its checkbox. Checks survive refreshes and version switches, and missing files are removed from the selection. Click **Create version** (**Ctrl+S**), review the included files and the added, modified or omitted files compared with the previous version, and optionally add a note. Omitting a file from a version keeps its working copy. Zero checked files cannot create a version. This explicit save creates **rev1**, followed by **rev2** and later versions; unchanged content creates no extra version unless joining parallel heads.
 5. Use **Versions** to select a saved version, then **Copy to project** to copy exactly that version's files to a new destination. The copies are independently editable. Continue adding or editing working files and create another version without changing earlier versions.
 
-Dragging a folder anywhere in the panel opens **Import folder**. Choose a new Module/IP/Project or an existing entry with a writable working folder, check the incoming files to include, and choose **Copy** or **Move**. Set **Version** before importing (for example, `v1.0.0`), or leave it empty for the automatic `revN` name. **Import and archive** imports only the checked files and immediately saves that exact selection with the chosen version name. Names must be unique within the entry; importing identical files under a new name creates a separate version. Working files shows the latest imported selection together with files that have not yet been archived. Earlier imported files remain available through Versions and are retained on disk. Add files / Add folder can make an older file part of the working set again. Folder names and nested paths are retained. Copy keeps originals; Move removes each checked source only after the working copy and saved version verify. Unchecked or locked source files remain, and retained sources are reported. Cancel makes no changes. File conflicts never overwrite existing content.
+Dragging a folder anywhere in the panel opens **Import folder**. Choose a new Module/IP/Project or an existing entry with a writable working folder, check the incoming files to include, and choose **Copy** or **Move**. Set **Version** before importing (for example, `v1.0.0`), or leave it empty for the automatic `revN` name. **Import and archive** imports only the checked files and immediately saves that exact selection with the chosen version name. Names must be unique within the entry; importing identical files under a new name creates a separate version. The working set contains the latest imported selection together with files that have not yet been archived. Working files displays this set only while it differs from the latest archive; a clean working set leaves the file area blank. Earlier imported files remain available through Versions and are retained on disk. Add files / Add folder can make an older file part of the working set again. Folder names and nested paths are retained. Copy keeps originals; Move removes each checked source only after the working copy and saved version verify. Unchecked or locked source files remain, and retained sources are reported. Cancel makes no changes. File conflicts never overwrite existing content.
 
 Renaming a registered directory entry in Edit asset details also renames its working folder. The saved identity, revision history, groups and pinned references are retained. A name conflict or filesystem error leaves the previous name and folder in place.
 
@@ -24,14 +24,16 @@ press **Enter**, or use its open action to edit the original working file or ope
 verified read-only copy of an archived file. Secondary actions remain visible as
 outline icons with tooltips; errors and operation progress appear when needed.
 
-Folder folding, the selected file and scroll position are remembered per IP and
-included in saved browser state. Saving a version or importing working files updates
+Working-file folders start collapsed. Explicitly expanded folders, the selected file and scroll position are remembered per IP and
+included in saved browser state. File additions, content changes and removals are checked in the background for the selected entry; editing outside the app updates the view automatically. Saving a clean version leaves the file area blank while retaining the original files. Parallel revision heads remain available for review and adoption. Saving a version or importing working files updates
 that IP and its local search index without rescanning the whole catalog. External
 edits and synchronized changes refresh automatically after a short pause. Returning
 to the window checks for missed changes in the background. **Rescan** remains available
 for an immediate full check.
 Refreshing other IPs leaves the current details intact. Refreshing the current IP
 keeps the selected archived version, file and scroll position while they remain available.
+
+Group names use a stronger, theme-aware text color and weight than their members. The filter button beside **Groups** toggles **Hide empty groups**, including groups with no members matching the current search or filters. It only changes visibility, retains every group and membership, and is included in saved browser state.
 
 Use **New group** beside **Groups** to create a group in the left tree. Drag an IP onto
 a group to add membership while retaining its existing groups. Right-click an IP to
@@ -233,7 +235,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
 and the SuiteApp SDK enabled. For an explicitly standalone release, configure
 **XIPS_ENABLE_SUITEAPP=OFF** and pass **-Standalone** to the packaging script.
-The release tag **v2.12.1** must identify HEAD.
+The release tag **v2.13.0** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell

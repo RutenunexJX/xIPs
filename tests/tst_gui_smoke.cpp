@@ -89,6 +89,7 @@ class GuiSmokeTest : public QObject
     void doubleClickAndEnterOpenTheSelectedVersion();
     void emptyIpImportCheckAndCreateVersions();
     void workingCheckboxStatesStayVisible();
+    void workingFilesOnlyShowUnarchivedChanges();
     void archivedVersionsCanBeDeleted();
     void archivedVersionNamesCanBeEdited();
     void externalDropsReachEveryWorkingArea();
@@ -101,6 +102,7 @@ class GuiSmokeTest : public QObject
 #include "VersionAndDropGui.inc"
 #include "VersionNamesGui.inc"
 #include "FolderImportGui.inc"
+#include "WorkingVisibilityGui.inc"
 #include "LocalUpdatesGui.inc"
 #include "AutomaticRefreshGui.inc"
 #include "ArchivedViewGui.inc"
@@ -134,6 +136,7 @@ void GuiSmokeTest::workingCheckboxStatesStayVisible()
             return tree->style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &option, tree);
         }
     } probe;
+    view->expandAll(); ElaTreeView::finishExpansion(view);
     const auto checked = model->fileIndex("notes.txt");
     const auto helper = model->fileIndex("rtl/sub/helper.sv");
     const auto partial = helper.parent().parent();
@@ -230,6 +233,7 @@ void GuiSmokeTest::doubleClickAndEnterOpenTheSelectedVersion()
     }
     QCOMPARE(pages->currentIndex(), 0);
     const auto workingIndex = workingModel->fileIndex("rtl/counter.sv");
+    working->expand(workingIndex.parent()); ElaTreeView::finishExpansion(working);
     const auto position = working->visualRect(workingIndex).center();
     QTest::mouseClick(working->viewport(), Qt::LeftButton, Qt::NoModifier, position);
     QTest::mouseDClick(working->viewport(), Qt::LeftButton, Qt::NoModifier, position);
@@ -599,7 +603,7 @@ void GuiSmokeTest::scannedFilesSaveAndSelectHistory()
     update->click();
     QTRY_COMPARE(versions->model()->rowCount(), 1);
     QTRY_VERIFY(!panel.isCatalogBusy());
-    QVERIFY(update->isEnabled());
+    QVERIFY(!update->isEnabled());
     QVERIFY(versions->currentIndex().data(Qt::UserRole).toString() != "current");
     QVERIFY(versions->currentIndex().siblingAtColumn(0).data().toString().startsWith("rev1"));
     const auto first = versions->currentIndex().data(Qt::UserRole).toString();
@@ -608,6 +612,8 @@ void GuiSmokeTest::scannedFilesSaveAndSelectHistory()
     QVERIFY(file.open(QIODevice::WriteOnly));
     file.write("second source");
     file.close();
+    panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy());
+    panel.findChild<ElaCheckBox *>("checkAllFiles")->click();
     QVERIFY(update->isEnabled());
     whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
     {
@@ -823,6 +829,15 @@ void GuiSmokeTest::groupsCanBeCreatedAndOrganized()
     QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(model->rowCount(model->indexForId({}, empty)), 0);
     QCOMPARE(model->rowCount(model->indexForId({}, bus)), 2);
+    auto *hideEmpty = panel.findChild<QToolButton *>("hideEmptyGroupsButton");
+    QVERIFY(hideEmpty && !hideEmpty->isChecked());
+    const auto originalGroups = CatalogGroups::scan(library).groups;
+    hideEmpty->click();
+    QVERIFY(tree->isRowHidden(model->indexForId({}, empty).row(), {}));
+    QVERIFY(!tree->isRowHidden(model->indexForId({}, bus).row(), {}));
+    QCOMPARE(CatalogGroups::scan(library).groups, originalGroups);
+    hideEmpty->click();
+    QVERIFY(!tree->isRowHidden(model->indexForId({}, empty).row(), {}));
     auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
     search->setText("axi");
     QTRY_COMPARE(model->rowCount(model->indexForId({}, bus)), 1);
@@ -907,7 +922,9 @@ void GuiSmokeTest::groupsCanBeCreatedAndOrganized()
         eTheme->setThemeMode(previous);
     }
     tree->collapse(model->indexForId({}, bus));
+    hideEmpty->click();
     const auto state = panel.saveState();
+    QVERIFY(state.value("hideEmptyGroups").toBool());
     QVERIFY(state.value("collapsedGroups").toStringList().contains(bus));
     BrowserPanel reopened;
     reopened.setContext(library, {});
@@ -919,6 +936,9 @@ void GuiSmokeTest::groupsCanBeCreatedAndOrganized()
     QCOMPARE(restoredModel->rowCount(restoredModel->indexForId({}, bus)), 2);
     QCOMPARE(restoredModel->rowCount(restoredModel->indexForId({}, empty)), 0);
     QVERIFY(!restoredTree->isExpanded(restoredModel->indexForId({}, bus)));
+    QVERIFY(restoredTree->isRowHidden(restoredModel->indexForId({}, empty).row(), {}));
+    QVERIFY(reopened.findChild<QToolButton *>("hideEmptyGroupsButton")->isChecked());
+    hideEmpty->click();
     chooseAction(model->indexForId({}, bus), "deleteGroupAction");
     QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(model->groups().size(), 1);

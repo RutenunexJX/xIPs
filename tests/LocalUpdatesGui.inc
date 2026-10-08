@@ -13,6 +13,7 @@ void GuiSmokeTest::localUpdatesPreserveViewsAndReviewChanges()
         put(first.asset.root + QString("/rtl/file-%1.sv").arg(i, 2, 10, QLatin1Char('0')), "original");
     put(first.asset.root + "/docs/nested/readme.txt", "documentation");
     first = SnapshotLibrary::saveCurrent(first.asset); QVERIFY(first.ok);
+    put(first.asset.root + "/rtl/file-00.sv", "pending change");
     definition.name = "beta";
     const auto second = SnapshotLibrary::create(library, definition); QVERIFY(second.ok);
     put(second.asset.root + "/other.sv", "other");
@@ -28,6 +29,7 @@ void GuiSmokeTest::localUpdatesPreserveViewsAndReviewChanges()
     auto *pages = panel.findChild<ElaTabWidget *>("assetPages");
     QAbstractItemModelTester tester(catalog, QAbstractItemModelTester::FailureReportingMode::QtTest);
     QTest::qWait(50);
+    working->expand(model->pathIndex("rtl"));
     working->collapse(model->pathIndex("docs"));
     ElaTreeView::finishExpansion(working);
     const QString selected = "rtl/file-60.sv";
@@ -50,6 +52,7 @@ void GuiSmokeTest::localUpdatesPreserveViewsAndReviewChanges()
     QTRY_COMPARE(working->verticalScrollBar()->value(), scroll);
     // Switching IPs and refreshing preserve the path-based selection and folding.
     panel.revealAsset(second.asset.id); panel.revealAsset(first.asset.id);
+    QTRY_VERIFY(!panel.isCatalogBusy());
     QVERIFY(!working->isExpanded(model->pathIndex("docs")));
     QCOMPARE(working->currentIndex().data(Qt::UserRole).toString(), selected);
     QTRY_COMPARE(working->verticalScrollBar()->value(), scroll);

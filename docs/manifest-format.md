@@ -12,6 +12,8 @@ It stays outside the selected library, is rebuilt on Rescan and is never authori
 A corrupt cache is recreated; unavailable or busy caches fall back to the in-memory catalog.
 Each connection belongs to its calling thread. Test builds accept `XIPS_TEST_CACHE_ROOT`.
 
+The browser separately compares only the selected entry's working files with the latest archive through the existing payload-preview service. This cancellable background read detects content changes without writing the library or changing the catalog scan/index contract. A clean working set is hidden from the file area; pending additions, changes, removals or parallel revision heads expose the current set. Expanded working folders and the hide-empty-groups preference belong to saved browser state, not asset or group metadata.
+
 ## Schema 3 asset metadata
 
 New collected assets have `<asset>/.xips.json`. Save revision on a scanned source

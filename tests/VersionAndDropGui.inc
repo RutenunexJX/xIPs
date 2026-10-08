@@ -21,6 +21,7 @@ void GuiSmokeTest::archivedVersionsCanBeDeleted()
     auto *working = panel.findChild<ElaTreeView *>("workingFiles");
     auto *model = qobject_cast<WorkingFilesModel *>(working->model());
     QTRY_COMPARE(versions->model()->rowCount(), 2);
+    QTRY_VERIFY(!panel.isCatalogBusy());
     model->checkAll(true); pages->setCurrentIndex(1);
     versions->setCurrentIndex(revisionIndex(versions, second.snapshot.id));
     QVERIFY(button->isVisible() && button->isEnabled());
@@ -73,7 +74,7 @@ void GuiSmokeTest::archivedVersionsCanBeDeleted()
     QVERIFY(panel.findChild<ElaText *>("historyEmpty")->isVisible());
     QVERIFY(!panel.findChild<QWidget *>("fileSection")->isVisible());
     QVERIFY(!button->isEnabled());
-    QCOMPARE(model->checkedFiles(), QStringList{"top.sv"});
+    QVERIFY(model->checkedFiles().isEmpty());
     QCOMPARE(panel.saveState().value("assetId").toString(), first.asset.id);
     QCOMPARE(CatalogGroups::scan(library).groups, groups);
     capture("delete-last-version");
@@ -193,7 +194,7 @@ void GuiSmokeTest::externalDropsReachEveryWorkingArea()
     QCOMPARE(archived.snapshot.files.size(), 8);
     pages->setCurrentIndex(0);
     QVERIFY(dropPaths(tree->viewport(), blank(), {external + "/rtl", external + "/two.sv"}));
-    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 3);
+    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 0);
     QVERIFY(!panel.findChild<ElaText *>("browserNotice")->property("error").toBool());
     put(external + "/two.sv", "conflicting original");
     QVERIFY(dropPaths(tree->viewport(), tree->visualRect(model->fileIndex("two.sv")).center(), {external + "/two.sv"}));
@@ -205,8 +206,8 @@ void GuiSmokeTest::externalDropsReachEveryWorkingArea()
     definition.name = "empty_hint"; const auto another = SnapshotLibrary::create(library, definition); QVERIFY(another.ok);
     panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy()); panel.revealAsset(another.asset.id);
     QTRY_COMPARE(model->fileCount(), 0);
-    auto *hint = panel.findChild<ElaText *>("workingEmpty"); QVERIFY(hint->isVisible());
-    QVERIFY(dropPaths(hint, QPoint(10, 8), {external + "/notes.txt"}));
+    auto *hint = panel.findChild<ElaText *>("workingEmpty"); QVERIFY(!hint->isVisible());
+    QVERIFY(dropPaths(tree->viewport(), QPoint(10, 8), {external + "/notes.txt"}));
     QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 1);
     QCOMPARE(get(another.asset.root + "/notes.txt"), QByteArray("notes.txt"));
     QCOMPARE(versions->model()->rowCount(), 0);

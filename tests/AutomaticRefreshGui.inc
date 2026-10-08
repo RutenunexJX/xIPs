@@ -28,6 +28,10 @@ void GuiSmokeTest::externalChangesRefreshAfterSettling()
     QTest::qWait(1100); QTRY_VERIFY(!panel.isCatalogBusy());
     QSignalSpy changes(monitor, &CatalogWatcher::refreshRequested);
     QSignalSpy resets(panel.findChild<ElaTreeView *>("assetList")->model(), &QAbstractItemModel::modelReset);
+    QCOMPARE(model->fileCount(), 0);
+    put(created.asset.root + "/rtl/top.sv", "editing");
+    QTRY_VERIFY_WITH_TIMEOUT(model->fileIndex("rtl/top.sv").isValid(), 10000);
+    tree->expand(model->pathIndex("rtl"));
     tree->setCurrentIndex(model->fileIndex("rtl/top.sv")); model->checkAll(true);
     for (int i = 0; i < 4; ++i) put(created.asset.root + QString("/rtl/nested/new%1.sv").arg(i), "new");
     QTRY_VERIFY_WITH_TIMEOUT(model->fileIndex("rtl/nested/new3.sv").isValid(), 10000);
@@ -52,6 +56,7 @@ void GuiSmokeTest::externalChangesRefreshAfterSettling()
     QTRY_VERIFY_WITH_TIMEOUT(!changes.isEmpty(), 10000); QTRY_VERIFY(!panel.isCatalogBusy());
     const auto next = SnapshotLibrary::saveCurrent(created.asset); QVERIFY(next.ok);
     QTRY_COMPARE_WITH_TIMEOUT(versions->model()->rowCount(), 2, 10000);
+    QTRY_COMPARE(model->fileCount(), 0);
     QCOMPARE(resets.count(), 0);
     // Keep the previous catalog while a sync writer has an incomplete definition.
     const auto metadata = created.asset.historyRoot + "/.xips.json";

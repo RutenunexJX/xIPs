@@ -30,6 +30,7 @@
 #include <QStyleOptionViewItem>
 #include <QTemporaryDir>
 #include <QThreadPool>
+#include <QTreeView>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 #include <QtTest>
@@ -115,6 +116,11 @@ void showPage(QWidget *panel, int index)
 void checkFile(QAbstractItemView *view, const QModelIndex &index)
 {
     QVERIFY(index.isValid());
+    if (auto *tree = qobject_cast<QTreeView *>(view))
+    {
+        for (auto parent = index.parent(); parent.isValid(); parent = parent.parent()) tree->expand(parent);
+        QTest::qWait(250);
+    }
     view->scrollTo(index); QCoreApplication::processEvents();
     QStyleOptionViewItem option;
     option.initFrom(view);
@@ -439,7 +445,7 @@ class EmbeddedTest final : public QObject
         QVERIFY(context(panel, {}, workspace)); QVERIFY(restore(panel, emptyHistoryState)); QTRY_VERIFY(!busy(panel));
         QCOMPARE(panel->findChild<QTabWidget *>("assetPages")->currentIndex(), 1);
         QCOMPARE(state(panel)["workingChecks"], checkedState["workingChecks"]);
-        QVERIFY(restore(panel, checkedState));
+        QVERIFY(restore(panel, checkedState)); QTRY_VERIFY(!busy(panel));
         whenVisible(&owner, "payloadReviewForm", [](QWidget *form) { click(form, "formAccept"); });
         click(panel, "updateButton"); QTRY_VERIFY(!busy(panel));
         showPage(panel, 0); showPage(panel, 1);
@@ -536,6 +542,25 @@ class EmbeddedTest final : public QObject
         QVERIFY(!fileIndex(working->model(), "rtl/sub/helper.sv").isValid());
         QVERIFY(fileIndex(working->model(), "next/new.sv").isValid());
         QCOMPARE(versions->model()->rowCount(), 2);
+        click(panel, "checkAllFiles");
+        whenVisible(&owner, "payloadReviewForm", [](QWidget *form) { click(form, "formAccept"); });
+        click(panel, "updateButton"); QTRY_VERIFY(!busy(panel));
+        QCOMPARE(working->model()->rowCount(), 0);
+        QVERIFY(!panel->findChild<QWidget *>("workingEmpty")->isVisible());
+        put(root + "/renamed_project/next/new.sv", "modified externally");
+        QTRY_VERIFY_WITH_TIMEOUT(fileIndex(working->model(), "next/new.sv").isValid(), 10000);
+        QVERIFY(!qobject_cast<QTreeView *>(working)->isExpanded(fileIndex(working->model(), "next/new.sv").parent()));
+        whenVisible(&owner, "groupName", [](QWidget *field)
+        { qobject_cast<QLineEdit *>(field)->setText("Empty group"); click(field->window(), "formAccept"); });
+        click(panel, "newGroupButton"); QTRY_VERIFY(!busy(panel));
+        auto *catalog = panel->findChild<QTreeView *>("assetList");
+        const auto empty = catalog->currentIndex();
+        QCOMPARE(empty.data().toString(), QString("Empty group"));
+        click(panel, "hideEmptyGroupsButton");
+        QVERIFY(catalog->isRowHidden(empty.row(), {}));
+        QVERIFY(state(panel)["hideEmptyGroups"].toBool());
+        click(panel, "hideEmptyGroupsButton");
+        QVERIFY(!catalog->isRowHidden(empty.row(), {}));
     }
     void cleanupTestCase()
     {

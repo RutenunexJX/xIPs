@@ -1,5 +1,7 @@
 #include "CatalogModel.h"
 #include "UiSupport.h"
+#include "ElaTheme.h"
+#include <QColor>
 #include "library/CatalogIndex.h"
 #include <QFont>
 #include <QHash>
@@ -50,6 +52,9 @@ QVariant CatalogModel::data(const QModelIndex &index, int role) const
         if (role == Qt::ToolTipRole) return QStringLiteral("%1 · %2 IPs\nDrop an IP here to add it. F2 to rename.")
             .arg(group.name).arg(value->children.size());
         if (role == Qt::DecorationRole) return uiIcon(UiIcon::Folder);
+        if (role == Qt::FontRole) { QFont font; font.setWeight(QFont::DemiBold); return font; }
+        if (role == Qt::ForegroundRole)
+            return QColor(eTheme->getThemeMode() == ElaThemeType::Dark ? "#a8c8ff" : "#355d96");
         return {};
     }
     const auto &row = m_rows[value->asset];

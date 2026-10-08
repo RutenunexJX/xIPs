@@ -51,7 +51,7 @@ class BrowserPanel final : public QWidget
     Q_INVOKABLE void setDarkTheme(bool dark);
     Q_INVOKABLE bool isCatalogBusy() const
     {
-        return m_busy;
+        return m_busy || m_loadingDetails;
     }
     std::optional<CatalogAsset> catalogAsset(const QString &id) const;
 
@@ -70,7 +70,7 @@ class BrowserPanel final : public QWidget
   private:
     struct WorkingViewState
     {
-        QSet<QString> collapsed;
+        QSet<QString> expanded;
         QString selectedPath;
         int horizontal = 0, vertical = 0;
     };
@@ -80,8 +80,8 @@ class BrowserPanel final : public QWidget
     void refreshCatalog(bool automatic, bool full = true, const QStringList &ids = {}, int attempt = 0);
     void filter();
     void selectCurrent();
-    void readLegacyDetails(const CatalogAsset &asset);
-    void showDetails(const CatalogAsset &asset);
+    void readDetails(const CatalogAsset &asset);
+    void showDetails(const CatalogAsset &asset, bool workingClean = false);
     void selectVersion();
     void rememberChecks();
     QString workingKey() const;
@@ -149,8 +149,10 @@ class BrowserPanel final : public QWidget
     bool m_busy = false;
     bool m_backgroundRefresh = false;
     bool m_loadingDetails = false;
+    bool m_workingClean = false;
     bool m_noticeError = false;
     std::shared_ptr<OperationControl> m_operation;
+    std::shared_ptr<OperationControl> m_detailOperation;
     ElaPushButton *m_cancel = nullptr;
     QTimer *m_progressTimer = nullptr;
     SnapshotResult m_lastExport;
@@ -190,6 +192,7 @@ class BrowserPanel final : public QWidget
     ElaFlowLayout *m_actionLayout = nullptr;
     ElaTreeView *m_list = nullptr;
     ElaToolButton *m_newGroup = nullptr;
+    ElaToolButton *m_hideEmptyGroups = nullptr;
     ElaListView *m_groupItems = nullptr;
     ElaTabWidget *m_pages = nullptr;
     QWidget *m_workingPage = nullptr;

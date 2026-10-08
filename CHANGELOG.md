@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.13.0 — 2026-10-08
+
+- Start Working files with folders collapsed and preserve explicitly expanded folders in browser state.
+- Leave the working-file area blank after all changes are archived; detect additions, modifications and removals in the selected entry in a cancellable background read, including external edits.
+- Preserve the review/adoption workflow for parallel revision heads and keep archived file browsing stable during working-file checks.
+- Distinguish group headings from members with theme-aware text color and weight, and add a Hide empty groups toggle that retains groups and memberships.
+
+
 ## 2.12.1 — 2026-10-08
 
 - Keep Working files focused on the latest imported selection and unarchived file paths; retain earlier imported files on disk and in Versions, and preserve the working selection across refreshes and reopening.

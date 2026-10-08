@@ -8,6 +8,7 @@ void EmbeddedTest::narrowLayoutStateAndModelIdentity()
     put(created.asset.root + "/top.sv", "module top; endmodule");
     put(created.asset.root + "/other.sv", "module other; endmodule");
     const auto archived = SnapshotLibrary::saveCurrent(created.asset); QVERIFY(archived.ok);
+    put(created.asset.root + "/top.sv", "module editing; endmodule");
     definition.name = "empty";
     const auto empty = SnapshotLibrary::create(root, definition); QVERIFY(empty.ok);
     const auto group = CatalogGroups::create(root, "AXI"); QVERIFY(group.ok);
@@ -17,7 +18,7 @@ void EmbeddedTest::narrowLayoutStateAndModelIdentity()
     QVERIFY(context(panel, root)); QTRY_VERIFY(!busy(panel));
     const QVariantMap wanted{{"library", root}, {"assetId", created.asset.id}, {"revision", "current"}, {"page", 0},
         {"workingChecks", QVariantMap{{created.asset.id, QStringList{"top.sv"}}}}};
-    QVERIFY(restore(panel, wanted));
+    QVERIFY(restore(panel, wanted)); QTRY_VERIFY(!busy(panel));
     auto *catalog = panel->findChild<QAbstractItemView *>("assetList");
     auto *working = panel->findChild<QAbstractItemView *>("workingFiles");
     auto *versions = panel->findChild<QAbstractItemView *>("revisionTable");

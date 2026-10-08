@@ -79,7 +79,7 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
     { form->findChild<ElaPushButton *>("formAccept")->click(); });
     QApplication::sendEvent(working->viewport(), &drop); QVERIFY(drop.isAccepted());
     QTRY_VERIFY(!panel.isCatalogBusy());
-    QCOMPARE(model->fileCount(), 4); QCOMPARE(versions->model()->rowCount(), 1); QVERIFY(!create->isEnabled());
+    QCOMPARE(model->fileCount(), 0); QCOMPARE(versions->model()->rowCount(), 1); QVERIFY(!create->isEnabled());
     put(external + "/extra.v", "extra"); put(external + "/docs/nested/readme.txt", "readme");
     for (const auto &item : QList<QPair<QString, QString>>{{"addFilesButton", external + "/extra.v"},
                                                         {"addFolderButton", external + "/docs"}})
