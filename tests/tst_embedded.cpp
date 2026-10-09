@@ -323,6 +323,43 @@ class EmbeddedTest final : public QObject
         QPointer<QWidget> guard(panel); delete panel; QVERIFY(!guard);
         QVERIFY(owner.isVisible());
     }
+    void registeredSourceHiddenImportFlow()
+    {
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), incoming = tmp.filePath("pcie_uart_v33");
+        CatalogDefinition definition; definition.name = "pcie_uart"; definition.source = library + "/pcie_uart";
+        put(definition.source + "/baseline.sv", "baseline");
+        auto created = SnapshotLibrary::create(library, definition); QVERIFY(created.ok);
+        created = SnapshotLibrary::saveCurrent(created.asset); QVERIFY(created.ok);
+        auto document = created.asset.document; document.remove("workingArea");
+        put(created.asset.historyRoot + "/.xips.json", QJsonDocument(document).toJson());
+        QVERIFY(QFile::remove(created.asset.root + "/baseline.sv"));
+        const QString hidden = "pcie_uart_v33/pcie_uart.srcs/sources_1/new/.zeroslack/pinloom-links.json";
+        put(incoming + "/pcie_uart.srcs/sources_1/new/.zeroslack/pinloom-links.json", "links");
+        QWidget owner; HostBridge host;
+        auto *panel = panelIn(&owner, &host); QVERIFY(panel);
+        QVERIFY(context(panel, library, {})); QTRY_VERIFY(!busy(panel));
+        whenVisible(&owner, "xipsFilePicker", [&](QWidget *form)
+        { form->findChild<QLineEdit *>("pickerPath")->setText(incoming); click(form, "pickerAccept"); });
+        click(panel, "addFolderButton"); QTRY_VERIFY(!busy(panel));
+        auto *view = panel->findChild<QAbstractItemView *>("workingFiles");
+        auto *model = view->model();
+        const auto index = fileIndex(model, hidden); QVERIFY(index.isValid());
+        QVERIFY(model->setData(index, Qt::Checked, Qt::CheckStateRole));
+        whenVisible(&owner, "payloadReviewForm", [](QWidget *form) { click(form, "formAccept"); });
+        click(panel, "updateButton"); QTRY_VERIFY(!busy(panel));
+        QCOMPARE(model->rowCount(), 0);
+        const auto asset = SnapshotLibrary::scan(library).assets.first();
+        const auto saved = SnapshotLibrary::verifySnapshot(asset, SnapshotLibrary::heads(asset).first());
+        QVERIFY(saved.ok); QCOMPARE(saved.snapshot.files, QStringList{hidden});
+        const auto persisted = state(panel);
+        delete panel; panel = panelIn(&owner, &host); QVERIFY(panel);
+        QVERIFY(restore(panel, persisted)); QTRY_VERIFY(!busy(panel));
+        view = panel->findChild<QAbstractItemView *>("workingFiles");
+        QCOMPARE(view->model()->rowCount(), 0);
+        put(asset.root + '/' + hidden, "modified links");
+        QTRY_VERIFY_WITH_TIMEOUT(fileIndex(view->model(), hidden).isValid(), 10000);
+    }
     void fullEmbeddedWorkingAndVersionFlow_data()
     {
         QTest::addColumn<int>("hostWidth"); QTest::addColumn<int>("hostHeight");

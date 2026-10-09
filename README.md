@@ -54,7 +54,10 @@ While focus is in the catalog, **Ctrl+F** focuses search, **Ctrl+N** creates an 
 
 Existing folders registered in place retain their relative file layout, including IP packages with
 `component.xml`. Hidden files/directories, links and generated build directories are
-excluded by their existing scan rules; importing an excluded path reports an error.
+excluded by their existing scan rules. Explicitly imported hidden and build files are
+included and remain tracked after refresh and reopening, including older registrations.
+Unselected hidden/build files remain excluded; internal catalog/Git paths and links
+cannot be imported.
 New empty workspaces can include ordinary files and build outputs explicitly added to them.
 Refresh updates definitions and their file lists without hashing or copying source
 content. Hashes are calculated when saving,
@@ -235,7 +238,7 @@ Qt and compiler runtime directories must be on PATH when running the build direc
 Build a clean tagged checkout with **CMAKE_BUILD_TYPE=Release**, **BUILD_TESTING=OFF**,
 and the SuiteApp SDK enabled. For an explicitly standalone release, configure
 **XIPS_ENABLE_SUITEAPP=OFF** and pass **-Standalone** to the packaging script.
-The release tag **v2.13.1** must identify HEAD.
+The release tag **v2.13.2** must identify HEAD.
 Then create a new staging directory:
 
 ```powershell

@@ -330,6 +330,25 @@ AssetRecord legacyRecord(const CatalogAsset &asset)
     result.files = AssetScanner::assetFiles(asset.root);
     return result;
 }
+bool validImportPath(const QString &path)
+{
+    const auto parts = path.toCaseFolded().split('/');
+    return !path.isEmpty() && path != "." && path != ".." && QDir::cleanPath(path) == path &&
+        !QDir::isAbsolutePath(path) && !path.startsWith("../") && !path.contains(':') && !path.contains('\\') &&
+        !parts.contains(".xips") && !parts.contains(".git") && !parts.contains(".xips.json") &&
+        !parts.contains(".snapshot.json") &&
+        std::none_of(parts.cbegin(), parts.cend(), [](const auto &part) { return part.startsWith(".xips-"); });
+}
+QStringList includedWorkingFiles(const CatalogAsset &asset)
+{
+    const auto stored = asset.document.value("includedWorkingFiles");
+    if (stored.isUndefined()) return {};
+    require(stored.isArray(), QStringLiteral("Invalid imported working file selection."));
+    const auto paths = strings(stored.toArray());
+    for (const auto &path : paths)
+        require(validImportPath(path), QStringLiteral("Invalid imported working file path: %1").arg(path));
+    return paths;
+}
 void enumerate(const QString &root, const QString &directory, QStringList &result, bool source,
                bool artifact)
 {
@@ -637,7 +656,27 @@ CatalogAsset currentSource(const CatalogAsset &asset)
         working.removeIf([&](const auto &path) { return inactive.contains(path.toCaseFolded()); });
         working.sort();
     }
-    else working = directorySources(asset.root);
+    else
+    {
+        working = directorySources(asset.root);
+        QSet<QString> present;
+        for (const auto &path : working) present.insert(path.toCaseFolded());
+        for (const auto &path : includedWorkingFiles(history))
+        {
+            OperationScope::checkpoint();
+            const auto location = child(asset.root, path);
+            safePath(location);
+            const QFileInfo imported(location);
+            if (!imported.exists()) continue;
+            require(imported.isFile(), QStringLiteral("Imported file is no longer a file: %1").arg(path));
+            if (!present.contains(path.toCaseFolded()))
+            {
+                working.append(path);
+                present.insert(path.toCaseFolded());
+            }
+        }
+        working.sort();
+    }
     auto result = discoveredAsset(asset.root, asset.library, asset.category, working, asset.sourceIsDirectory);
     if (!asset.historyRoot.isEmpty())
         result = attachHistory(history, &result);
@@ -1494,13 +1533,7 @@ QMap<QString, InputFile> importInputs(const QStringList &sources, const QString 
         for (const auto &relative : relatives)
         {
             const auto target = info.isDir() ? info.fileName() + '/' + relative : relative;
-            const auto parts = target.toCaseFolded().split('/');
-            require(!target.isEmpty() && QDir::cleanPath(target) == target && !QDir::isAbsolutePath(target) &&
-                !target.startsWith("../") && !target.contains(':') && !target.contains('\\') &&
-                !parts.contains(".xips") && !parts.contains(".git") &&
-                !std::any_of(parts.cbegin(), parts.cend(), [](const auto &part) { return part.startsWith(".xips-"); }) &&
-                !parts.contains(".xips.json") && !parts.contains(".snapshot.json"),
-                QStringLiteral("Reserved or invalid working file path: %1").arg(target));
+            require(validImportPath(target), QStringLiteral("Reserved or invalid working file path: %1").arg(target));
             const InputFile input{info.isDir() ? child(source, relative) : absolute(source), target};
             const auto key = target.toCaseFolded();
             if (planned.contains(key))
@@ -1529,16 +1562,11 @@ void selectImports(QMap<QString, InputFile> &planned, const PayloadPreview &sele
 }
 QMap<QString, ContentObject> stageImports(const QString &targetRoot, const QString &stageRoot,
                                           const QMap<QString, InputFile> &planned,
-                                          bool linked, const PayloadPreview *selection)
+                                          const PayloadPreview *selection)
 {
     QMap<QString, ContentObject> staged;
     for (const auto &input : planned)
     {
-        const auto parts = input.relative.toCaseFolded().split('/');
-        if (linked)
-            for (int i = 0; i < parts.size(); ++i)
-                require(!parts[i].startsWith('.') && (i == parts.size() - 1 || !files::isIgnoredDirectory(parts[i])),
-                        QStringLiteral("This registered source excludes hidden/build paths: %1. Nothing was added.").arg(input.relative));
         const auto destination = child(targetRoot, input.relative);
         safePath(destination);
         require(files::isWithin(destination, targetRoot), QStringLiteral("Invalid import destination."));
@@ -1682,7 +1710,7 @@ SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefi
         {
             planned = importInputs(request->sources, source, true);
             selectImports(planned, request->selection);
-            stageImports(source, sourceStage->path(), planned, false, &request->selection);
+            stageImports(source, sourceStage->path(), planned, &request->selection);
             QList<InputFile> inputs;
             for (const auto &input : planned) inputs.append({child(sourceStage->path(), input.relative), input.relative});
             result.snapshot = storeInputs(library, inputs, 1, request->note, {});
@@ -1751,8 +1779,7 @@ SnapshotResult importWorking(const CatalogAsset &asset, const QStringList &sourc
         ContentStore::makeDirectory(child(asset.library, ".xips/imports"));
         QTemporaryDir stage(child(asset.library, ".xips/imports/.pending-XXXXXX"));
         require(stage.isValid(), QStringLiteral("Cannot stage imported files."));
-        const auto staged = stageImports(asset.root, stage.path(), planned,
-            current.document.value("workingArea") != "managed", request ? &request->selection : nullptr);
+        const auto staged = stageImports(asset.root, stage.path(), planned, request ? &request->selection : nullptr);
         auto document = current.document;
         if (document.value("workingArea") == "managed")
         {
@@ -1765,6 +1792,26 @@ SnapshotResult importWorking(const CatalogAsset &asset, const QStringList &sourc
             for (auto it = planned.cbegin(); it != planned.cend(); ++it) inactive.remove(it.key().toCaseFolded());
             auto paths = inactive.values(); paths.sort();
             document.insert("inactiveWorkingFiles", QJsonArray::fromStringList(paths));
+        }
+        else
+        {
+            QMap<QString, QString> included;
+            for (const auto &path : includedWorkingFiles(current)) included.insert(path.toCaseFolded(), path);
+            for (const auto &input : planned)
+            {
+                const auto parts = input.relative.toCaseFolded().split('/');
+                for (int i = 0; i < parts.size(); ++i)
+                    if (parts[i].startsWith('.') || (i < parts.size() - 1 && files::isIgnoredDirectory(parts[i])))
+                    {
+                        included.insert(input.relative.toCaseFolded(), input.relative);
+                        break;
+                    }
+            }
+            if (!included.isEmpty())
+            {
+                auto paths = included.values(); paths.sort();
+                document.insert("includedWorkingFiles", QJsonArray::fromStringList(paths));
+            }
         }
         bool reuseVersion = false;
         if (request)
@@ -2132,7 +2179,7 @@ void previewFiles(PayloadPreview &preview, const QList<InputFile> &inputs)
     preview.files = preview.objects.keys();
 }
 void excludedFiles(const QString &directory, const QString &prefix, bool registered, bool artifact,
-                   QStringList &excluded)
+                   QStringList &excluded, const QStringList &included = {})
 {
     OperationScope::checkpoint(QStringLiteral("Reviewing excluded paths"));
     for (const auto &entry : QDir(directory).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name))
@@ -2145,8 +2192,15 @@ void excludedFiles(const QString &directory, const QString &prefix, bool registe
                  entry.fileName() == ".git" || entry.fileName() == ".xips" || entry.fileName().startsWith(".xips-")) reason = "internal metadata";
         else if (entry.isDir() && !artifact && files::isIgnoredDirectory(entry.fileName())) reason = "generated directory policy";
         else if (registered && entry.isDir() && QFileInfo::exists(child(entry.absoluteFilePath(), ".xips.json"))) reason = "nested managed asset";
-        if (!reason.isEmpty()) excluded.append(relative + (entry.isDir() ? "/" : "") + " — " + reason);
-        else if (entry.isDir()) excludedFiles(entry.absoluteFilePath(), relative + '/', registered, artifact, excluded);
+        if (!reason.isEmpty())
+        {
+            if (included.contains(relative, Qt::CaseInsensitive)) continue;
+            const bool partial = entry.isDir() && std::any_of(included.cbegin(), included.cend(),
+                [&](const auto &file) { return file.startsWith(relative + '/', Qt::CaseInsensitive); });
+            excluded.append(relative + (entry.isDir() ? "/" : "") + " — " + reason +
+                (partial ? " (except explicitly imported files)" : ""));
+        }
+        else if (entry.isDir()) excludedFiles(entry.absoluteFilePath(), relative + '/', registered, artifact, excluded, included);
     }
 }
 void comparePreview(PayloadPreview &preview, const CatalogAsset &asset)
@@ -2209,7 +2263,11 @@ SnapshotResult SnapshotLibrary::previewSave(const CatalogAsset &asset, const QSt
             QList<InputFile> inputs;
             for (const auto &file : result.asset.workingFiles) inputs.append({child(sourceRoot(result.asset), file), file});
             previewFiles(preview, inputs);
-            if (asset.sourceIsDirectory) excludedFiles(asset.root, {}, true, false, preview.excluded);
+            if (asset.sourceIsDirectory)
+            {
+                const bool managed = result.asset.document.value("workingArea") == "managed";
+                excludedFiles(asset.root, {}, !managed, managed, preview.excluded, includedWorkingFiles(result.asset));
+            }
         }
         else
         {

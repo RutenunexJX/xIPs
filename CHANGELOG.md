@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.13.2 — 2026-10-09
+
+- Import explicitly selected hidden and build files into existing registered directories, including older entries, instead of aborting the entire batch.
+- Retain these exact files in working scans, archive previews and file monitoring after refresh and reopening; unselected hidden/build files keep their existing exclusion rules.
+- Commit import inclusions with the existing copy/move and archive transaction, retaining source files and restoring metadata if publication fails.
+
 ## 2.13.1 — 2026-10-09
 
 - Give newly recreated Module/IP/Project entries independent identities, versions and group memberships while preserving old archived owners and pinned references; explicit source re-registration still restores its own history.

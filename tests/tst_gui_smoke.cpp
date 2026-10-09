@@ -102,6 +102,7 @@ class GuiSmokeTest : public QObject
     void archivedVersionNamesCanBeEdited();
     void externalDropsReachEveryWorkingArea();
     void folderImportSelectsProjectFilesAndTransfer();
+    void registeredFolderImportTracksSelectedHiddenFiles();
     void localUpdatesPreserveViewsAndReviewChanges();
     void externalChangesRefreshAfterSettling();
     void refreshPreservesArchivedFileBrowsing();

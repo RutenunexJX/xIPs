@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QDateTime>
 #include <QFutureWatcher>
+#include <QJsonArray>
 #include <QtConcurrent>
 #include <algorithm>
 #include <functional>
@@ -192,6 +193,19 @@ CatalogWatcher::Plan CatalogWatcher::assetPlan(const CatalogAsset &asset)
     if (asset.sourceIsDirectory || asset.legacy) visit(source);
     else add(paths, source, owner);
     for (const auto &file : asset.workingFiles) add(paths, QDir(source).filePath(file), owner);
+    if (asset.sourceProblem.isEmpty())
+        for (const auto &value : asset.document.value("includedWorkingFiles").toArray())
+        {
+            const auto path = QDir(source).filePath(value.toString());
+            if (!files::isWithin(path, source) || watchPath(path) == watchPath(source)) continue;
+            add(paths, path, owner);
+            auto parent = QFileInfo(path).absolutePath();
+            while (files::isWithin(parent, source) && watchPath(parent) != watchPath(source))
+            {
+                add(paths, parent, owner);
+                parent = QFileInfo(parent).absolutePath();
+            }
+        }
     return paths;
 }
 CatalogWatcher::Plan CatalogWatcher::plan(const QString &library, const QList<CatalogAsset> &assets)

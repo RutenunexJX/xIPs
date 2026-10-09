@@ -170,3 +170,73 @@ void GuiSmokeTest::folderImportSelectsProjectFilesAndTransfer()
     const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
     if (!screenshots.isEmpty()) QVERIFY(reopened.grab().save(screenshots + "/current-working-files.png"));
 }
+
+
+void GuiSmokeTest::registeredFolderImportTracksSelectedHiddenFiles()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library"), incoming = tmp.filePath("pcie_uart_v33");
+    const auto put = [](const QString &path, const QByteArray &value)
+    {
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || file.write(value) != value.size()) qFatal("Fixture write failed");
+    };
+    CatalogDefinition definition; definition.name = "pcie_uart"; definition.source = library + "/pcie_uart";
+    put(definition.source + "/baseline.sv", "baseline");
+    auto created = SnapshotLibrary::create(library, definition); QVERIFY(created.ok);
+    created = SnapshotLibrary::saveCurrent(created.asset); QVERIFY(created.ok);
+    auto document = created.asset.document; document.remove("workingArea");
+    put(created.asset.historyRoot + "/.xips.json", QJsonDocument(document).toJson());
+    QVERIFY(QFile::remove(created.asset.root + "/baseline.sv"));
+    const QString hidden = "pcie_uart_v33/pcie_uart.srcs/sources_1/new/.zeroslack/pinloom-links.json";
+    put(incoming + "/pcie_uart.srcs/sources_1/new/.zeroslack/pinloom-links.json", "links");
+    put(incoming + "/rtl/top.sv", "rtl");
+    put(incoming + "/build/uart.bit", "bitstream");
+    BrowserPanel panel; panel.resize(800, 600); panel.show(); panel.setContext(library, {});
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    auto *tree = panel.findChild<ElaTreeView *>("workingFiles");
+    auto *model = qobject_cast<WorkingFilesModel *>(tree->model());
+    QCOMPARE(model->fileCount(), 0);
+    bool reviewed = false;
+    whenVisible(&panel, "folderImportForm", [&](QWidget *form)
+    {
+        QCOMPARE(form->findChild<ElaComboBox *>("importDestination")->currentData().toString(), created.asset.id);
+        auto *files = qobject_cast<WorkingFilesModel *>(form->findChild<ElaTreeView *>("importFiles")->model());
+        QVERIFY(files->fileIndex(hidden).isValid());
+        files->checkAll(true);
+        form->findChild<QLineEdit *>("importVersion")->setText("v33");
+        reviewed = true;
+        form->findChild<ElaPushButton *>("formAccept")->click();
+    });
+    QMimeData mime; mime.setUrls({QUrl::fromLocalFile(incoming)});
+    const QPoint position(20, 20);
+    QDragEnterEvent enter(position, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(tree->viewport(), &enter);
+    QDropEvent drop(position, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(tree->viewport(), &drop);
+    QVERIFY(enter.isAccepted() && drop.isAccepted());
+    QTRY_VERIFY(reviewed && !panel.isCatalogBusy());
+    const auto asset = SnapshotLibrary::scan(library).assets.first();
+    QVERIFY(asset.workingFiles.contains(hidden));
+    const auto saved = SnapshotLibrary::verifySnapshot(asset, SnapshotLibrary::heads(asset).first());
+    QVERIFY(saved.ok); QCOMPARE(SnapshotLibrary::revisionLabel(saved.snapshot), QString("v33"));
+    QVERIFY(saved.snapshot.files.contains(hidden));
+    QCOMPARE(model->fileCount(), 0);
+    const auto state = panel.saveState();
+    BrowserPanel reopened; reopened.resize(800, 600); reopened.show(); reopened.restoreState(state);
+    QTRY_VERIFY(!reopened.isCatalogBusy());
+    auto *reopenedModel = qobject_cast<WorkingFilesModel *>(reopened.findChild<ElaTreeView *>("workingFiles")->model());
+    QCOMPARE(reopenedModel->fileCount(), 0);
+    put(asset.root + '/' + hidden, "modified links");
+    QTRY_VERIFY_WITH_TIMEOUT(reopenedModel->fileIndex(hidden).isValid(), 10000);
+    put(asset.root + '/' + hidden, "links");
+    QTRY_COMPARE_WITH_TIMEOUT(reopenedModel->fileCount(), 0, 10000);
+    QVERIFY(QFile::remove(asset.root + '/' + hidden));
+    QTest::qWait(1000); QTRY_VERIFY(!reopened.isCatalogBusy());
+    put(asset.root + '/' + hidden, "recreated links");
+    QTRY_VERIFY_WITH_TIMEOUT(reopenedModel->fileIndex(hidden).isValid(), 10000);
+    put(asset.root + "/pcie_uart_v33/pcie_uart.srcs/sources_1/new/.zeroslack/unselected.json", "unselected");
+    reopened.refresh(); QTRY_VERIFY(!reopened.isCatalogBusy());
+    QCOMPARE(reopenedModel->fileCount(), 3);
+}

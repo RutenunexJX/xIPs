@@ -566,15 +566,115 @@ class WorkflowTest : public QObject
         definition.category = "unknown";
         QVERIFY(!SnapshotLibrary::create(library, definition).ok);
     }
+    void registeredSourcesRetainExplicitHiddenImports_data()
+    {
+        QTest::addColumn<bool>("legacy");
+        QTest::addColumn<bool>("move");
+        for (bool legacy : {false, true})
+            for (bool move : {false, true})
+                QTest::newRow(qPrintable(QString(legacy ? "legacy" : "linked") + (move ? "-move" : "-copy")))
+                    << legacy << move;
+    }
+    void registeredSourcesRetainExplicitHiddenImports()
+    {
+        QFETCH(bool, legacy); QFETCH(bool, move);
+        QTemporaryDir tmp;
+        const auto library = tmp.filePath("library"), source = tmp.filePath("pcie_uart_v33");
+        CatalogDefinition definition; definition.name = "pcie_uart"; definition.source = library + "/pcie_uart";
+        put(definition.source + "/baseline.sv", "baseline");
+        put(definition.source + "/.settings/unselected.json", "unselected");
+        put(definition.source + "/build/unselected.bit", "unselected");
+        auto created = SnapshotLibrary::create(library, definition); QVERIFY(created.ok);
+        created = SnapshotLibrary::saveCurrent(created.asset); QVERIFY(created.ok);
+        const auto metadataPath = created.asset.historyRoot + "/.xips.json";
+        if (legacy)
+        {
+            auto document = created.asset.document; document.remove("workingArea");
+            put(metadataPath, QJsonDocument(document).toJson());
+            created.asset = SnapshotLibrary::scan(library).assets.first();
+        }
+        const auto originalArea = created.asset.document.value("workingArea");
+        const QString hidden = "pcie_uart_v33/pcie_uart.srcs/sources_1/new/.zeroslack/pinloom-links.json";
+        put(source + "/pcie_uart.srcs/sources_1/new/.zeroslack/pinloom-links.json", "links");
+        put(source + "/rtl/top.sv", "rtl");
+        put(source + "/build/uart.bit", "bitstream");
+        put(source + "/.env", "settings");
+        auto imported = SnapshotLibrary::importFiles(created.asset, {source});
+        QVERIFY2(imported.ok, qPrintable(imported.error));
+        QVERIFY(imported.asset.workingFiles.contains(hidden));
+        QVERIFY(imported.asset.workingFiles.contains("pcie_uart_v33/build/uart.bit"));
+        QVERIFY(imported.asset.workingFiles.contains("pcie_uart_v33/.env"));
+        QCOMPARE(imported.asset.workingFiles.size(), 5);
+        QCOMPARE(imported.asset.document.value("workingArea"), originalArea);
+        QVERIFY(!imported.asset.workingFiles.contains(".settings/unselected.json"));
+        QVERIFY(!imported.asset.workingFiles.contains("build/unselected.bit"));
+        const auto addedMetadata = get(metadataPath);
+        const auto duplicate = SnapshotLibrary::importFiles(imported.asset, {source});
+        QVERIFY2(duplicate.ok, qPrintable(duplicate.error)); QVERIFY(duplicate.unchanged);
+        QCOMPARE(get(metadataPath), addedMetadata);
+        imported = SnapshotLibrary::saveCurrent(imported.asset); QVERIFY(imported.ok);
+        QVERIFY(imported.snapshot.files.contains(hidden));
+        const auto manifest = get(imported.asset.historyRoot + "/.xips/revisions/" + imported.snapshot.id + ".json");
+        const auto next = tmp.filePath("v34");
+        put(next + "/.zeroslack/pinloom-links.json", "next links");
+        put(next + "/build/uart.bit", "next bitstream");
+        put(next + "/rtl/top.sv", "next rtl");
+        put(next + "/.zeroslack/unchecked.json", "retain");
+        ImportRequest request; request.sources = {next}; request.move = move; request.version = "v34";
+        auto preview = SnapshotLibrary::previewImport(request.sources);
+        QVERIFY2(preview.ok, qPrintable(preview.error));
+        request.selection = preview.preview;
+        request.selection.objects.remove("v34/.zeroslack/unchecked.json");
+        request.selection.files = request.selection.objects.keys();
+        const auto archived = SnapshotLibrary::importAndSave(imported.asset, request);
+        QVERIFY2(archived.ok, qPrintable(archived.error));
+        QCOMPARE(archived.snapshot.files, request.selection.files);
+        QVERIFY(archived.retainedSources.isEmpty());
+        QCOMPARE(QFileInfo::exists(next + "/.zeroslack/pinloom-links.json"), !move);
+        QCOMPARE(get(next + "/.zeroslack/unchecked.json"), QByteArray("retain"));
+        QVERIFY(!QFileInfo::exists(archived.asset.root + "/v34/.zeroslack/unchecked.json"));
+        auto reopened = SnapshotLibrary::scan(library).assets.first();
+        QCOMPARE(reopened.document.value("workingArea"), originalArea);
+        QVERIFY(reopened.workingFiles.contains(hidden));
+        QVERIFY(reopened.workingFiles.contains("v34/.zeroslack/pinloom-links.json"));
+        QVERIFY(SnapshotLibrary::previewSelected(reopened, {"v34/.zeroslack/pinloom-links.json"}).ok);
+        QVERIFY(SnapshotLibrary::verifySnapshot(reopened, archived.snapshot.id).ok);
+        QCOMPARE(get(imported.asset.historyRoot + "/.xips/revisions/" + imported.snapshot.id + ".json"), manifest);
+        put(reopened.root + "/v34/.zeroslack/pinloom-links.json", "modified");
+        QVERIFY(SnapshotLibrary::previewSave(reopened).preview.modified.contains("v34/.zeroslack/pinloom-links.json"));
+        QVERIFY(QFile::remove(reopened.root + "/v34/.zeroslack/pinloom-links.json"));
+        reopened = SnapshotLibrary::scan(library).assets.first();
+        QVERIFY(!reopened.workingFiles.contains("v34/.zeroslack/pinloom-links.json"));
+        QVERIFY(reopened.sourceProblem.isEmpty());
+        const auto cleanDocument = reopened.document;
+        for (const auto &invalid : {"../outside", ".git/config", "v34/.xips.json", "v34/.xips/revisions/a.json"})
+        {
+            auto document = cleanDocument; document.insert("includedWorkingFiles", QJsonArray{invalid});
+            put(metadataPath, QJsonDocument(document).toJson());
+            const auto bad = SnapshotLibrary::scan(library).assets.first();
+            QVERIFY(!bad.sourceProblem.isEmpty());
+            QVERIFY(SnapshotLibrary::verifySnapshot(bad, archived.snapshot.id).ok);
+        }
+        put(metadataPath, QJsonDocument(cleanDocument).toJson());
+    }
+    void folderImportArchiveFailureRollsBackWorkingFiles_data()
+    {
+        QTest::addColumn<bool>("linked");
+        QTest::newRow("managed") << false;
+        QTest::newRow("linked") << true;
+    }
     void folderImportArchiveFailureRollsBackWorkingFiles()
     {
+        QFETCH(bool, linked);
         QTemporaryDir tmp;
         const auto library = tmp.filePath("library"), source = tmp.filePath("incoming");
         QVERIFY(QDir().mkpath(library));
         CatalogDefinition definition; definition.name = "empty";
+        if (linked) { definition.source = library + "/empty"; QVERIFY(QDir().mkpath(definition.source)); }
         const auto created = SnapshotLibrary::create(library, definition);
         QVERIFY(created.ok);
         put(source + "/top.sv", "keep source");
+        put(source + "/.zeroslack/pinloom-links.json", "keep hidden source");
         ImportRequest request;
         request.sources = {source};
         request.selection = SnapshotLibrary::previewImport(request.sources).preview;
@@ -588,6 +688,8 @@ class WorkflowTest : public QObject
         QVERIFY(!QFileInfo::exists(created.asset.root + "/incoming/top.sv"));
         QCOMPARE(get(source + "/top.sv"), QByteArray("keep source"));
         QCOMPARE(get(metadataPath), metadata);
+        QVERIFY(!QFileInfo::exists(created.asset.root + "/incoming/.zeroslack/pinloom-links.json"));
+        QCOMPARE(get(source + "/.zeroslack/pinloom-links.json"), QByteArray("keep hidden source"));
         QVERIFY(SnapshotLibrary::heads(SnapshotLibrary::scan(library).assets.first()).isEmpty());
     }
     void folderImportMetadataFailureRollsBackWorkingFiles()
