@@ -28,6 +28,8 @@ if(BUILD_TESTING)
     target_compile_definitions(xips_core PUBLIC XIPS_ENABLE_TEST_HOOKS)
 endif()
 
+add_subdirectory(archive)
+
 add_library(xips_app STATIC
     app/Branding.cpp
     app/Branding.h
@@ -51,6 +53,7 @@ target_include_directories(xips_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xips_app
     PUBLIC
         xips_core
+        xips_archive_ui
         Qt6::Concurrent
         Qt6::Widgets
         Ela::WidgetTools
@@ -97,3 +100,5 @@ install(TARGETS ElaWidgetTools RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} LIBRA
 install(FILES ${CMAKE_SOURCE_DIR}/include/xips/BrowserApi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/xips)
 install(FILES ${CMAKE_SOURCE_DIR}/assets/icons/xips-256.png ${CMAKE_SOURCE_DIR}/assets/icons/xips.ico
     DESTINATION ${CMAKE_INSTALL_BINDIR}/assets/icons)
+
+install(FILES ${CMAKE_SOURCE_DIR}/xips-native-runtime.json DESTINATION ${CMAKE_INSTALL_BINDIR})

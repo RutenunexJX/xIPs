@@ -81,6 +81,18 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/ZeroSla
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/Font/FontAwesome-LICENSE.txt') -Destination (Join-Path $licenses 'FontAwesome.txt')
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/UPSTREAM-REVISION.md') -Destination (Join-Path $licenses 'ElaWidgetTools-provenance.md')
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'thirdparty/elawidgettools/patches') -Destination (Join-Path $licenses 'ElaWidgetTools-patches') -Recurse
+$sevenZipRoot = Join-Path $sourceRoot 'thirdparty/7zip'
+$helperHash = (Get-FileHash -LiteralPath (Join-Path $sevenZipRoot '7za.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($helperHash -ne 'edbee35370e14030e4c785cf88200f42dc651c1eb4217c1e3963c38a12f099b0') { throw '7-Zip runtime hash mismatch.' }
+$helperDirectory = Join-Path $outputRoot 'tools/7zip'
+$helperNotices = Join-Path $licenses '7zip'
+New-Item -ItemType Directory -Path $helperDirectory, $helperNotices | Out-Null
+Copy-Item -LiteralPath (Join-Path $sevenZipRoot '7za.exe') -Destination $helperDirectory
+foreach ($name in @('7z2603-src.tar.xz', 'UPSTREAM.md', 'License.txt', 'COPYING.txt', 'readme.txt')) {
+    Copy-Item -LiteralPath (Join-Path $sevenZipRoot $name) -Destination $helperNotices
+}
+if (-not (Test-Path -LiteralPath (Join-Path $outputRoot 'Qt6Xml.dll') -PathType Leaf)) { throw 'Missing archive Qt XML dependency.' }
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'xips-native-runtime.json') -Destination $outputRoot
 $capabilities = Get-Content -Raw -LiteralPath (Join-Path $buildRoot 'xips-capabilities.json') | ConvertFrom-Json
 Copy-Item -LiteralPath (Join-Path $buildRoot 'xips-capabilities.json') -Destination $outputRoot
 Copy-Item -LiteralPath (Join-Path $CompilerDirectory 'licenses/gcc/COPYING3.LIB') -Destination (Join-Path $licenses 'Qt-LGPLv3.txt')

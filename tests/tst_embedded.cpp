@@ -118,8 +118,12 @@ void checkFile(QAbstractItemView *view, const QModelIndex &index)
     QVERIFY(index.isValid());
     if (auto *tree = qobject_cast<QTreeView *>(view))
     {
+        tree->setAnimated(false);
+        tree->verticalScrollBar()->setProperty("IsAnimation", false);
+        tree->horizontalScrollBar()->setProperty("IsAnimation", false);
         for (auto parent = index.parent(); parent.isValid(); parent = parent.parent()) tree->expand(parent);
-        QTest::qWait(250);
+        tree->doItemsLayout();
+        QCoreApplication::processEvents();
     }
     view->scrollTo(index); QCoreApplication::processEvents();
     QStyleOptionViewItem option;
@@ -127,14 +131,18 @@ void checkFile(QAbstractItemView *view, const QModelIndex &index)
     option.rect = view->visualRect(index);
     option.features = QStyleOptionViewItem::HasCheckIndicator;
     option.checkState = Qt::Unchecked;
-    const auto point = view->style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &option, view).center();
+    auto point = view->style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &option, view).center();
     for (auto *parent = view->parentWidget(); parent; parent = parent->parentWidget())
         if (auto *scroll = qobject_cast<QScrollArea *>(parent))
         {
             const auto contentPoint = view->viewport()->mapTo(scroll->widget(), point);
             scroll->ensureVisible(contentPoint.x(), contentPoint.y(), 12, 16);
         }
-    QCoreApplication::processEvents();
+    QTest::qWait(400);
+    view->doItemsLayout();
+    option.rect = view->visualRect(index);
+    point = view->style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &option, view).center();
+    QCOMPARE(view->indexAt(point), index);
     const auto global = view->viewport()->mapToGlobal(point);
     for (auto *parent = view->viewport(); parent; parent = parent->parentWidget())
     {

@@ -31,6 +31,7 @@ template <class T> class QFutureWatcher;
 
 namespace xips
 {
+namespace archive { class ArchiveWindow; }
 class CatalogModel;
 class CatalogWatcher;
 class OperationControl;
@@ -48,10 +49,11 @@ class BrowserPanel final : public QWidget
     Q_INVOKABLE QVariantMap saveState() const;
     Q_INVOKABLE void restoreState(const QVariantMap &state);
     Q_INVOKABLE void refresh();
+    Q_INVOKABLE void openArchiveProject();
     Q_INVOKABLE void setDarkTheme(bool dark);
     Q_INVOKABLE bool isCatalogBusy() const
     {
-        return m_busy || m_loadingDetails;
+        return m_busy || m_loadingDetails || m_archiveBusy;
     }
     std::optional<CatalogAsset> catalogAsset(const QString &id) const;
 
@@ -68,6 +70,8 @@ class BrowserPanel final : public QWidget
     bool eventFilter(QObject *watched, QEvent *event) override;
 
   private:
+    archive::ArchiveWindow *m_archiveWindow = nullptr;
+    bool m_archiveBusy = false;
     struct WorkingViewState
     {
         QSet<QString> expanded;

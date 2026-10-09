@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.14.0 — 2026-10-09
+
+- Add Archive Project to the standalone and embedded browser, with single-project and batch Vivado archival, cancellation, progress and persistent settings.
+- Retain project reconstruction, generated HDL and Core Container handling, implementation artifacts, missing-IP checks and guarded publication with rollback from FPGA Toolbox 0.4.5.
+- Bundle the pinned 7-Zip helper, Qt XML runtime, source and license notices; resolve embedded tools from the xIPs component directory.
+- Preserve host identity and theme, defer context changes while archive work is active, and prevent closing an active archive window or host panel.
+- Keep the browser toolbar usable in narrow embedded panels and include the native deployment manifest for complete component packaging.
+
 ## 2.13.2 — 2026-10-09
 
 - Import explicitly selected hidden and build files into existing registered directories, including older entries, instead of aborting the entire batch.

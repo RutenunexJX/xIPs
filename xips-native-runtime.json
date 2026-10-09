@@ -1,0 +1,37 @@
+{
+  "schema": "xips.native-deployment/v1",
+  "nativeSurfaceAbi": 1,
+  "qt": "6.10.2",
+  "componentFiles": [
+    "xips-browser.dll",
+    "xips-browser-impl.dll",
+    "XipsEla.dll",
+    "tools/7zip/7za.exe",
+    "xips-capabilities.json",
+    "build-info.json",
+    "xips-native-runtime.json"
+  ],
+  "sharedQtModules": [
+    "Core",
+    "Gui",
+    "Widgets",
+    "Network",
+    "Sql",
+    "Xml"
+  ],
+  "additionalHostRuntimeFiles": [
+    "Qt6Xml.dll"
+  ],
+  "hostPluginFiles": [
+    "sqldrivers/qsqlite.dll"
+  ],
+  "licenseDirectory": "licenses",
+  "helperLicenseFiles": [
+    "licenses/7zip/7z2603-src.tar.xz",
+    "licenses/7zip/UPSTREAM.md",
+    "licenses/7zip/License.txt",
+    "licenses/7zip/COPYING.txt",
+    "licenses/7zip/readme.txt"
+  ],
+  "notes": "Deploy componentFiles relative to the xIPs component directory. Qt runtime files must match the host Qt build. Keep all xIPs license material in the host component notices directory; do not change native surface v1."
+}

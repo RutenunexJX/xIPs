@@ -1,4 +1,5 @@
 #include "BrowserPanel.h"
+#include "archive/ArchiveWindow.h"
 #include "CatalogModel.h"
 #include "CatalogWatcher.h"
 #include "WorkingFilesModel.h"
@@ -433,6 +434,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     if (host) connect(host, &QObject::destroyed, this, [this]
     {
         if (m_operation) m_operation->cancel();
+        if (m_archiveWindow) m_archiveWindow->requestCancel();
         emit contextChanging();
         notice(QStringLiteral("The host connection closed. Reopen this panel to copy files to a project."), true);
     });
@@ -463,6 +465,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     toolbar->addWidget(m_search);
     m_new = new ElaPushButton(QStringLiteral("New"), toolbar);
     m_new->setObjectName("newAssetButton");
+    m_new->setAccessibleName(QStringLiteral("New"));
     m_new->setFixedSize(90, 30);
     m_new->setIcon(uiIcon(UiIcon::Add));
     m_new->setIconSize(QSize(14, 14));
@@ -473,6 +476,10 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     m_collect = actionButton(toolbar, "collectButton", UiIcon::Collect, QStringLiteral("Collect"),
         QStringLiteral("Collect files or a folder as a saved asset"));
     toolbar->addWidget(m_collect);
+    auto *archive = actionButton(toolbar, "archiveProjectButton", UiIcon::Archive,
+        QStringLiteral("Archive project"), QStringLiteral("Archive a Vivado project to a clean folder and 7z package"));
+    toolbar->addWidget(archive);
+    connect(archive, &QAbstractButton::clicked, this, &BrowserPanel::openArchiveProject);
     m_filterToggle = actionButton(toolbar, "filterButton", UiIcon::Filter, QStringLiteral("Filter"),
         QStringLiteral("Filter by type and index"));
     m_filterToggle->setCheckable(true);
@@ -1062,8 +1069,27 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
 }
 BrowserPanel::~BrowserPanel()
 {
+    if (m_archiveWindow) {
+        disconnect(m_archiveWindow, nullptr, this, nullptr);
+        delete m_archiveWindow;
+        m_archiveWindow = nullptr;
+    }
     if (m_detailOperation) m_detailOperation->cancel();
     if (m_operation) m_operation->cancel();
+}
+void BrowserPanel::openArchiveProject()
+{
+    if (!m_archiveWindow) {
+        m_archiveWindow = new archive::ArchiveWindow(this);
+        connect(m_archiveWindow, &archive::ArchiveWindow::busyChanged, this, [this](bool busy) {
+            m_archiveBusy = busy;
+            if (!busy) applyPendingContext();
+        });
+    }
+    applyTheme();
+    m_archiveWindow->show();
+    m_archiveWindow->raise();
+    m_archiveWindow->activateWindow();
 }
 void BrowserPanel::beginOperation()
 {
@@ -1099,6 +1125,14 @@ void BrowserPanel::applyTheme()
     p.setColor(QPalette::Highlight, eTheme->getThemeColor(mode, ElaThemeType::BasicSelectedAlpha));
     p.setColor(QPalette::HighlightedText, text);
     setPalette(p);
+    if (m_archiveWindow) {
+        auto archivePalette = p;
+        archivePalette.setColor(QPalette::Button, sidebar);
+        archivePalette.setColor(QPalette::ButtonText, text);
+        archivePalette.setColor(QPalette::Mid, border);
+        archivePalette.setColor(QPalette::AlternateBase, sidebar);
+        m_archiveWindow->setAppearancePalette(archivePalette);
+    }
     if (m_detailScroll)
     {
         m_detailScroll->setPalette(p);
@@ -1190,6 +1224,9 @@ void BrowserPanel::updateVersionHeight()
 void BrowserPanel::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
+    const bool compactToolbar = width() < 360;
+    m_new->setFixedWidth(compactToolbar ? 30 : 90);
+    m_new->setText(compactToolbar ? QString() : QStringLiteral("New"));
     adaptEmbeddedLayout();
     const auto orientation = width() < 580 ? Qt::Vertical : Qt::Horizontal;
     if (m_splitter->orientation() != orientation)
@@ -1265,7 +1302,7 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
     if (m_contextInitialized && path == m_library && workspace == m_workspace && !m_pendingContext)
         return;
     emit contextChanging();
-    if (m_busy)
+    if (m_busy || m_archiveBusy)
     {
         m_pendingContext = qMakePair(path, workspace);
         m_pendingState.reset();
@@ -1479,7 +1516,7 @@ void BrowserPanel::importFolders(const QStringList &paths, const QString &prefer
 }
 bool BrowserPanel::applyPendingContext()
 {
-    if (m_busy) return false;
+    if (m_busy || m_archiveBusy) return false;
     const auto context = m_pendingContext;
     const auto state = m_pendingState;
     m_pendingContext.reset();
@@ -3038,7 +3075,7 @@ void BrowserPanel::restoreState(const QVariantMap &state)
     const auto library = state.value("library").toString();
     if (!library.isEmpty() && library != (m_pendingContext ? m_pendingContext->first : m_library))
         setContext(library, m_pendingContext ? m_pendingContext->second : m_workspace);
-    if (m_busy) { m_pendingState = state; return; }
+    if (m_busy || m_archiveBusy) { m_pendingState = state; return; }
     rememberWorkingView();
     const QScopedValueRollback<bool> restoring(m_restoringWorkingView, true);
     if (state.contains("workingViews"))

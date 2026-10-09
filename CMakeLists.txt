@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(xIPs VERSION 2.13.2 LANGUAGES CXX)
+project(xIPs VERSION 2.14.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,7 +45,7 @@ foreach(_ela_source IN LISTS _ela_sources)
     string(APPEND _ela_inventory "${_ela_source}:${_ela_hash}\n")
 endforeach()
 string(SHA256 XIPS_ELA_SOURCE_SHA256 "${_ela_inventory}")
-set(XIPS_CAPABILITIES_JSON "{\"schema\":\"xips.browser-capabilities/v1\",\"version\":\"${PROJECT_VERSION}\",\"nativeSurfaceAbi\":1,\"elaRuntime\":\"XipsEla\",\"elaBaseline\":\"454cac2d-p27\",\"elaPatchLevel\":32,\"elaSourceSha256\":\"${XIPS_ELA_SOURCE_SHA256}\",\"qt\":\"${Qt6_VERSION}\",\"capabilities\":[\"private-ela-runtime\",\"working-files\",\"group-members\",\"version-deletion\",\"panel-state-v2\",\"host-theme\",\"immutable-revisions\",\"interruptible-combo\",\"precision-wheel\",\"native-text-scroll-units\",\"split-ratios\",\"english-edit-menu\",\"interruptible-menu\"]}")
+set(XIPS_CAPABILITIES_JSON "{\"schema\":\"xips.browser-capabilities/v1\",\"version\":\"${PROJECT_VERSION}\",\"nativeSurfaceAbi\":1,\"elaRuntime\":\"XipsEla\",\"elaBaseline\":\"454cac2d-p27\",\"elaPatchLevel\":32,\"elaSourceSha256\":\"${XIPS_ELA_SOURCE_SHA256}\",\"qt\":\"${Qt6_VERSION}\",\"capabilities\":[\"private-ela-runtime\",\"working-files\",\"group-members\",\"version-deletion\",\"panel-state-v2\",\"host-theme\",\"immutable-revisions\",\"interruptible-combo\",\"precision-wheel\",\"native-text-scroll-units\",\"split-ratios\",\"english-edit-menu\",\"interruptible-menu\",\"archive-project\"]}")
 file(WRITE "${CMAKE_BINARY_DIR}/xips-capabilities.json" "${XIPS_CAPABILITIES_JSON}\n")
 configure_file(src/app/BuildCapabilities.h.in generated/BuildCapabilities.h @ONLY)
 

@@ -28,3 +28,9 @@ actual Qt libraries distributed; including LGPL text alone is not sufficient.
 See https://www.qt.io/development/open-source-lgpl-obligations,
 [asset provenance](docs/ASSET-PROVENANCE.md) and the remaining
 [public-release checks](docs/PUBLIC-RELEASE-REVIEW.md).
+
+The Archive project implementation was migrated from FPGA Toolbox 0.4.5,
+commit 129479a23beaf23c2eeff9470432f7135a7d1f22. See docs/PROJECT-ARCHIVE.md
+for scope and provenance. Its Windows helper is unmodified 7-Zip Extra 26.03
+7za.exe. The helper's original notices and matching source archive are included
+under licenses/7zip; source materials are retained in thirdparty/7zip.

@@ -45,3 +45,10 @@ inline QByteArray xipsExpectedBrowserAbi()
     result += ";ela=454cac2d-p27";
     return result;
 }
+
+// Additive Archive project surface (native ABI remains v1):
+// openArchiveProject() opens/reuses the BrowserPanel-owned tool without a library.
+// isCatalogBusy() includes archive/scanning work; hosts must keep the panel alive
+// and leave Cancel reachable until this returns false. setContext/restoreState
+// defer during this work. Forced panel destruction cancels and joins its workers.
+// Resolve helper files using the layout in xips-native-runtime.json.

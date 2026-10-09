@@ -11,6 +11,9 @@ class MainWindow final : public ElaWidget
     explicit MainWindow(QString libraryRoot, QWidget *parent = nullptr);
     void applyActivation(const ActivationRequest &request);
 
+  protected:
+    void closeEvent(QCloseEvent *event) override;
+
   private:
     BrowserPanel *m_browser;
 };

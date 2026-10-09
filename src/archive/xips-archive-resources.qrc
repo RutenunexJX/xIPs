@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/xips/archive">
+        <file alias="archive.svg">icons/archive.svg</file>
+    </qresource>
+</RCC>
