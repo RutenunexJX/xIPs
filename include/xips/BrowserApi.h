@@ -7,8 +7,10 @@ class QObject;
 
 // Native surface v1. Load only when the ABI string matches the host's Qt,
 // pointer size and compiler. Deploy xips-browser-impl.dll and XipsEla.dll beside
-// xips-browser.dll. The entry point loads dependencies from its own directory; do not
-// substitute a host's ElaWidgetTools.dll. Keep the library loaded for the host
+// xips-browser.dll. On Windows, private dependencies are resolved beside the
+// component and shared Qt may reside beside the host executable. The loader does
+// not search CWD/PATH or change process-wide search paths. Do not substitute a
+// host's ElaWidgetTools.dll. Keep the library loaded for the host
 // process lifetime (QLibrary::PreventUnloadHint), including background workers.
 // Call on the QApplication thread. The factory initializes its private Ela
 // runtime and preserves the host application identity/font. Failure returns null.

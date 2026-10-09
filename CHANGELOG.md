@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.14.1
+
+- Fix native component loading when PATH is empty and the working directory is unrelated to the host. Private component dependencies and host-shared Qt libraries resolve without changing process-wide search paths.
+- Add isolated-process package-layout coverage for standalone, embedded, missing-dependency and retry scenarios.
+
+
 ## 2.14.0 — 2026-10-09
 
 - Add Archive Project to the standalone and embedded browser, with single-project and batch Vivado archival, cancellation, progress and persistent settings.

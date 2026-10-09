@@ -135,6 +135,32 @@ if(TARGET xips_suite)
     list(APPEND _xips_tests suite)
     list(APPEND _xips_gui_tests suite)
 endif()
+if(WIN32)
+    add_executable(tst_native_layout tst_native_layout.cpp)
+    target_include_directories(tst_native_layout PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_definitions(tst_native_layout PRIVATE
+        XIPS_BROWSER_PATH="$<TARGET_FILE:xips_browser>"
+        XIPS_TEST_QT_BIN="${_xips_qt_bin_dir}"
+        XIPS_TEST_QT_PLUGINS="${_xips_qt_prefix}/plugins"
+        XIPS_TEST_COMPILER_BIN="${_xips_compiler_bin_dir}")
+    target_link_libraries(tst_native_layout PRIVATE Qt6::Test Qt6::Widgets)
+    set_target_properties(tst_native_layout PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/layout-probe")
+    xips_enable_strict_warnings(tst_native_layout)
+    add_dependencies(tst_native_layout xips_browser)
+    add_test(NAME native_layout COMMAND tst_native_layout -o -,txt)
+    set_tests_properties(native_layout PROPERTIES TIMEOUT 120)
+    list(APPEND _xips_tests native_layout)
+    # Match deployed hosts even when shared Qt modules have not been loaded yet.
+    foreach(_probe IN ITEMS tst_native tst_embedded tst_archive_host)
+        foreach(_module IN ITEMS Network Sql Xml)
+            add_custom_command(TARGET ${_probe} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_xips_qt_bin_dir}/Qt6${_module}.dll" "$<TARGET_FILE_DIR:${_probe}>"
+                VERBATIM)
+        endforeach()
+    endforeach()
+endif()
+
 set_tests_properties(${_xips_tests} PROPERTIES
     ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:${_xips_qt_bin_dir};PATH=path_list_prepend:${_xips_compiler_bin_dir};QT_PLUGIN_PATH=set:${_xips_qt_prefix}/plugins"

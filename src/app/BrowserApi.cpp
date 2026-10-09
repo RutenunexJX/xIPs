@@ -39,13 +39,14 @@ XipsCreateBrowserV1 implementation()
 #ifdef Q_OS_WIN
     const auto path = QDir::toNativeSeparators(directory + "/xips-browser-impl.dll");
     // Keep this loader reference for the process lifetime: workers can outlive a panel.
-    // ALTERED_SEARCH_PATH resolves the private Ela/Qt dependencies beside this DLL,
-    // without changing the host's process-wide PATH or DLL search directories.
+    // Resolve private dependencies here and shared Qt in the host executable directory,
+    // without consulting CWD/PATH or changing the host's DLL search configuration.
     static HMODULE module = nullptr;
-    if (!module) module = LoadLibraryExW(reinterpret_cast<LPCWSTR>(path.utf16()), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!module) module = LoadLibraryExW(reinterpret_cast<LPCWSTR>(path.utf16()), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (!module)
     {
-        lastError = QStringLiteral("Cannot load %1 (Windows error %2). Deploy xips-browser-impl.dll, XipsEla.dll and matching Qt dependencies together.")
+        lastError = QStringLiteral("Cannot load %1 (Windows error %2). Deploy xips-browser-impl.dll and XipsEla.dll together, with matching Qt dependencies in the component or application directory.")
             .arg(path).arg(GetLastError()).toUtf8();
         return nullptr;
     }

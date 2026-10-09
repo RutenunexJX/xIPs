@@ -65,8 +65,11 @@ Load the two C exports with QLibrary:
 The Windows build is Qt 6.10.2 / MinGW 13.1 / 64-bit. Deploy **xips-browser.dll**
 with **xips-browser-impl.dll** and its matching **XipsEla.dll** together. The lightweight
 v1 entry point locates its own module directory and loads the implementation with
-Windows' altered search path for that load only. It does not alter process PATH or
-global DLL search directories. The implementation retains a loader reference until
+LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS for that load
+only. Private dependencies resolve beside the component; matching shared Qt modules,
+including Qt6Xml.dll, may reside beside the host executable. CWD and PATH are not
+searched, and process PATH/global DLL search directories remain unchanged.
+The implementation retains a loader reference until
 process exit, including after its last panel closes. This private runtime can coexist with
 the host's **ElaWidgetTools.dll**; never replace the host DLL with xIPs' copy.
 Call the factory on the QApplication thread. It initializes its own Ela controls,
