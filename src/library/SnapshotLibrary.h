@@ -132,12 +132,15 @@ class SnapshotLibrary
     static SnapshotResult importFiles(const CatalogAsset &asset, const QStringList &sources);
     static SnapshotResult previewImport(const QStringList &sources);
     static SnapshotResult importAndSave(const CatalogAsset &asset, const ImportRequest &request);
+    // Compare every current working file, including a valid empty working set.
+    static SnapshotResult previewWorking(const CatalogAsset &asset);
     static SnapshotResult previewSelected(const CatalogAsset &asset, const QStringList &files);
     static SnapshotResult saveSelected(const CatalogAsset &asset, const QStringList &files,
                                        const QString &note = {}, const PayloadPreview *expected = nullptr);
     static SnapshotResult previewCollect(const QStringList &sources, const QString &category);
     static SnapshotResult previewExport(const CatalogAsset &asset, const QString &revision);
     static QStringList heads(const CatalogAsset &asset);
+    static SnapshotResult relocateSource(const CatalogAsset &asset, const QString &source);
     static SnapshotResult unregisterSource(const CatalogAsset &asset);
     static SnapshotResult removeReference(const CatalogAsset &asset);
     static SnapshotResult referenceTarget(const CatalogAsset &reference, const QString &ownerLibrary);

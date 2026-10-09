@@ -150,6 +150,10 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
     QVERIFY(!QFileInfo(opened.urls.first().toLocalFile()).permissions().testFlag(QFile::WriteOwner));
     capture("saved-versions");
     put(external + "/notes.txt", "conflicting external");
+    // Screenshot capture may have started a background refresh; wait before invoking the action.
+    if (panel.isCatalogBusy()) qInfo("Waiting for background refresh before conflicting import");
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QVERIFY(panel.findChild<QToolButton *>("addFilesButton")->isEnabled());
     panel.importWorkingFiles({external + "/notes.txt"}); QTRY_VERIFY(!panel.isCatalogBusy());
     QVERIFY(panel.findChild<ElaText *>("browserNotice")->property("error").toBool());
     QCOMPARE(get(asset.root + "/notes.txt"), QByteArray("second notes")); QCOMPARE(versions->model()->rowCount(), 3);

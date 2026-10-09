@@ -19,12 +19,15 @@ void GuiSmokeTest::workingFilesOnlyShowUnarchivedChanges()
     auto *versions = panel.findChild<ElaTableView *>("revisionTable");
     QCOMPARE(model->fileCount(), 0); QCOMPARE(versions->model()->rowCount(), 1);
     QVERIFY(!panel.findChild<ElaText *>("workingEmpty")->isVisible());
+    auto *status = panel.findChild<ElaText *>("workingStatus"); QVERIFY(status && status->isVisible());
+    QCOMPARE(status->text(), QString("No unarchived changes"));
     const auto cleanState = panel.saveState();
     const auto modified = QFileInfo(source).lastModified();
     put(source, "modified");
     { QFile file(source); QVERIFY(file.open(QIODevice::ReadWrite));
       QVERIFY(file.setFileTime(modified, QFileDevice::FileModificationTime)); }
     QTRY_COMPARE_WITH_TIMEOUT(model->fileCount(), 2, 10000);
+    QCOMPARE(status->text(), QString("0 added · 1 modified · 0 missing"));
     QVERIFY(!tree->isExpanded(model->pathIndex("rtl")));
     QVERIFY(!tree->isExpanded(model->pathIndex("rtl/sub")));
     tree->expand(model->pathIndex("rtl")); tree->expand(model->pathIndex("rtl/sub"));
@@ -58,6 +61,7 @@ void GuiSmokeTest::workingFilesOnlyShowUnarchivedChanges()
     if (!shots.isEmpty()) { QDir().mkpath(shots); QVERIFY(panel.grab().save(shots + "/working-clean.png")); }
     put(asset.asset.root + "/new/fresh.sv", "new");
     QTRY_COMPARE_WITH_TIMEOUT(model->fileCount(), 3, 10000);
+    QCOMPARE(status->text(), QString("1 added · 0 modified · 0 missing"));
     QVERIFY(!tree->isExpanded(model->pathIndex("new")));
     QVERIFY(!tree->isExpanded(model->pathIndex("rtl")));
     if (!shots.isEmpty()) QVERIFY(panel.grab().save(shots + "/working-collapsed.png"));
@@ -153,6 +157,7 @@ void GuiSmokeTest::unreadableWorkingFilesStayHiddenUntilChecked()
     auto *model = qobject_cast<WorkingFilesModel *>(tree->model());
     QCOMPARE(model->fileCount(), 0);
     QVERIFY(panel.findChild<ElaText *>("browserNotice")->property("error").toBool());
+    QVERIFY(panel.findChild<ElaText *>("workingStatus")->text().contains("Could not check"));
     QVERIFY(!panel.findChild<QToolButton *>("updateButton")->isEnabled());
     CloseHandle(handle); handle = INVALID_HANDLE_VALUE;
     panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->fileCount(), 0);
@@ -161,4 +166,117 @@ void GuiSmokeTest::unreadableWorkingFilesStayHiddenUntilChecked()
 #else
     QSKIP("Uses Windows exclusive sharing to model unavailable synchronized files.");
 #endif
+}
+
+void GuiSmokeTest::workingStatusDistinguishesEmptyAndMissing_data()
+{
+    QTest::addColumn<int>("fileCount");
+    QTest::addColumn<int>("missingCount");
+    QTest::addColumn<QString>("expectedStatus");
+    QTest::newRow("new_empty") << 0 << 0 << QString("No working files · no saved versions");
+    QTest::newRow("clean") << 2 << 0 << QString("No unarchived changes");
+    QTest::newRow("partial_missing") << 2 << 1 << QString("0 added · 0 modified · 1 missing");
+    QTest::newRow("all_missing_single") << 1 << 1 << QString("0 added · 0 modified · 1 missing");
+    QTest::newRow("all_missing_multiple") << 2 << 2 << QString("0 added · 0 modified · 2 missing");
+}
+
+void GuiSmokeTest::workingStatusDistinguishesEmptyAndMissing()
+{
+    QFETCH(int, fileCount); QFETCH(int, missingCount); QFETCH(QString, expectedStatus);
+    QTemporaryDir tmp; const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition; definition.name = "working_state";
+    auto fixture = SnapshotLibrary::create(library, definition);
+    QVERIFY2(fixture.ok, qPrintable(fixture.error));
+    for (int i = 0; i < fileCount; ++i)
+    {
+        QFile file(fixture.asset.root + QString("/file%1.sv").arg(i));
+        QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write("original"), 8);
+    }
+    if (fileCount)
+    {
+        fixture = SnapshotLibrary::saveCurrent(fixture.asset);
+        QVERIFY2(fixture.ok, qPrintable(fixture.error));
+    }
+    for (int i = 0; i < missingCount; ++i)
+        QVERIFY(QFile::remove(fixture.asset.root + QString("/file%1.sv").arg(i)));
+    QVERIFY(QDir(fixture.asset.root).exists());
+
+    const auto check = [&](BrowserPanel &panel)
+    {
+        QTRY_VERIFY_WITH_TIMEOUT(!panel.isCatalogBusy(), 10000);
+        auto *status = panel.findChild<ElaText *>("workingStatus");
+        auto *tree = panel.findChild<ElaTreeView *>("workingFiles");
+        auto *versions = panel.findChild<ElaTableView *>("revisionTable");
+        auto *pages = panel.findChild<ElaTabWidget *>("assetPages");
+        QVERIFY(status && tree && versions && pages);
+        QCOMPARE(status->text(), expectedStatus);
+        QCOMPARE(qobject_cast<WorkingFilesModel *>(tree->model())->fileCount(), 0);
+        QCOMPARE(tree->model()->rowCount(), 0);
+        QVERIFY(!panel.findChild<QToolButton *>("updateButton")->isEnabled());
+        QCOMPARE(versions->model()->rowCount(), fileCount ? 1 : 0);
+        if (fileCount)
+        {
+            pages->setCurrentIndex(1);
+            QCOMPARE(panel.findChild<ElaListView *>("fileList")->model()->rowCount(), fileCount);
+            QVERIFY(panel.findChild<ElaPushButton *>("takeButton")->isEnabled());
+            const auto verification = SnapshotLibrary::verifySnapshot(fixture.asset, fixture.snapshot.id);
+            QVERIFY2(verification.ok, qPrintable(verification.error));
+            QCOMPARE(verification.snapshot.files.size(), fileCount);
+            pages->setCurrentIndex(0);
+        }
+    };
+    QVariantMap state;
+    {
+        BrowserPanel panel; panel.resize(800, 600); panel.show(); panel.setContext(library, {});
+        QTRY_VERIFY_WITH_TIMEOUT(!panel.isCatalogBusy(), 10000);
+        panel.revealAsset(fixture.asset.id);
+        check(panel);
+        panel.refresh(); check(panel);
+        state = panel.saveState();
+    }
+    BrowserPanel reopened; reopened.show(); reopened.restoreState(state);
+    check(reopened);
+}
+
+void GuiSmokeTest::workingStatusTracksAllFilesDisappearing()
+{
+    QTemporaryDir tmp; const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition; definition.name = "working_changes";
+    auto fixture = SnapshotLibrary::create(library, definition); QVERIFY(fixture.ok);
+    const auto writeOriginal = [&](const QString &name)
+    {
+        QFile file(fixture.asset.root + '/' + name);
+        QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write("original"), 8);
+    };
+    writeOriginal("a.sv"); writeOriginal("b.sv");
+    fixture = SnapshotLibrary::saveCurrent(fixture.asset);
+    QVERIFY2(fixture.ok, qPrintable(fixture.error));
+    BrowserPanel panel; panel.resize(800, 600); panel.show(); panel.setContext(library, {});
+    QTRY_VERIFY_WITH_TIMEOUT(!panel.isCatalogBusy(), 10000);
+    auto *status = panel.findChild<ElaText *>("workingStatus");
+    auto *tree = panel.findChild<ElaTreeView *>("workingFiles");
+    auto *model = qobject_cast<WorkingFilesModel *>(tree->model());
+    QCOMPARE(status->text(), QString("No unarchived changes"));
+    QCOMPARE(model->fileCount(), 0);
+    const auto checkMissing = [&](int count)
+    {
+        QTRY_COMPARE_WITH_TIMEOUT(status->text(), QString("0 added · 0 modified · %1 missing").arg(count), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!panel.isCatalogBusy(), 10000);
+        QCOMPARE(model->fileCount(), 0);
+        QVERIFY(!panel.findChild<QToolButton *>("updateButton")->isEnabled());
+        QVERIFY(SnapshotLibrary::verifySnapshot(fixture.asset, fixture.snapshot.id).ok);
+    };
+    QVERIFY(QFile::remove(fixture.asset.root + "/a.sv")); checkMissing(1);
+    QVERIFY(QFile::remove(fixture.asset.root + "/b.sv")); checkMissing(2);
+    const auto shots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
+    if (!shots.isEmpty()) { QDir().mkpath(shots); QVERIFY(panel.grab().save(shots + "/working-all-missing.png")); }
+    writeOriginal("a.sv"); checkMissing(1);
+    writeOriginal("b.sv");
+    QTRY_COMPARE_WITH_TIMEOUT(status->text(), QString("No unarchived changes"), 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(!panel.isCatalogBusy(), 10000);
+    QCOMPARE(model->fileCount(), 0);
+    QCOMPARE(panel.findChild<ElaTableView *>("revisionTable")->model()->rowCount(), 1);
+    QVERIFY(SnapshotLibrary::verifySnapshot(fixture.asset, fixture.snapshot.id).ok);
 }

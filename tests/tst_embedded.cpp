@@ -26,6 +26,8 @@
 #include <QMenu>
 #include <QScopedValueRollback>
 #include <QSignalSpy>
+#include <QShortcut>
+#include <QClipboard>
 #include <QPersistentModelIndex>
 #include <QStyleOptionViewItem>
 #include <QTemporaryDir>
@@ -278,6 +280,38 @@ class EmbeddedTest final : public QObject
         create = reinterpret_cast<XipsCreateBrowserV1>(component.resolve("xips_create_browser_v1"));
         QVERIFY(abi && create); QCOMPARE(QByteArray(abi()), xipsExpectedBrowserAbi());
     }
+    void functionKeysRemainAvailableToHost()
+    {
+        QTemporaryDir tmp; const auto library = tmp.filePath("library"); QVERIFY(QDir().mkpath(library));
+        QWidget owner; HostBridge host;
+        auto *panel = panelIn(&owner, &host); QVERIFY(panel);
+        QVERIFY(QMetaObject::invokeMethod(panel, "setContext", Q_ARG(QString, library), Q_ARG(QString, QString())));
+        const auto busy = [&] { bool value = true; QMetaObject::invokeMethod(panel, "isCatalogBusy", Q_RETURN_ARG(bool, value)); return value; };
+        QTRY_VERIFY(!busy());
+        QVERIFY(panel->findChildren<QShortcut *>().isEmpty());
+        auto *search = panel->findChild<QLineEdit *>("assetSearch"); QVERIFY(search);
+        const QList<QKeySequence> keys{QKeySequence::Find, QKeySequence::New, QKeySequence::Save,
+            QKeySequence("Ctrl+Shift+N"), QKeySequence(Qt::Key_F5), QKeySequence(Qt::Key_F2)};
+        int hostActions = 0;
+        for (const auto &sequence : keys)
+        {
+            auto *key = new QShortcut(sequence, &owner);
+            connect(key, &QShortcut::activated, &owner, [&] { ++hostActions; });
+        }
+        owner.activateWindow(); search->setFocus(); QTRY_VERIFY(owner.isActiveWindow() && search->hasFocus());
+        search->setText("text");
+        QTest::keyClick(search, Qt::Key_F, Qt::ControlModifier);
+        QTest::keyClick(search, Qt::Key_N, Qt::ControlModifier);
+        QTest::keyClick(search, Qt::Key_S, Qt::ControlModifier);
+        QTest::keyClick(search, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+        QTest::keyClick(search, Qt::Key_F5); QTest::keyClick(search, Qt::Key_F2);
+        QTRY_COMPARE(hostActions, 6); QVERIFY(!busy());
+        QTest::keyClick(search, Qt::Key_Escape); QCOMPARE(search->text(), QString("text"));
+        QTest::keyClick(search, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(search, Qt::Key_C, Qt::ControlModifier); QCOMPARE(QApplication::clipboard()->text(), QString("text"));
+        search->clear(); QTest::keyClick(search, Qt::Key_V, Qt::ControlModifier); QCOMPARE(search->text(), QString("text"));
+        QTest::keyClick(search, Qt::Key_Z, Qt::ControlModifier); QVERIFY(search->text().isEmpty());
+    }
     void missingImplementationReturnsDiagnostic()
     {
         QTemporaryDir tmp;
@@ -326,8 +360,13 @@ class EmbeddedTest final : public QObject
         QVERIFY(panel->palette().color(QPalette::Window).lightness() < 128);
         QCOMPARE(qApp->palette(), palette);
         QVERIFY(QMetaObject::invokeMethod(panel, "setDarkTheme", Q_ARG(bool, false)));
-        auto worker = QtConcurrent::run([this] { return create(nullptr, nullptr); });
-        worker.waitForFinished(); QVERIFY(!worker.result());
+        QWidget *workerResult = nullptr;
+        auto *worker = QThread::create([&] { workerResult = create(nullptr, nullptr); });
+        worker->start();
+        const bool finished = worker->wait(10000);
+        if (!finished) worker->wait();
+        delete worker;
+        QVERIFY(finished); QVERIFY(!workerResult);
         QPointer<QWidget> guard(panel); delete panel; QVERIFY(!guard);
         QVERIFY(owner.isVisible());
     }

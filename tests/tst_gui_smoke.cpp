@@ -18,6 +18,10 @@
 #include "app/ElaFilePicker.h"
 #include "app/MainWindow.h"
 #include <QContextMenuEvent>
+#include <QClipboard>
+#include <QShortcut>
+#include <QSignalSpy>
+#include <QScopeGuard>
 #include <QAbstractItemModelTester>
 #include <QDir>
 #include <QDirIterator>
@@ -51,7 +55,6 @@
 #include <memory>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
-#include <QScopeGuard>
 #endif
 using namespace xips;
 class FileOpenCapture : public QObject
@@ -88,16 +91,20 @@ class GuiSmokeTest : public QObject
     void elaFilePickerNavigatesAndSelects();
     void groupsCanBeCreatedAndOrganized();
     void draggingAddsMembershipWithoutMovingSources();
-    void keyboardActionsStayWithinTheCatalog();
+    void functionShortcutsAreRemovedAndTextEditingRemains();
     void reviewCanBeRejectedAndStandaloneReceiptSaved();
     void damagedHistoryAndUnavailableReferencesRemainVisible();
+    void issuesOfferSafeRecoveryActions();
     void parallelReviewMakesAdoptionExplicit();
-    void doubleClickAndEnterOpenTheSelectedVersion();
+    void doubleClickAndButtonOpenTheSelectedVersion();
     void emptyIpImportCheckAndCreateVersions();
     void workingCheckboxStatesStayVisible();
     void workingFilesOnlyShowUnarchivedChanges();
     void archivedFolderRemainsBlankAfterVersionChanges();
     void unreadableWorkingFilesStayHiddenUntilChecked();
+    void workingStatusDistinguishesEmptyAndMissing_data();
+    void workingStatusDistinguishesEmptyAndMissing();
+    void workingStatusTracksAllFilesDisappearing();
     void archivedVersionsCanBeDeleted();
     void archivedVersionNamesCanBeEdited();
     void externalDropsReachEveryWorkingArea();
@@ -107,6 +114,7 @@ class GuiSmokeTest : public QObject
     void externalChangesRefreshAfterSettling();
     void refreshPreservesArchivedFileBrowsing();
 };
+#include "UsabilityGui.inc"
 #include "EmptyWorkspaceGui.inc"
 #include "VersionAndDropGui.inc"
 #include "VersionNamesGui.inc"
@@ -202,7 +210,7 @@ void GuiSmokeTest::workingCheckboxStatesStayVisible()
     eTheme->setThemeMode(previous);
     QVERIFY2(visibleStates, "Checkbox border/check/dash must remain visible after native painting has settled");
 }
-void GuiSmokeTest::doubleClickAndEnterOpenTheSelectedVersion()
+void GuiSmokeTest::doubleClickAndButtonOpenTheSelectedVersion()
 {
     QTemporaryDir tmp;
     const auto library = tmp.filePath("library with spaces");
@@ -259,6 +267,10 @@ void GuiSmokeTest::doubleClickAndEnterOpenTheSelectedVersion()
     files->setFocus();
     QTRY_VERIFY(panel.isActiveWindow() && files->hasFocus());
     QTest::keyClick(files, Qt::Key_Return);
+    QTest::keyClick(files, Qt::Key_Enter);
+    QTest::qWait(30);
+    QCOMPARE(opened.urls.size(), 1);
+    panel.findChild<QToolButton *>("openFileButton")->click();
     QTRY_VERIFY2(opened.urls.size() == 2, qPrintable(panel.findChild<ElaText *>("browserNotice")->toolTip()));
     const auto copy = opened.urls.last().toLocalFile();
     QVERIFY(copy != original);
@@ -991,7 +1003,8 @@ void GuiSmokeTest::draggingAddsMembershipWithoutMovingSources()
     QVERIFY(model->flags(item).testFlag(Qt::ItemIsDragEnabled));
     QVERIFY(model->flags(target).testFlag(Qt::ItemIsDropEnabled));
     QVERIFY(model->canDropMimeData(payload.get(), Qt::CopyAction, -1, -1, target));
-    QVERIFY(!model->canDropMimeData(payload.get(), Qt::MoveAction, -1, -1, target));
+    QCOMPARE(tree->defaultDropAction(), Qt::MoveAction);
+    QVERIFY(model->canDropMimeData(payload.get(), Qt::MoveAction, -1, -1, target));
     QVERIFY(!model->canDropMimeData(payload.get(), Qt::CopyAction, -1, -1, item));
     QVERIFY(!model->canDropMimeData(payload.get(), Qt::CopyAction, -1, -1, {}));
     QVERIFY(!model->canDropMimeData(payload.get(), Qt::CopyAction, -1, -1, model->indexForId({}, bus.group.id)));
@@ -1003,13 +1016,13 @@ void GuiSmokeTest::draggingAddsMembershipWithoutMovingSources()
     ElaTreeView::finishExpansion(tree);
     QCoreApplication::processEvents();
     const auto position = tree->visualRect(target).center();
-    QDragEnterEvent enter(position, Qt::CopyAction, payload.get(), Qt::LeftButton, Qt::NoModifier);
+    QDragEnterEvent enter(position, Qt::CopyAction | Qt::MoveAction, payload.get(), Qt::LeftButton, Qt::ControlModifier);
     QApplication::sendEvent(tree->viewport(), &enter);
     QVERIFY(enter.isAccepted());
-    QDragMoveEvent move(position, Qt::CopyAction, payload.get(), Qt::LeftButton, Qt::NoModifier);
+    QDragMoveEvent move(position, Qt::CopyAction | Qt::MoveAction, payload.get(), Qt::LeftButton, Qt::ControlModifier);
     QApplication::sendEvent(tree->viewport(), &move);
     QVERIFY(move.isAccepted());
-    QDropEvent drop(position, Qt::CopyAction, payload.get(), Qt::LeftButton, Qt::NoModifier);
+    QDropEvent drop(position, Qt::CopyAction | Qt::MoveAction, payload.get(), Qt::LeftButton, Qt::ControlModifier);
     QApplication::sendEvent(tree->viewport(), &drop);
     QVERIFY(drop.isAccepted());
     QTRY_VERIFY(!panel.isCatalogBusy());
@@ -1040,87 +1053,96 @@ void GuiSmokeTest::draggingAddsMembershipWithoutMovingSources()
     QTRY_VERIFY(!panel.isCatalogBusy());
     QVERIFY(notice->toolTip().isEmpty());
     QCOMPARE(model->rowCount(model->indexForId({}, blocked.group.id)), 1);
+    const auto serialTarget = model->indexForId({}, serial.group.id);
+    tree->scrollTo(serialTarget); ElaTreeView::finishExpansion(tree); QCoreApplication::processEvents();
+    const auto movePosition = tree->visualRect(serialTarget).center();
+    QDragEnterEvent enterMove(movePosition, Qt::MoveAction, payload.get(), Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(tree->viewport(), &enterMove); QVERIFY(enterMove.isAccepted());
+    QDragMoveEvent movingMove(movePosition, Qt::MoveAction, payload.get(), Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(tree->viewport(), &movingMove); QVERIFY(movingMove.isAccepted());
+    QDropEvent dropMove(movePosition, Qt::MoveAction, payload.get(), Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(tree->viewport(), &dropMove); QVERIFY(dropMove.isAccepted());
+    QCOMPARE(dropMove.dropAction(), Qt::MoveAction);
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->rowCount(model->indexForId({}, bus.group.id)), 0);
+    QCOMPARE(model->rowCount(model->indexForId({}, serial.group.id)), 1);
+    QCOMPARE(model->rowCount(model->indexForId({}, blocked.group.id)), 1);
+    QVERIFY(!model->canDropMimeData(payload.get(), Qt::MoveAction, -1, -1, model->indexForId({}, blocked.group.id)));
+    QVERIFY(notice->toolTip().isEmpty());
+    QVERIFY(SnapshotLibrary::verifySnapshot(asset.asset, asset.snapshot.id).ok);
 }
-void GuiSmokeTest::keyboardActionsStayWithinTheCatalog()
+void GuiSmokeTest::functionShortcutsAreRemovedAndTextEditingRemains()
 {
-    QTemporaryDir tmp;
-    const auto library = tmp.filePath("library");
-    QVERIFY(QDir().mkpath(library));
-    QWidget host;
-    auto *layout = new QVBoxLayout(&host);
-    auto *outside = new ElaLineEdit(&host);
-    layout->addWidget(outside);
-    auto *panel = new BrowserPanel(&host);
-    layout->addWidget(panel);
-    host.resize(720, 460);
-    host.show();
-    host.activateWindow();
-    panel->setContext(library, {});
-    QTRY_VERIFY(!panel->isCatalogBusy());
-    auto *tree = panel->findChild<ElaTreeView *>("assetList");
-    auto *model = static_cast<CatalogModel *>(tree->model());
-    auto *search = panel->findChild<ElaLineEdit *>("assetSearch");
-    const auto focusTree = [&]
+    QTemporaryDir tmp; const auto library = tmp.filePath("library"); QVERIFY(QDir().mkpath(library));
+    BrowserPanel panel; panel.resize(800, 560); panel.show(); panel.activateWindow(); panel.setContext(library, {});
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    auto *tree = panel.findChild<ElaTreeView *>("assetList");
+    auto *model = qobject_cast<CatalogModel *>(tree->model());
+    auto *search = panel.findChild<ElaLineEdit *>("assetSearch");
+    auto *create = panel.findChild<ElaPushButton *>("newAssetButton");
+    auto *addGroup = panel.findChild<QToolButton *>("newGroupButton");
+    auto *save = panel.findChild<QToolButton *>("updateButton");
+    QSignalSpy created(create, &QAbstractButton::clicked), grouped(addGroup, &QAbstractButton::clicked), saved(save, &QAbstractButton::clicked);
+    bool unexpectedDialog = false;
+    QTimer dismiss;
+    connect(&dismiss, &QTimer::timeout, &panel, [&]
     {
-        host.activateWindow();
-        tree->setFocus();
-        QCoreApplication::processEvents();
-        QTRY_VERIFY(host.isActiveWindow() && tree->hasFocus());
+        for (auto *dialog : panel.findChildren<QDialog *>()) if (dialog->isVisible())
+        { unexpectedDialog = true; dialog->reject(); }
+    });
+    dismiss.start(10);
+    const auto keys = [&]
+    {
+        panel.activateWindow(); tree->setFocus(); QTRY_VERIFY(panel.isActiveWindow() && tree->hasFocus());
+        QTRY_VERIFY(!panel.isCatalogBusy());
+        QTest::keyClick(tree, Qt::Key_F, Qt::ControlModifier); QVERIFY(tree->hasFocus());
+        QTest::keyClick(tree, Qt::Key_N, Qt::ControlModifier);
+        QTest::keyClick(tree, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+        QTest::keyClick(tree, Qt::Key_S, Qt::ControlModifier);
+        QTest::keyClick(tree, Qt::Key_F2); QTest::keyClick(tree, Qt::Key_F5);
+        QVERIFY(!panel.isCatalogBusy()); QTest::qWait(30); QVERIFY(!unexpectedDialog);
     };
-    outside->setFocus();
-    QTRY_VERIFY(outside->hasFocus());
-    QTest::keyClick(outside, Qt::Key_F, Qt::ControlModifier);
-    QVERIFY(outside->hasFocus());
-    focusTree();
-    QTest::keyClick(tree, Qt::Key_F, Qt::ControlModifier);
-    QTRY_VERIFY(search->hasFocus());
-    search->setText("uart");
-    QTest::keyClick(search, Qt::Key_Escape);
-    QCOMPARE(search->text(), QString());
-    const auto fillForm = [&](const QString &field, const QString &text)
+    keys();
+    QCOMPARE(created.count(), 0); QCOMPARE(grouped.count(), 0); QCOMPARE(saved.count(), 0);
+    QVERIFY(panel.findChildren<QShortcut *>().isEmpty());
+    search->setFocus(); search->setText("uart");
+    QTest::keyClick(search, Qt::Key_Escape); QCOMPARE(search->text(), QString("uart"));
+    QTest::keyClick(search, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(search, Qt::Key_C, Qt::ControlModifier); QCOMPARE(QApplication::clipboard()->text(), QString("uart"));
+    search->clear(); QTest::keyClick(search, Qt::Key_V, Qt::ControlModifier); QCOMPARE(search->text(), QString("uart"));
+    QTest::keyClick(search, Qt::Key_Z, Qt::ControlModifier); QCOMPARE(search->text(), QString());
+    QTest::qWait(150);
+    dismiss.stop();
+    const auto fill = [&](const QString &field, const QString &text)
     {
-        whenVisible(&host, field, [&, text](QWidget *widget)
+        whenVisible(&panel, field, [&, text](QWidget *widget)
         {
-            auto *edit = qobject_cast<ElaLineEdit *>(widget);
-            QVERIFY(edit);
-            edit->setText(text);
-            host.findChild<ElaPushButton *>("formAccept")->click();
+            qobject_cast<QLineEdit *>(widget)->setText(text);
+            panel.findChild<ElaPushButton *>("formAccept")->click();
         });
     };
-    fillForm("groupName", "Work");
-    QTest::keyClick(search, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
-    QTRY_VERIFY(!panel->isCatalogBusy());
-    QCOMPARE(model->groups().size(), 1);
-    const auto group = model->groups().first().id;
-    focusTree();
-    fillForm("groupName", "Data");
-    QTest::keyClick(tree, Qt::Key_F2);
-    QTRY_VERIFY(!panel->isCatalogBusy());
-    QCOMPARE(model->groups().first().name, QString("Data"));
-    focusTree();
-    fillForm("newAssetName", "fifo");
-    QTest::keyClick(tree, Qt::Key_N, Qt::ControlModifier);
-    QTRY_VERIFY(!panel->isCatalogBusy());
+    fill("groupName", "Work"); addGroup->click(); QTRY_VERIFY(!panel.isCatalogBusy());
+    QCOMPARE(model->groups().size(), 1); const auto group = model->groups().first().id;
+    dismiss.start(); keys(); dismiss.stop(); QCOMPARE(model->groups().first().name, QString("Work"));
+    fill("groupName", "Data"); panel.findChild<QToolButton *>("renameGroupButton")->click();
+    QTRY_VERIFY(!panel.isCatalogBusy()); QCOMPARE(model->groups().first().name, QString("Data"));
+    fill("newAssetName", "fifo"); create->click(); QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(model->rowCount(model->indexForId({}, group)), 1);
-    auto *versions = panel->findChild<ElaTableView *>("revisionTable");
-    QCOMPARE(versions->model()->rowCount(), 0);
-    QFile source(library + "/fifo/fifo.sv");
-    QVERIFY(source.open(QIODevice::Append));
-    source.write("\n// test revision\n");
-    source.close();
-    panel->refresh(); QTRY_VERIFY(!panel->isCatalogBusy());
-    panel->findChild<ElaCheckBox *>("checkAllFiles")->click();
-    focusTree();
-    fillForm("revisionNote", "Keyboard save");
-    QTest::keyClick(tree, Qt::Key_S, Qt::ControlModifier);
-    QTRY_VERIFY(!panel->isCatalogBusy());
+    QFile source(library + "/fifo/fifo.sv"); QVERIFY(source.open(QIODevice::WriteOnly)); source.write("module fifo; endmodule"); source.close();
+    panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy());
+    panel.findChild<ElaCheckBox *>("checkAllFiles")->click(); QVERIFY(save->isEnabled());
+    auto *working = panel.findChild<ElaTreeView *>("workingFiles");
+    working->setCurrentIndex(working->model()->index(0, 0));
+    FileOpenCapture opened;
+    QTest::keyClick(working, Qt::Key_Return); QTest::keyClick(working, Qt::Key_Enter);
+    QTest::qWait(30); QVERIFY(opened.urls.isEmpty());
+    dismiss.start(); keys(); dismiss.stop(); QCOMPARE(saved.count(), 0);
+    auto *versions = panel.findChild<ElaTableView *>("revisionTable"); QCOMPARE(versions->model()->rowCount(), 0);
+    fill("revisionNote", "Button save"); save->click(); QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(versions->model()->rowCount(), 1);
-    QVERIFY(versions->currentIndex().data(Qt::ToolTipRole).toString().contains("Keyboard save"));
-    QVERIFY(CatalogGroups::create(library, "Added elsewhere").ok);
-    focusTree();
-    QTest::keyClick(tree, Qt::Key_F5);
-    QTRY_VERIFY(!panel->isCatalogBusy());
-    QCOMPARE(model->groups().size(), 2);
+    panel.findChild<ElaTabWidget *>("assetPages")->setCurrentIndex(1); versions->setFocus();
+    dismiss.start(); QTest::keyClick(versions, Qt::Key_F2); QTest::qWait(30); dismiss.stop();
+    QVERIFY(!unexpectedDialog); QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("rev1"));
 }
 void GuiSmokeTest::compactWindowKeepsActionsBesideContent()
 {

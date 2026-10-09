@@ -49,7 +49,7 @@ QVariant CatalogModel::data(const QModelIndex &index, int role) const
     {
         const auto &group = m_groups[value->group];
         if (role == Qt::DisplayRole) return group.name;
-        if (role == Qt::ToolTipRole) return QStringLiteral("%1 · %2 IPs\nDrop an IP here to add it. F2 to rename.")
+        if (role == Qt::ToolTipRole) return QStringLiteral("%1 · %2 assets\nDrag to move from the original group; Ctrl-drag to add an association. Files stay in place.")
             .arg(group.name).arg(value->children.size());
         if (role == Qt::DecorationRole) return uiIcon(UiIcon::Folder);
         if (role == Qt::FontRole) { QFont font; font.setWeight(QFont::DemiBold); return font; }
@@ -84,7 +84,7 @@ QMimeData *CatalogModel::mimeData(const QModelIndexList &indexes) const
         if (const int asset = assetIndex(index); asset >= 0)
         {
             data->setData(mimeTypes().first(), QJsonDocument(QJsonObject{
-                {"catalog", m_library}, {"assetId", m_rows[asset].id}}).toJson(QJsonDocument::Compact));
+                {"catalog", m_library}, {"assetId", m_rows[asset].id}, {"sourceGroup", groupId(index)}}).toJson(QJsonDocument::Compact));
             break;
         }
     return data;
@@ -97,6 +97,9 @@ QString CatalogModel::droppedAsset(const QMimeData *data) const
     const auto object = QJsonDocument::fromJson(bytes).object();
     if (m_library.isEmpty() || object.value("catalog").toString() != m_library) return {};
     const auto id = object.value("assetId").toString();
+    const auto source = object.value("sourceGroup").toString();
+    if (!source.isEmpty() && std::none_of(m_groups.cbegin(), m_groups.cend(), [&](const auto &group)
+        { return group.id == source && group.members.contains(id, Qt::CaseInsensitive); })) return {};
     for (const auto &asset : m_rows)
         if (asset.id == id) return id;
     return {};
@@ -105,15 +108,21 @@ bool CatalogModel::canDropMimeData(const QMimeData *data, Qt::DropAction action,
                                   const QModelIndex &parent) const
 {
     const auto *target = node(parent);
-    if (action != Qt::CopyAction || row != -1 || column > 0 || !target || target->asset >= 0) return false;
+    if ((action != Qt::CopyAction && action != Qt::MoveAction) || row != -1 || column > 0 ||
+        !target || target->asset >= 0) return false;
     const auto id = droppedAsset(data);
-    return !id.isEmpty() && !m_groups[target->group].members.contains(id, Qt::CaseInsensitive);
+    if (id.isEmpty()) return false;
+    const auto source = QJsonDocument::fromJson(data->data(mimeTypes().first())).object().value("sourceGroup").toString();
+    const auto &group = m_groups[target->group];
+    if (source == group.id) return false;
+    return !group.members.contains(id, Qt::CaseInsensitive) || (action == Qt::MoveAction && !source.isEmpty());
 }
 bool CatalogModel::dropMimeData(const QMimeData *data, Qt::DropAction action, int row, int column,
                                const QModelIndex &parent)
 {
     if (!canDropMimeData(data, action, row, column, parent)) return false;
-    emit groupMembershipRequested(groupId(parent), droppedAsset(data));
+    const auto source = QJsonDocument::fromJson(data->data(mimeTypes().first())).object().value("sourceGroup").toString();
+    emit groupMembershipRequested(groupId(parent), droppedAsset(data), source, action);
     return true;
 }
 CatalogModel::Row CatalogModel::assetRow(const CatalogAsset &asset)

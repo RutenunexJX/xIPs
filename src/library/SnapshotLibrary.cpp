@@ -627,7 +627,7 @@ QStringList inactiveWorkingFiles(const CatalogAsset &history)
     auto paths = retired.values(); paths.sort();
     return paths;
 }
-CatalogAsset currentSource(const CatalogAsset &asset)
+CatalogAsset currentSource(const CatalogAsset &asset, const CatalogAsset *storedHistory = nullptr)
 {
     existingDirectory(asset.library);
     safePath(asset.root);
@@ -645,7 +645,8 @@ CatalogAsset currentSource(const CatalogAsset &asset)
             break;
         parent = QFileInfo(parent).absolutePath();
     }
-    const auto history = asset.historyRoot.isEmpty() ? CatalogAsset{} : load(asset.historyRoot, asset.library);
+    const auto history = storedHistory ? *storedHistory
+        : asset.historyRoot.isEmpty() ? CatalogAsset{} : load(asset.historyRoot, asset.library);
     QStringList working;
     if (!asset.sourceIsDirectory) working = {info.fileName()};
     else if (history.document.value("workingArea") == "managed")
@@ -2225,6 +2226,24 @@ void comparePreview(PayloadPreview &preview, const CatalogAsset &asset)
     for (auto it = previous.cbegin(); it != previous.cend(); ++it)
         if (!preview.objects.contains(it.key())) preview.removed.append(it.key());
 }
+SnapshotResult previewWorkingCopy(const CatalogAsset &asset, const QStringList *selection)
+{
+    return operation([&](auto &result)
+    {
+        require(asset.discovered && asset.referencePath.isEmpty(), QStringLiteral("Choose an original working copy."));
+        result.asset = currentSource(asset);
+        healthyHistory(result.asset);
+        result.preview.assetId = result.asset.id;
+        result.preview.heads = parentRevisions(result.asset);
+        QList<InputFile> inputs;
+        if (selection) inputs = selectedFiles(result.asset, *selection);
+        else
+            for (const auto &file : result.asset.workingFiles)
+                inputs.append({child(sourceRoot(result.asset), file), file});
+        previewFiles(result.preview, inputs);
+        comparePreview(result.preview, result.asset);
+    });
+}
 QString referencePath(const CatalogAsset &reference)
 {
     require(!reference.referencePath.isEmpty() && !reference.referenceLibrary.isEmpty(), QStringLiteral("Select a local reference."));
@@ -2278,18 +2297,13 @@ SnapshotResult SnapshotLibrary::previewSave(const CatalogAsset &asset, const QSt
         comparePreview(preview, result.asset);
     });
 }
+SnapshotResult SnapshotLibrary::previewWorking(const CatalogAsset &asset)
+{
+    return previewWorkingCopy(asset, nullptr);
+}
 SnapshotResult SnapshotLibrary::previewSelected(const CatalogAsset &asset, const QStringList &files)
 {
-    return operation([&](auto &result)
-    {
-        require(asset.discovered && asset.referencePath.isEmpty(), QStringLiteral("Choose an original working copy."));
-        result.asset = currentSource(asset);
-        healthyHistory(result.asset);
-        result.preview.assetId = result.asset.id;
-        result.preview.heads = parentRevisions(result.asset);
-        previewFiles(result.preview, selectedFiles(result.asset, files));
-        comparePreview(result.preview, result.asset);
-    });
+    return previewWorkingCopy(asset, &files);
 }
 SnapshotResult SnapshotLibrary::previewExport(const CatalogAsset &asset, const QString &revision)
 {
@@ -2315,6 +2329,44 @@ SnapshotResult SnapshotLibrary::previewExport(const CatalogAsset &asset, const Q
             previewFiles(preview, inputs);
         }
         if (revision == "current" && asset.sourceIsDirectory) excludedFiles(asset.root, {}, true, false, preview.excluded);
+    });
+}
+SnapshotResult SnapshotLibrary::relocateSource(const CatalogAsset &asset, const QString &source)
+{
+    return operation([&](auto &result)
+    {
+        require(asset.discovered && asset.referencePath.isEmpty() && !asset.historyRoot.isEmpty(),
+                QStringLiteral("Select a registered source."));
+        LibraryLock lock(asset.library);
+        auto history = load(asset.historyRoot, asset.library);
+        healthyHistory(history);
+        require(history.id == asset.id && history.document == asset.document &&
+                    history.document.value("registered") != false,
+                QStringLiteral("Source details changed. Refresh and retry."));
+        const auto location = absolute(source);
+        safePath(location);
+        require(files::isWithin(location, asset.library) && location != absolute(asset.library),
+                QStringLiteral("Choose a source inside this library."));
+        const auto relative = QDir(asset.library).relativeFilePath(location);
+        require(!relative.toCaseFolded().split('/').contains(".xips"),
+                QStringLiteral("Choose source files outside catalog metadata."));
+        const QFileInfo info(location);
+        require(asset.sourceIsDirectory ? info.isDir() : info.isFile(),
+                QStringLiteral("Choose an available source of the same type."));
+        // A registered or retired source already owns its history at this location.
+        const auto occupied = sourceHistoryRoot(asset.library, location, asset.sourceIsDirectory);
+        require(!QFileInfo::exists(occupied) || absolute(occupied) == absolute(asset.historyRoot),
+                QStringLiteral("Another asset already uses this source location."));
+        const auto path = child(asset.historyRoot, ".xips.json");
+        const auto original = bytes(path);
+        require(QJsonDocument::fromJson(original).object() == history.document,
+                QStringLiteral("Source details changed. Refresh and retry."));
+        auto descriptor = history.document.value("source").toObject();
+        descriptor.insert("path", relative);
+        history.document.insert("source", descriptor);
+        // Validate the new source before publishing, retaining the existing ID and history.
+        result.asset = currentSource(attachHistory(history), &history);
+        writeJson(path, history.document, &original);
     });
 }
 SnapshotResult SnapshotLibrary::unregisterSource(const CatalogAsset &asset)

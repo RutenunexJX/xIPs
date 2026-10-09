@@ -85,7 +85,7 @@ class BrowserPanel final : public QWidget
     void filter();
     void selectCurrent();
     void readDetails(const CatalogAsset &asset);
-    void showDetails(const CatalogAsset &asset, bool workingClean = false);
+    void showDetails(const CatalogAsset &asset, bool workingClean = false, const QString &workingStatus = {});
     void selectVersion();
     void rememberChecks();
     QString workingKey() const;
@@ -104,12 +104,15 @@ class BrowserPanel final : public QWidget
     void exportPrepared(const SnapshotResult &prepared);
     void savePrepared(const SnapshotResult &prepared, const QStringList &sources);
     void changeReference();
+    void locateReference(CatalogAsset reference);
+    void relocateSource(CatalogAsset asset);
     void saveOrigin();
     void beginOperation();
     void openFile();
     void openSourceFolder();
     void updateActions();
     void removeMembership();
+    void removeAssetMembership(CatalogAsset asset);
     void renameVersion();
     void deleteAsset(bool whole);
     void showIssues();
@@ -154,6 +157,7 @@ class BrowserPanel final : public QWidget
     bool m_backgroundRefresh = false;
     bool m_loadingDetails = false;
     bool m_workingClean = false;
+    QString m_workingStatusText;
     bool m_noticeError = false;
     std::shared_ptr<OperationControl> m_operation;
     std::shared_ptr<OperationControl> m_detailOperation;
@@ -207,6 +211,7 @@ class BrowserPanel final : public QWidget
     ElaToolButton *m_addFiles = nullptr;
     ElaToolButton *m_addFolder = nullptr;
     ElaToolButton *m_openWorking = nullptr;
+    ElaText *m_workingStatus = nullptr;
     ElaText *m_workingEmpty = nullptr;
     ElaText *m_historyEmpty = nullptr;
     ElaListView *m_files = nullptr;

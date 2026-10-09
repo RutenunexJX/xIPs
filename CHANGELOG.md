@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.14.2 — 2026-10-10
+
+- Remove application function shortcuts while retaining native text editing and ordinary control navigation.
+- Show added, modified and missing working-file counts, including an entirely empty working folder with saved history. Keep the file area blank when there are no unarchived added or modified files.
+- Move group membership with ordinary drag and add an association with Ctrl-drag, retaining source files and recoverable group records.
+- Add targeted Issues recovery for working sources and local references, retaining asset identity and archived versions.
+
 ## 2.14.1
 
 - Fix native component loading when PATH is empty and the working directory is unrelated to the host. Private component dependencies and host-shared Qt libraries resolve without changing process-wide search paths.

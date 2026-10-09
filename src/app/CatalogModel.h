@@ -18,8 +18,8 @@ class CatalogModel final : public QAbstractItemModel
     Qt::ItemFlags flags(const QModelIndex &index) const override;
     QStringList mimeTypes() const override;
     QMimeData *mimeData(const QModelIndexList &indexes) const override;
-    Qt::DropActions supportedDropActions() const override { return Qt::CopyAction; }
-    Qt::DropActions supportedDragActions() const override { return Qt::CopyAction; }
+    Qt::DropActions supportedDropActions() const override { return Qt::CopyAction | Qt::MoveAction; }
+    Qt::DropActions supportedDragActions() const override { return Qt::CopyAction | Qt::MoveAction; }
     bool canDropMimeData(const QMimeData *data, Qt::DropAction action, int row, int column,
                          const QModelIndex &parent) const override;
     bool dropMimeData(const QMimeData *data, Qt::DropAction action, int row, int column,
@@ -33,7 +33,8 @@ class CatalogModel final : public QAbstractItemModel
     QString groupId(const QModelIndex &index) const;
     const QList<CatalogGroup> &groups() const { return m_groups; }
   signals:
-    void groupMembershipRequested(const QString &groupId, const QString &assetId);
+    void groupMembershipRequested(const QString &groupId, const QString &assetId,
+                                  const QString &sourceGroupId, Qt::DropAction action);
   private:
     QString droppedAsset(const QMimeData *data) const;
     struct Node { int asset = -1, group = -1, parent = -1, row = 0; QList<int> children, allChildren; };

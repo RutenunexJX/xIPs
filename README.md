@@ -9,7 +9,7 @@ The interface uses Ela controls and shares ZeroSlack's compact panel layout. All
 1. Choose the catalog root once. Only explicitly created, registered or referenced entries appear; loose source files never become catalog entries automatically.
 2. Click **New**, choose Module, IP or Project, and enter a name. This creates an empty working folder and catalog definition, with no HDL template or saved version. Empty entries persist across refreshes and restarts. Recreating a deleted working folder creates a new identity without old group links or versions; explicitly registering an existing source can recover its retained history. Registering an existing file/folder inside the root is optional and also creates no version automatically.
 3. In **Working files**, use **Add files** or **Add folder**, or drag individual files into the file area. These actions copy files into the working folder without creating a version. Identical duplicates are skipped, and conflicting names are reported without overwriting existing files.
-4. Check the files to include. A folder checkbox selects its descendants; **All** selects or clears every file. Browsing a row does not change its checkbox. Checks survive refreshes and version switches, and missing files are removed from the selection. Click **Create version** (**Ctrl+S**), review the included files and the added, modified or omitted files compared with the previous version, and optionally add a note. Omitting a file from a version keeps its working copy. Zero checked files cannot create a version. This explicit save creates **rev1**, followed by **rev2** and later versions; unchanged content creates no extra version unless joining parallel heads.
+4. Check the files to include. A folder checkbox selects its descendants; **All** selects or clears every file. Browsing a row does not change its checkbox. Checks survive refreshes and version switches, and missing files are removed from the selection. Click **Create version**, review the included files and the added, modified or omitted files compared with the previous version, and optionally add a note. Omitting a file from a version keeps its working copy. Zero checked files cannot create a version. This explicit save creates **rev1**, followed by **rev2** and later versions; unchanged content creates no extra version unless joining parallel heads.
 5. Use **Versions** to select a saved version, then **Copy to project** to copy exactly that version's files to a new destination. The copies are independently editable. Continue adding or editing working files and create another version without changing earlier versions.
 
 Dragging a folder anywhere in the panel opens **Import folder**. Choose a new Module/IP/Project or an existing entry with a writable working folder, check the incoming files to include, and choose **Copy** or **Move**. Set **Version** before importing (for example, `v1.0.0`), or leave it empty for the automatic `revN` name. **Import and archive** imports only the checked files and immediately saves that exact selection with the chosen version name. Names must be unique within the entry; importing identical files under a new name creates a separate version. The working set contains the latest imported selection together with files that have not yet been archived. Working files displays this set only when files were added or modified since the latest archive; otherwise the file area stays blank. Missing archived files alone, including machine-local lock files omitted during synchronization, do not expose unchanged files. A comparison error leaves the file area blank with an error notice until a successful check. Earlier imported files remain available through Versions and are retained on disk. Add files / Add folder can make an older file part of the working set again. Folder names and nested paths are retained. Copy keeps originals; Move removes each checked source only after the working copy and saved version verify. Unchecked or locked source files remain, and retained sources are reported. Cancel makes no changes. File conflicts never overwrite existing content.
@@ -19,13 +19,13 @@ Renaming a registered directory entry in Edit asset details also renames its wor
 Dropdown lists use compact rows. Click the text, empty area or arrow to open or close the list.
 
 **Working files** and **Versions** are separate tabs. The version table contains only
-saved snapshots, with **Version** and **Status: Archived** plus a lock. Double-click a file,
-press **Enter**, or use its open action to edit the original working file or open a
+saved snapshots, with **Version** and **Status: Archived** plus a lock. Double-click a file
+or use its open action to edit the original working file or open a
 verified read-only copy of an archived file. Secondary actions remain visible as
 outline icons with tooltips; errors and operation progress appear when needed.
 
 Working-file folders start collapsed. Explicitly expanded folders, the selected file and scroll position are remembered per IP and
-included in saved browser state. File additions, content changes and removals are checked in the background for the selected entry; editing outside the app updates the view automatically. Saving a clean version leaves the file area blank while retaining the original files. Parallel revision heads remain available for review and adoption. Saving a version or importing working files updates
+included in saved browser state. File additions, content changes and removals are checked in the background for the selected entry; editing outside the app updates the view automatically. Saving a clean version leaves the file area blank while retaining the original files. The Working files heading reports **No unarchived changes**, or the added, modified and missing file counts from the background comparison. An unavailable comparison is shown separately, not reported as clean. Missing files are compared with saved history even when the working folder is completely empty; a new empty asset instead reports **No working files · no saved versions**. A missing-only change keeps the file area blank and leaves saved versions available. Parallel revision heads remain available for review and adoption. Saving a version or importing working files updates
 that IP and its local search index without rescanning the whole catalog. External
 edits and synchronized changes refresh automatically after a short pause. Returning
 to the window checks for missed changes in the background. **Rescan** remains available
@@ -36,7 +36,7 @@ keeps the selected archived version, file and scroll position while they remain 
 Group names use a stronger, theme-aware text color and weight than their members. The filter button beside **Groups** toggles **Hide empty groups**, including groups with no members matching the current search or filters. It only changes visibility, retains every group and membership, and is included in saved browser state.
 
 Use **New group** beside **Groups** to create a group in the left tree. Drag an IP onto
-a group to add membership while retaining its existing groups. Right-click an IP to
+a group to move its membership from the original group. Hold Ctrl while dragging to add another association. Other existing associations are retained. Right-click an IP to
 add it to one or more groups or remove its membership. Right-click a group to rename
 or delete it. Empty groups persist, and group changes never move source files. Successful group changes update the tree without a persistent saved message; failures remain visible.
 Selecting a group lists all its IPs/modules in the detail pane; click an entry to open it.
@@ -48,9 +48,7 @@ terms such as `category:Communication tag:serial interface:"AXI4 Lite"`. Quote a
 value or phrase containing spaces. Category paths support parent browsing, e.g.
 Communication includes Communication/UART.
 
-While focus is in the catalog, **Ctrl+F** focuses search, **Ctrl+N** creates an IP,
-**Ctrl+Shift+N** creates a group, **Ctrl+S** saves a revision, and **F5** refreshes.
-**F2** renames the selected group in the tree; **Esc** clears the focused search field.
+Application functions use their visible buttons, menus and mouse actions. Native text editing (copy, paste, undo and selection), normal control navigation and dialog confirmation/cancellation remain available.
 
 Existing folders registered in place retain their relative file layout, including IP packages with
 `component.xml`. Hidden files/directories, links and generated build directories are
@@ -126,7 +124,7 @@ Folder selection, refresh, asset actions and reported issues have visible contro
 In **Versions**, select an archived version and click **Delete version**. The confirmation
 identifies the IP and version. You can also delete the last version: the IP, working files,
 groups and metadata remain, and you can create another version from the checked files.
-Double-click a version name, press **F2** while the version list is focused, or choose **Edit version** to rename an archived version (for example, `rev1` to `v1.0.0`). Names persist after refresh and reopening. Working files, saved contents, creation order and pinned references remain unchanged. Version names must be nonempty and distinct within the asset; referenced versions are edited in their owning library.
+Double-click a version name or choose **Edit version** to rename an archived version (for example, `rev1` to `v1.0.0`). Names persist after refresh and reopening. Working files, saved contents, creation order and pinned references remain unchanged. Version names must be nonempty and distinct within the asset; referenced versions are edited in their owning library.
 
 Deletion records hide removed versions after refresh or reopen; immutable history and shared
 content are retained for synchronization. Later versions keep increasing their numbers.
@@ -277,3 +275,5 @@ Original application code is licensed under [Apache-2.0](LICENSE); see [NOTICE](
 Third-party code, fonts and data retain their licenses in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 [Asset provenance](docs/ASSET-PROVENANCE.md) records the known sources and unresolved permissions.
 [Public-release review](docs/PUBLIC-RELEASE-REVIEW.md) lists the checks still required before publication.
+
+Library issues are grouped by verified catalog entry, with a short reason and impact, optional technical details, and **Recheck library**. Missing working sources can be relocated within the library or unregistered while retaining files and saved history. Broken references can locate their owner or remove the local reference. Relocation preserves the asset ID, groups and saved versions and rejects locations owned by another asset. Unidentified or damaged metadata is never deleted to dismiss a warning; it can be inspected and rechecked after recovery.

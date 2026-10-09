@@ -6,12 +6,17 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QLockFile>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QtTest>
 #include <QUuid>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <QScopeGuard>
+#endif
 using namespace xips;
 namespace
 {
@@ -57,8 +62,81 @@ class SnapshotTest : public QObject
     void catalogDefinitionsSupportMultipleIndexes();
     void referencesPinOneDefinitionAcrossLibrariesAndProjects();
     void groupsPersistWithoutChangingSourcesOrHistory();
+    void movingGroupMembershipIsRecoverable();
+    void relocatingSourceRetainsHistoryAndRejectsConflicts();
     void opensOriginalsAndReadOnlySavedFiles();
+    void workingPreviewDistinguishesEmptySetsAndExplicitSelection();
 };
+void SnapshotTest::workingPreviewDistinguishesEmptySetsAndExplicitSelection()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition; definition.name = "working_preview";
+    const auto created = SnapshotLibrary::create(library, definition);
+    QVERIFY2(created.ok, qPrintable(created.error));
+    const auto empty = SnapshotLibrary::previewWorking(created.asset);
+    QVERIFY2(empty.ok, qPrintable(empty.error));
+    QVERIFY(empty.preview.files.isEmpty()); QVERIFY(empty.preview.comparisonRevision.isEmpty());
+    QVERIFY(empty.preview.added.isEmpty()); QVERIFY(empty.preview.modified.isEmpty());
+    QVERIFY(empty.preview.removed.isEmpty());
+    QVERIFY(!SnapshotLibrary::previewSelected(created.asset, {}).ok);
+    QVERIFY(!SnapshotLibrary::saveSelected(created.asset, {}).ok);
+    QVERIFY(!SnapshotLibrary::saveCurrent(created.asset).ok);
+
+    put(created.asset.root + "/a.sv", "module a; endmodule");
+    put(created.asset.root + "/b.sv", "module b; endmodule");
+    const auto saved = SnapshotLibrary::saveCurrent(created.asset);
+    QVERIFY2(saved.ok, qPrintable(saved.error));
+    const auto manifest = saved.asset.historyRoot + "/.xips/revisions/" + saved.snapshot.id + ".json";
+    const auto metadata = saved.asset.historyRoot + "/.xips.json";
+    const auto manifestBytes = get(manifest), metadataBytes = get(metadata);
+    QVERIFY(!manifestBytes.isEmpty()); QVERIFY(!metadataBytes.isEmpty());
+    auto preview = SnapshotLibrary::previewWorking(saved.asset);
+    QVERIFY2(preview.ok, qPrintable(preview.error));
+    QCOMPARE(preview.preview.unchanged, 2);
+    QVERIFY(!preview.preview.comparisonRevision.isEmpty());
+    QVERIFY(preview.preview.added.isEmpty()); QVERIFY(preview.preview.modified.isEmpty());
+    QVERIFY(preview.preview.removed.isEmpty());
+    QVERIFY(!SnapshotLibrary::previewSelected(saved.asset, {}).ok);
+    QVERIFY(!SnapshotLibrary::saveSelected(saved.asset, {}).ok);
+
+    // Reuse the stale catalog value: the comparison must enumerate current source files.
+    QVERIFY(QFile::remove(saved.asset.root + "/a.sv"));
+    preview = SnapshotLibrary::previewWorking(saved.asset);
+    QVERIFY2(preview.ok, qPrintable(preview.error));
+    QCOMPARE(preview.preview.files, QStringList{"b.sv"});
+    QCOMPARE(preview.preview.removed, QStringList{"a.sv"});
+    QCOMPARE(preview.preview.unchanged, 1);
+    QVERIFY(QFile::remove(saved.asset.root + "/b.sv"));
+    QVERIFY(QDir(saved.asset.root).exists());
+    preview = SnapshotLibrary::previewWorking(saved.asset);
+    QVERIFY2(preview.ok, qPrintable(preview.error));
+    QVERIFY(preview.preview.files.isEmpty()); QVERIFY(preview.preview.objects.isEmpty());
+    QCOMPARE(preview.preview.removed, (QStringList{"a.sv", "b.sv"}));
+    QCOMPARE(preview.preview.unchanged, 0);
+    QVERIFY(!preview.preview.comparisonRevision.isEmpty());
+    QVERIFY(preview.preview.added.isEmpty()); QVERIFY(preview.preview.modified.isEmpty());
+    QVERIFY(!SnapshotLibrary::previewSelected(saved.asset, {}).ok);
+    QVERIFY(!SnapshotLibrary::saveSelected(saved.asset, {}).ok);
+    QVERIFY(!SnapshotLibrary::saveCurrent(saved.asset).ok);
+    QCOMPARE(get(manifest), manifestBytes); QCOMPARE(get(metadata), metadataBytes);
+    const auto verified = SnapshotLibrary::verifySnapshot(saved.asset, saved.snapshot.id);
+    QVERIFY2(verified.ok, qPrintable(verified.error));
+    QCOMPARE(verified.snapshot.files, saved.snapshot.files);
+    const auto exported = SnapshotLibrary::exportSnapshot(saved.asset, saved.snapshot.id, tmp.filePath("restored"));
+    QVERIFY2(exported.ok, qPrintable(exported.error));
+    QCOMPARE(get(tmp.filePath("restored/a.sv")), QByteArray("module a; endmodule"));
+    QCOMPARE(get(tmp.filePath("restored/b.sv")), QByteArray("module b; endmodule"));
+    put(saved.asset.root + "/a.sv", "module a; endmodule");
+    put(saved.asset.root + "/b.sv", "module b; endmodule");
+    preview = SnapshotLibrary::previewWorking(saved.asset);
+    QVERIFY2(preview.ok, qPrintable(preview.error));
+    QCOMPARE(preview.preview.unchanged, 2);
+    QVERIFY(preview.preview.added.isEmpty()); QVERIFY(preview.preview.modified.isEmpty());
+    QVERIFY(preview.preview.removed.isEmpty());
+    QCOMPARE(get(manifest), manifestBytes); QCOMPARE(get(metadata), metadataBytes);
+}
 void SnapshotTest::opensOriginalsAndReadOnlySavedFiles()
 {
     QTemporaryDir tmp;
@@ -718,6 +796,84 @@ void SnapshotTest::groupsPersistWithoutChangingSourcesOrHistory()
     QCOMPARE(get(asset.asset.historyRoot + "/.xips.json"), metadata);
     QCOMPARE(objectCount(library), objects);
     QVERIFY(SnapshotLibrary::verifySnapshot(asset.asset, asset.snapshot.id).ok);
+}
+void SnapshotTest::movingGroupMembershipIsRecoverable()
+{
+    QTemporaryDir tmp; const auto library = tmp.filePath("library"); QVERIFY(QDir().mkpath(library));
+    const auto a = CatalogGroups::create(library, "A").group;
+    const auto b = CatalogGroups::create(library, "B").group;
+    const auto c = CatalogGroups::create(library, "C").group;
+    const auto path = [&](const CatalogGroup &group) { return library + "/.xips/groups/" + group.id + ".json"; };
+    QVERIFY(CatalogGroups::setMember(library, a.id, "asset", true).ok);
+    QVERIFY(CatalogGroups::setMember(library, c.id, "asset", true).ok);
+    const auto originalA = get(path(a)), originalB = get(path(b)), originalC = get(path(c));
+    QLockFile lock(library + "/.xips/groups/.groups.lock"); QVERIFY(lock.tryLock(0));
+    QVERIFY(!CatalogGroups::moveMember(library, a.id, b.id, "asset").ok);
+    QCOMPARE(get(path(a)), originalA); QCOMPARE(get(path(b)), originalB); lock.unlock();
+    QVERIFY(!CatalogGroups::moveMember(library, a.id, a.id, "asset").ok);
+    QVERIFY(!CatalogGroups::moveMember(library, a.id, "../invalid", "asset").ok);
+    put(path(b), "{broken"); QVERIFY(!CatalogGroups::moveMember(library, a.id, b.id, "asset").ok);
+    QCOMPARE(get(path(a)), originalA); put(path(b), originalB);
+#ifdef Q_OS_WIN
+    const auto native = QDir::toNativeSeparators(path(a));
+    HANDLE handle = CreateFileW(reinterpret_cast<LPCWSTR>(native.utf16()), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(handle != INVALID_HANDLE_VALUE);
+    const auto close = qScopeGuard([&] { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); });
+    const auto failed = CatalogGroups::moveMember(library, a.id, b.id, "asset");
+    QVERIFY(!failed.ok); QCOMPARE(get(path(a)), originalA); QCOMPARE(get(path(b)), originalB);
+    CloseHandle(handle); handle = INVALID_HANDLE_VALUE;
+#endif
+    auto moved = CatalogGroups::moveMember(library, a.id, b.id, "ASSET"); QVERIFY2(moved.ok, qPrintable(moved.error));
+    QCOMPARE(moved.updatedGroups.size(), 2);
+    QCOMPARE(QJsonDocument::fromJson(get(path(a))).object()["members"].toArray().size(), 0);
+    QCOMPARE(QJsonDocument::fromJson(get(path(b))).object()["members"].toArray().size(), 1);
+    QCOMPARE(get(path(c)), originalC);
+    QVERIFY(!CatalogGroups::moveMember(library, a.id, c.id, "asset").ok); // stale drag
+    moved = CatalogGroups::moveMember(library, b.id, c.id, "asset"); QVERIFY(moved.ok); // already at destination
+    QCOMPARE(QJsonDocument::fromJson(get(path(b))).object()["members"].toArray().size(), 0);
+    QCOMPARE(get(path(c)), originalC);
+    QVERIFY(CatalogGroups::moveMember(library, {}, a.id, "asset").ok); // ungrouped entry
+}
+
+void SnapshotTest::relocatingSourceRetainsHistoryAndRejectsConflicts()
+{
+    QTemporaryDir tmp; const auto library = tmp.filePath("library"), receiver = tmp.filePath("receiver");
+    QVERIFY(QDir().mkpath(library) && QDir().mkpath(receiver));
+    CatalogDefinition definition; definition.name = "uart";
+    const auto saved = savedCatalogFixture(library, definition); QVERIFY(saved.ok);
+    const auto group = CatalogGroups::create(library, "Bus"); QVERIFY(group.ok);
+    QVERIFY(CatalogGroups::setMember(library, group.group.id, saved.asset.id, true).ok);
+    QVERIFY(SnapshotLibrary::addReference(saved.asset, saved.snapshot.id, receiver).ok);
+    const auto manifest = saved.asset.historyRoot + "/.xips/revisions/" + saved.snapshot.id + ".json";
+    const auto manifestBytes = get(manifest), metadata = get(saved.asset.historyRoot + "/.xips.json");
+    const auto newRoot = library + "/relocated uart";
+    QVERIFY(QDir().rename(saved.asset.root, newRoot));
+    const auto missing = SnapshotLibrary::describe(saved.asset); QVERIFY(missing.ok);
+    QVERIFY(!missing.asset.sourceProblem.isEmpty());
+    QVERIFY(!SnapshotLibrary::relocateSource(missing.asset, receiver).ok);
+    QVERIFY(!SnapshotLibrary::relocateSource(missing.asset, library + "/.xips").ok);
+    QVERIFY(!SnapshotLibrary::relocateSource(missing.asset, newRoot + "/rtl/uart.sv").ok);
+    definition.name = "occupied"; const auto occupied = savedCatalogFixture(library, definition); QVERIFY(occupied.ok);
+    QVERIFY(!SnapshotLibrary::relocateSource(missing.asset, occupied.asset.root).ok);
+    QCOMPARE(get(saved.asset.historyRoot + "/.xips.json"), metadata);
+    QLockFile lock(library + "/.xips-library.lock"); QVERIFY(lock.tryLock(0));
+    QVERIFY(!SnapshotLibrary::relocateSource(missing.asset, newRoot).ok); lock.unlock();
+    const auto relocated = SnapshotLibrary::relocateSource(missing.asset, newRoot);
+    QVERIFY2(relocated.ok, qPrintable(relocated.error));
+    QCOMPARE(relocated.asset.id, saved.asset.id); QCOMPARE(relocated.asset.root, newRoot);
+    QCOMPARE(relocated.asset.historyRoot, saved.asset.historyRoot); QVERIFY(relocated.asset.sourceProblem.isEmpty());
+    QCOMPARE(relocated.asset.document["source"].toObject()["path"].toString(), QString("relocated uart"));
+    QCOMPARE(get(manifest), manifestBytes);
+    QCOMPARE(CatalogGroups::scan(library).groups.first().members, QStringList{saved.asset.id});
+    QVERIFY(SnapshotLibrary::verifySnapshot(relocated.asset, saved.snapshot.id).ok);
+    const auto reference = SnapshotLibrary::scan(receiver); QCOMPARE(reference.assets.size(), 1);
+    QVERIFY(SnapshotLibrary::verifySnapshot(reference.assets.first(), saved.snapshot.id).ok);
+    QVERIFY(!SnapshotLibrary::relocateSource(missing.asset, newRoot).ok); // stale metadata
+    const auto catalog = SnapshotLibrary::scan(library); QVERIFY(catalog.problems.isEmpty());
+    QCOMPARE(catalog.assets.size(), 2);
+    const auto preview = SnapshotLibrary::previewSelected(relocated.asset, relocated.asset.workingFiles);
+    QVERIFY(preview.ok && preview.preview.added.isEmpty() && preview.preview.modified.isEmpty());
 }
 QTEST_GUILESS_MAIN(SnapshotTest)
 #include "tst_snapshots.moc"

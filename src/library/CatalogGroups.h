@@ -22,6 +22,7 @@ struct GroupResult
     bool removed = false;
     QString error;
     CatalogGroup group;
+    QList<CatalogGroup> updatedGroups;
 };
 class CatalogGroups
 {
@@ -30,6 +31,8 @@ class CatalogGroups
     static GroupResult create(const QString &library, const QString &name);
     static GroupResult rename(const QString &library, const QString &id, const QString &name);
     static GroupResult setMember(const QString &library, const QString &id, const QString &assetId, bool included);
+    static GroupResult moveMember(const QString &library, const QString &sourceId,
+                                  const QString &targetId, const QString &assetId);
     static GroupResult erase(const QString &library, const QString &id);
 };
 }

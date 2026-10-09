@@ -63,6 +63,22 @@ CatalogGroup decode(const QByteArray &bytes, const QString &id)
     }
     return group;
 }
+QByteArray encode(const CatalogGroup &group)
+{
+    return QJsonDocument(QJsonObject{{"schema", "xips.group/v1"}, {"id", group.id},
+        {"name", group.name}, {"members", QJsonArray::fromStringList(group.members)}}).toJson();
+}
+void writeGroup(const QString &path, const QByteArray &value, const QByteArray &expected)
+{
+    require(read(path) == expected, QStringLiteral("Group changed elsewhere. Refresh and try again."));
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    require(file.open(QIODevice::WriteOnly) && file.write(value) == value.size(),
+            QStringLiteral("Cannot save group."));
+    require(read(path) == expected, QStringLiteral("Group changed elsewhere. Refresh and try again."));
+    ContentStore::safePath(path);
+    require(file.commit(), QStringLiteral("Cannot save group."));
+}
 GroupResult change(const QString &library, const QString &id,
                    const std::function<void(CatalogGroup &)> &edit, bool erase = false)
 {
@@ -97,8 +113,7 @@ GroupResult change(const QString &library, const QString &id,
             require(QFile::remove(path), QStringLiteral("Cannot remove group."));
         else
         {
-            const auto bytes = QJsonDocument(QJsonObject{{"schema", "xips.group/v1"}, {"id", group.id},
-                {"name", group.name}, {"members", QJsonArray::fromStringList(group.members)}}).toJson();
+            const auto bytes = encode(group);
             QSaveFile file(path);
             file.setDirectWriteFallback(false);
             require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(),
@@ -157,6 +172,51 @@ GroupResult CatalogGroups::setMember(const QString &library, const QString &id, 
             { return value.compare(assetId, Qt::CaseInsensitive) == 0; }), group.members.end());
         if (included) group.members.append(assetId);
     });
+}
+GroupResult CatalogGroups::moveMember(const QString &library, const QString &sourceId,
+                                      const QString &targetId, const QString &assetId)
+{
+    if (sourceId.isEmpty()) return setMember(library, targetId, assetId, true);
+    GroupResult result;
+    try
+    {
+        require(sourceId != targetId, QStringLiteral("Choose another group."));
+        require(!assetId.isEmpty() && assetId.size() <= 512, QStringLiteral("Invalid asset ID."));
+        const auto root = directory(library);
+        const auto sourcePath = filePath(root, sourceId), targetPath = filePath(root, targetId);
+        const auto lockPath = QDir(root).filePath(".groups.lock");
+        ContentStore::safePath(lockPath);
+        QLockFile lock(lockPath);
+        require(lock.tryLock(0), QStringLiteral("Groups are busy. Try again."));
+        const auto sourceBytes = read(sourcePath), targetBytes = read(targetPath);
+        auto source = decode(sourceBytes, sourceId), target = decode(targetBytes, targetId);
+        require(source.members.contains(assetId, Qt::CaseInsensitive),
+                QStringLiteral("Source membership changed. Refresh and try again."));
+        source.members.removeIf([&](const auto &id) { return id.compare(assetId, Qt::CaseInsensitive) == 0; });
+        const bool addTarget = !target.members.contains(assetId, Qt::CaseInsensitive);
+        if (addTarget) target.members.append(assetId);
+        const auto updatedTarget = encode(target);
+        require(read(sourcePath) == sourceBytes && read(targetPath) == targetBytes,
+                QStringLiteral("Group changed elsewhere. Refresh and try again."));
+        // Publish the destination first so interruption cannot lose the association.
+        if (addTarget) writeGroup(targetPath, updatedTarget, targetBytes);
+        try { writeGroup(sourcePath, encode(source), sourceBytes); }
+        catch (...)
+        {
+            if (addTarget)
+                try { writeGroup(targetPath, targetBytes, updatedTarget); }
+                catch (...)
+                {
+                    throw std::runtime_error("Move incomplete; the destination association was retained. Refresh and inspect both groups.");
+                }
+            throw;
+        }
+        result.ok = true;
+        result.group = target;
+        result.updatedGroups = {source, target};
+    }
+    catch (const std::exception &error) { result.error = QString::fromUtf8(error.what()); }
+    return result;
 }
 GroupResult CatalogGroups::erase(const QString &library, const QString &id)
 {

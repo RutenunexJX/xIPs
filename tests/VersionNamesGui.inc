@@ -48,7 +48,7 @@ void GuiSmokeTest::archivedVersionNamesCanBeEdited()
     QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("v1.0.0"));
     edit("v1.1");
     panel.activateWindow(); versions->setFocus(); QTest::qWait(30);
-    QTest::keyClick(versions, Qt::Key_F2);
+    button->click();
     QTRY_COMPARE(versions->model()->index(0, 0).data().toString(), QString("v1.1"));
     QTRY_VERIFY(!panel.isCatalogBusy());
     const auto savedState = panel.saveState();
