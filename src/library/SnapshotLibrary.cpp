@@ -641,7 +641,7 @@ CatalogAsset currentSource(const CatalogAsset &asset)
     auto result = discoveredAsset(asset.root, asset.library, asset.category, working, asset.sourceIsDirectory);
     if (!asset.historyRoot.isEmpty())
         result = attachHistory(history, &result);
-    require(result.id == asset.id && (!result.workingFiles.isEmpty() || history.document.contains("workingArea")),
+    require(result.id == asset.id && (!result.workingFiles.isEmpty() || !asset.historyRoot.isEmpty()),
             QStringLiteral("The source has changed. Rescan the folder."));
     return result;
 }
@@ -827,7 +827,9 @@ QString sourceHistoryRoot(const QString &library, const QString &source, bool di
         ((directory ? "directory:" : "file:") + identity).toUtf8()).toString(QUuid::WithoutBraces);
     const auto histories = child(library, ".xips/assets");
     safePath(histories);
-    QString found;
+    QString active;
+    QMap<QString, QString> retired;
+    QSet<QString> replaced;
     for (const auto &entry : QDir(histories).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
     {
         OperationScope::checkpoint();
@@ -835,14 +837,30 @@ QString sourceHistoryRoot(const QString &library, const QString &source, bool di
         try { document = readJson(child(entry.absoluteFilePath(), ".xips.json")); }
         catch (const OperationCancelled &) { throw; }
         catch (...) { continue; }
+        const auto predecessor = document.value("replacesSourceId").toString();
+        if (!predecessor.isEmpty()) replaced.insert(predecessor);
         const auto location = document.value("source").toObject();
         auto registered = location.value("path").toString();
 #ifdef Q_OS_WIN
         registered = registered.toCaseFolded();
 #endif
         if (registered != identity || location.value("directory").toBool() != directory) continue;
+        if (document.value("registered") == false)
+            retired.insert(entry.absoluteFilePath(), document.value("id").toString());
+        else
+        {
+            require(active.isEmpty(), QStringLiteral("Conflicting source histories: %1").arg(source));
+            active = entry.absoluteFilePath();
+        }
+    }
+    if (!active.isEmpty()) return active;
+    QString found;
+    for (auto it = retired.cbegin(); it != retired.cend(); ++it)
+    {
+        // A new entry can reuse a deleted working path without reviving its predecessor.
+        if (replaced.contains(it.value())) continue;
         require(found.isEmpty(), QStringLiteral("Conflicting source histories: %1").arg(source));
-        found = entry.absoluteFilePath();
+        found = it.key();
     }
     if (!found.isEmpty()) return found;
     const auto original = child(histories, key);
@@ -1643,18 +1661,22 @@ SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefi
         }
         const auto relative = QDir(library).relativeFilePath(source);
         require(!relative.toCaseFolded().split('/').contains(".xips"), QStringLiteral("Choose source files outside catalog metadata."));
-        const auto destination = sourceHistoryRoot(library, source, directory);
-        const bool existing = QFileInfo::exists(destination);
-        auto document = existing ? load(destination, library).document : newDocument(unique({}), definition.name, definition.category);
+        auto destination = sourceHistoryRoot(library, source, directory);
+        const auto previous = QFileInfo::exists(destination) ? load(destination, library) : CatalogAsset{};
+        require(previous.id.isEmpty() || previous.document.value("registered") == false,
+                QStringLiteral("This source is already registered in the catalog."));
+        const bool existing = !managed && !previous.id.isEmpty();
+        if (managed && !previous.id.isEmpty())
+            destination = child(QFileInfo(destination).absolutePath(), unique({}));
+        auto document = existing ? previous.document : newDocument(unique({}), definition.name, definition.category);
         const auto originalDocument = document;
-        if (existing) healthyHistory(load(destination, library));
-        require(!existing || document.value("registered") == false, QStringLiteral("This source is already registered in the catalog."));
+        if (existing) healthyHistory(previous);
+        if (managed && !previous.id.isEmpty()) document.insert("replacesSourceId", previous.id);
         for (auto it = metadata.begin(); it != metadata.end(); ++it) document.insert(it.key(), it.value());
         document.insert("source", QJsonObject{{"path", relative}, {"directory", directory}});
         if (!existing) document.insert("workingArea", managed ? "managed" : "linked");
         if (!existing && managed) document.insert("inactiveWorkingFiles", QJsonArray{});
         document.insert("registered", true);
-        require(!request || !existing, QStringLiteral("A previous entry uses this working path. Choose another name."));
         QMap<QString, InputFile> planned;
         if (request)
         {
@@ -1911,6 +1933,7 @@ SnapshotResult SnapshotLibrary::setDefinition(const CatalogAsset &asset, const C
                 try { other = readJson(child(entry.absoluteFilePath(), ".xips.json")); }
                 catch (const OperationCancelled &) { throw; }
                 catch (...) { continue; }
+                if (other.value("registered") == false) continue;
                 const auto relative = other.value("source").toObject().value("path").toString();
                 require(relative.isEmpty() || !files::isWithin(child(asset.library, relative), asset.root),
                         QStringLiteral("This folder contains another registered source."));

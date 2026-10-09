@@ -20,11 +20,13 @@
 #include <QContextMenuEvent>
 #include <QAbstractItemModelTester>
 #include <QDir>
+#include <QDirIterator>
 #include <QDesktopServices>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QFile>
+#include <QLockFile>
 #include <QFileSystemModel>
 #include <QFontDatabase>
 #include <QMenu>
@@ -47,6 +49,10 @@
 #include <QVBoxLayout>
 #include <QtTest>
 #include <memory>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <QScopeGuard>
+#endif
 using namespace xips;
 class FileOpenCapture : public QObject
 {
@@ -90,6 +96,8 @@ class GuiSmokeTest : public QObject
     void emptyIpImportCheckAndCreateVersions();
     void workingCheckboxStatesStayVisible();
     void workingFilesOnlyShowUnarchivedChanges();
+    void archivedFolderRemainsBlankAfterVersionChanges();
+    void unreadableWorkingFilesStayHiddenUntilChecked();
     void archivedVersionsCanBeDeleted();
     void archivedVersionNamesCanBeEdited();
     void externalDropsReachEveryWorkingArea();
@@ -1015,6 +1023,22 @@ void GuiSmokeTest::draggingAddsMembershipWithoutMovingSources()
     QVERIFY(source.open(QIODevice::ReadOnly));
     QCOMPARE(source.readAll(), original);
     QVERIFY(SnapshotLibrary::verifySnapshot(asset.asset, asset.snapshot.id).ok);
+    auto *notice = panel.findChild<ElaText *>("browserNotice");
+    QVERIFY(notice->toolTip().isEmpty());
+    const auto blocked = CatalogGroups::create(library, "Blocked"); QVERIFY(blocked.ok);
+    panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy());
+    const auto blockedTarget = model->indexForId({}, blocked.group.id);
+    QLockFile lock(library + "/.xips/groups/.groups.lock"); QVERIFY(lock.tryLock(0));
+    QVERIFY(model->dropMimeData(payload.get(), Qt::CopyAction, -1, -1, blockedTarget));
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QVERIFY(notice->property("error").toBool());
+    QVERIFY(notice->toolTip().contains("Groups are busy"));
+    QCOMPARE(model->rowCount(blockedTarget), 0);
+    lock.unlock();
+    QVERIFY(model->dropMimeData(payload.get(), Qt::CopyAction, -1, -1, blockedTarget));
+    QTRY_VERIFY(!panel.isCatalogBusy());
+    QVERIFY(notice->toolTip().isEmpty());
+    QCOMPARE(model->rowCount(model->indexForId({}, blocked.group.id)), 1);
 }
 void GuiSmokeTest::keyboardActionsStayWithinTheCatalog()
 {

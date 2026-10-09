@@ -1777,7 +1777,7 @@ void BrowserPanel::selectCurrent()
     {
         if (m_detailOperation) m_detailOperation->cancel();
         m_loadingDetails = false;
-        showDetails(asset);
+        showDetails(asset, asset.historyIncomplete || !asset.sourceProblem.isEmpty());
         updateActivity();
         return;
     }
@@ -1825,11 +1825,12 @@ void BrowserPanel::readDetails(const CatalogAsset &asset)
                     m_loadingDetails = false;
                     if (!result.ok)
                     {
-                        showDetails(asset);
+                        showDetails(asset, true);
                         if (!result.cancelled) notice(result.error, true);
                     }
                     else
-                        showDetails(result.asset, result.unchanged);
+                        showDetails(result.asset, result.unchanged || result.asset.historyIncomplete ||
+                                                     !result.asset.sourceProblem.isEmpty());
                 }
                 if (m_pendingDetail)
                 {
@@ -1850,7 +1851,7 @@ void BrowserPanel::readDetails(const CatalogAsset &asset)
         auto result = SnapshotLibrary::previewSelected(asset, asset.workingFiles);
         if (result.ok)
             result.unchanged = result.preview.added.isEmpty() && result.preview.modified.isEmpty() &&
-                               result.preview.removed.isEmpty() && result.preview.heads.size() <= 1;
+                               result.preview.heads.size() <= 1;
         return result;
     }));
 }
@@ -2256,6 +2257,7 @@ void BrowserPanel::refreshIndexes()
 void BrowserPanel::runGroup(std::function<GroupResult()> work, const QString &selectedAsset)
 {
     if (m_busy) return;
+    if (m_detailOperation) m_detailOperation->cancel();
     ++m_generation;
     m_pendingDetail.reset();
     m_loadingDetails = false;
@@ -2282,8 +2284,6 @@ void BrowserPanel::runGroup(std::function<GroupResult()> work, const QString &se
         if (result.removed) m_collapsedGroups.remove(result.group.id);
         else m_collapsedGroups.remove(m_activeGroup);
         filter();
-        notice(result.removed ? QStringLiteral("Group removed. IPs and source files are unchanged.")
-                              : QStringLiteral("Group saved: %1").arg(result.group.name));
     });
     watcher->setFuture(QtConcurrent::run(std::move(work)));
 }

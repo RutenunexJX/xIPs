@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.13.1 — 2026-10-09
+
+- Give newly recreated Module/IP/Project entries independent identities, versions and group memberships while preserving old archived owners and pinned references; explicit source re-registration still restores its own history.
+- Keep legacy registered empty folders available without a false source-changed warning.
+- Remove persistent group-saved notices after successful drag/drop or group edits, retain failures, and cancel obsolete working-file checks before group changes.
+- Keep Working files blank when only archived paths are missing, including machine-local lock files omitted on a synchronized computer, and when the content comparison cannot complete. Added or modified files still reveal the current working set; verified across different drive letters.
+
 ## 2.13.0 — 2026-10-08
 
 - Start Working files with folders collapsed and preserve explicitly expanded folders in browser state.

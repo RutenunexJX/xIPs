@@ -12,7 +12,7 @@ It stays outside the selected library, is rebuilt on Rescan and is never authori
 A corrupt cache is recreated; unavailable or busy caches fall back to the in-memory catalog.
 Each connection belongs to its calling thread. Test builds accept `XIPS_TEST_CACHE_ROOT`.
 
-The browser separately compares only the selected entry's working files with the latest archive through the existing payload-preview service. This cancellable background read detects content changes without writing the library or changing the catalog scan/index contract. A clean working set is hidden from the file area; pending additions, changes, removals or parallel revision heads expose the current set. Expanded working folders and the hide-empty-groups preference belong to saved browser state, not asset or group metadata.
+The browser separately compares only the selected entry's working files with the latest archive through the existing payload-preview service. This cancellable background read detects content changes without writing the library or changing the catalog scan/index contract. The file area stays blank unless additions, modifications or parallel revision heads need attention. Missing archived paths alone (for example machine-local lock files omitted on another computer) do not expose unchanged files. Failed reads and incomplete history also keep the working area blank while reporting the problem; successful retries can reveal real edits. Comparisons use relative paths and content hashes, independent of drive letters. Expanded working folders and the hide-empty-groups preference belong to saved browser state, not asset or group metadata.
 
 ## Schema 3 asset metadata
 
@@ -50,8 +50,14 @@ Managed working areas may include an `inactiveWorkingFiles` array of normalized 
 Older managed entries without this field infer retired files only when healthy, single-head history consists of separate top-level version folders. This read-only compatibility view keeps files in the latest folder and unarchived paths visible. Linked source folders and ordinary multi-file histories retain their full working view. No source content is deleted or hashed during enumeration.
 
 Registered source metadata can include `registered: false`. Scans omit that registration
-but retain all source/history/group records. Registering the same source reactivates
-its existing identity. References can still read its saved history.
+but retain all source/history/group records. Explicitly registering the same source
+reactivates its existing identity. Creating a new entry at a deleted working path
+instead allocates a new identity and history folder, without inheriting versions
+or group memberships. Its optional `replacesSourceId` records the retired identity;
+source lookup ignores superseded, unregistered identities even after repeated
+delete/create cycles. Old metadata and pinned history references remain intact.
+An existing registered folder may be empty, including legacy registrations without
+`workingArea`; only an unavailable or invalid source produces a source warning.
 
 Index values are many-to-many metadata, independent of physical directories.
 SQLite stores normalized facet rows and rebuilds them from these definitions.

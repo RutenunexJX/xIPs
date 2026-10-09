@@ -692,7 +692,9 @@ class WorkflowTest : public QObject
         QVERIFY(QFile::remove(source));
         catalog = SnapshotLibrary::scan(lib);
         QCOMPARE(catalog.assets.size(), 1);
-        QVERIFY(!catalog.assets.first().sourceProblem.isEmpty());
+        QVERIFY(catalog.assets.first().sourceProblem.isEmpty());
+        QVERIFY(catalog.problems.isEmpty());
+        QVERIFY(catalog.assets.first().workingFiles.isEmpty());
         QCOMPARE(catalog.assets.first().snapshots.size(), 2);
         QVERIFY(SnapshotLibrary::exportSnapshot(catalog.assets.first(), second.snapshot.id,
                                                 tmp.filePath("empty-source.sv"))
@@ -752,6 +754,99 @@ class WorkflowTest : public QObject
         auto unchanged = SnapshotLibrary::saveCurrent(first.asset, {}, &save.preview);
         QVERIFY(unchanged.ok && unchanged.unchanged);
         QCOMPARE(SnapshotLibrary::scan(first.asset.library).assets.first().snapshots.size(), count);
+    }
+    void recreatedEntriesDoNotInheritRetiredIdentity_data()
+    {
+        QTest::addColumn<QString>("category");
+        QTest::addColumn<bool>("importing");
+        for (const auto &category : QStringList{"module", "ip", "project"})
+            for (bool importing : {false, true})
+                QTest::newRow(qPrintable(category + (importing ? "-import" : "-empty"))) << category << importing;
+    }
+    void recreatedEntriesDoNotInheritRetiredIdentity()
+    {
+        QFETCH(QString, category); QFETCH(bool, importing);
+        QTemporaryDir tmp; const auto library = tmp.filePath("library");
+        QVERIFY(QDir().mkpath(library));
+        CatalogDefinition definition; definition.name = "recreated"; definition.category = category;
+        auto old = savedCatalogFixture(library, definition); QVERIFY(old.ok);
+        const auto group = CatalogGroups::create(library, "Previous"); QVERIFY(group.ok);
+        const auto receiver = tmp.filePath("receiver"); QVERIFY(QDir().mkpath(receiver));
+        QVERIFY(SnapshotLibrary::addReference(old.asset, old.snapshot.id, receiver).ok);
+        const auto originalRevision = old.snapshot.id;
+        ImportRequest request; request.sources = {tmp.filePath("imported")}; request.version = "1.1";
+        put(request.sources.first() + "/top.sv", "new content");
+        request.selection = SnapshotLibrary::previewImport(request.sources).preview;
+        for (int cycle = 0; cycle < 3; ++cycle)
+        {
+            QVERIFY(CatalogGroups::setMember(library, group.group.id, old.asset.id, true).ok);
+            const auto groups = CatalogGroups::scan(library).groups;
+            QVERIFY(SnapshotLibrary::unregisterSource(old.asset).ok);
+            const auto oldPath = old.asset.historyRoot + "/.xips.json";
+            const auto retiredMetadata = get(oldPath);
+            QVERIFY(QDir(old.asset.root).removeRecursively());
+            if (importing)
+            {
+                auto stale = request; stale.selection.files.append("missing.sv");
+                QVERIFY(!SnapshotLibrary::create(library, definition, &stale).ok);
+                QCOMPARE(get(oldPath), retiredMetadata);
+                QVERIFY(!QFileInfo::exists(old.asset.root));
+            }
+            auto fresh = SnapshotLibrary::create(library, definition, importing ? &request : nullptr);
+            QVERIFY2(fresh.ok, qPrintable(fresh.error));
+            QCOMPARE(fresh.asset.root, old.asset.root);
+            QVERIFY(fresh.asset.id != old.asset.id);
+            QVERIFY(fresh.asset.historyRoot != old.asset.historyRoot);
+            QCOMPARE(get(oldPath), retiredMetadata);
+            QCOMPARE(CatalogGroups::scan(library).groups, groups);
+            QVERIFY(!groups.first().members.contains(fresh.asset.id));
+            QCOMPARE(SnapshotLibrary::heads(fresh.asset).size(), importing ? 1 : 0);
+            const auto catalog = SnapshotLibrary::scan(library);
+            QVERIFY2(catalog.problems.isEmpty(), qPrintable(catalog.problems.join('\n')));
+            QCOMPARE(catalog.assets.size(), 1);
+            QCOMPARE(catalog.assets.first().id, fresh.asset.id);
+            const auto pinned = SnapshotLibrary::scan(receiver);
+            QVERIFY(pinned.problems.isEmpty()); QCOMPARE(pinned.assets.size(), 1);
+            QVERIFY(SnapshotLibrary::verifySnapshot(pinned.assets.first(), originalRevision).ok);
+            QVERIFY(SnapshotLibrary::unregisterSource(fresh.asset).ok);
+            auto registration = definition; registration.source = fresh.asset.root;
+            auto restored = SnapshotLibrary::create(library, registration);
+            QVERIFY2(restored.ok, qPrintable(restored.error));
+            QCOMPARE(restored.asset.id, fresh.asset.id);
+            QCOMPARE(restored.asset.historyRoot, fresh.asset.historyRoot);
+            auto rename = definition; rename.name = "renamed";
+            auto renamed = SnapshotLibrary::setDefinition(restored.asset, rename);
+            QVERIFY2(renamed.ok, qPrintable(renamed.error));
+            renamed = SnapshotLibrary::setDefinition(renamed.asset, definition);
+            QVERIFY2(renamed.ok, qPrintable(renamed.error));
+            old = renamed;
+        }
+        // Deleting only the source folder must not create a second active registration.
+        QVERIFY(QDir(old.asset.root).removeRecursively());
+        const auto activeMetadata = get(old.asset.historyRoot + "/.xips.json");
+        QVERIFY(!SnapshotLibrary::create(library, definition).ok);
+        QCOMPARE(get(old.asset.historyRoot + "/.xips.json"), activeMetadata);
+        QVERIFY(!QFileInfo::exists(old.asset.root));
+    }
+    void legacyRegisteredEmptyFolderIsAvailable()
+    {
+        QTemporaryDir tmp; const auto first = create(tmp.filePath("library")); QVERIFY(first.ok);
+        const auto path = first.asset.historyRoot + "/.xips.json";
+        const auto metadata = get(path);
+        QVERIFY(!first.asset.document.contains("workingArea"));
+        QVERIFY(QDir(first.asset.root).removeRecursively());
+        QVERIFY(QDir().mkpath(first.asset.root));
+        auto scan = SnapshotLibrary::scan(first.asset.library);
+        QVERIFY2(scan.problems.isEmpty(), qPrintable(scan.problems.join('\n')));
+        QCOMPARE(scan.assets.size(), 1); QVERIFY(scan.assets.first().workingFiles.isEmpty());
+        QVERIFY(scan.assets.first().sourceProblem.isEmpty());
+        QCOMPARE(scan.assets.first().id, first.asset.id); QCOMPARE(get(path), metadata);
+        QVERIFY(SnapshotLibrary::verifySnapshot(scan.assets.first(), first.snapshot.id).ok);
+        QVERIFY(QDir().rmdir(first.asset.root));
+        scan = SnapshotLibrary::scan(first.asset.library);
+        QVERIFY(!scan.assets.first().sourceProblem.isEmpty());
+        QVERIFY(!scan.problems.isEmpty()); QCOMPARE(get(path), metadata);
+        QVERIFY(SnapshotLibrary::verifySnapshot(scan.assets.first(), first.snapshot.id).ok);
     }
     void unregisterReregisterAndReferenceLifecycle()
     {
