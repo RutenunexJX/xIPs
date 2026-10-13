@@ -181,3 +181,9 @@ structured errors. No suite action writes the library or materializes files.
 The **AppSuite/Apps/xIPs/** component contains its own Qt/Ela dependencies,
 **xips.exe**, **xips-cli.exe**, **xips-browser.dll**, **xips-browser-impl.dll**, **XipsEla.dll**, and
 **assets/icons/xips-256.png**. The Windows executable embeds **xips.ico**.
+
+
+The additive `hdl-commands-v1` capability supplies a cached, source-validated HDL
+command catalog and explicit package Use flow. Deploy `xips-hdl-check.exe` and its
+notices with the native component. The ABI remains v1; see
+[HDL commands](hdl-commands.md) for invokables, receipts and typed signal adapters.

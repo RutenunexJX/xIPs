@@ -10,6 +10,9 @@ add_library(xips_core STATIC
     library/AssetScanner.h
     library/FileSystemUtil.cpp
     library/FileSystemUtil.h
+    library/HdlCommands.cpp
+    library/HdlCommands.h
+    ${CMAKE_SOURCE_DIR}/assets/hdl/xips_hdl.qrc
     library/SnapshotLibrary.cpp
     library/SnapshotLibrary.h
     library/ContentStore.cpp
@@ -34,6 +37,8 @@ add_library(xips_app STATIC
     app/Branding.cpp
     app/Branding.h
     ${CMAKE_SOURCE_DIR}/assets/xips.qrc
+    app/BrowserHdlCommands.cpp
+    app/BrowserForms.h
     app/BrowserPanel.cpp
     app/BrowserPanel.h
     app/ElaFilePicker.cpp
@@ -102,3 +107,14 @@ install(FILES ${CMAKE_SOURCE_DIR}/assets/icons/xips-256.png ${CMAKE_SOURCE_DIR}/
     DESTINATION ${CMAKE_INSTALL_BINDIR}/assets/icons)
 
 install(FILES ${CMAKE_SOURCE_DIR}/xips-native-runtime.json DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+add_executable(xips-hdl-check hdl/CheckMain.cpp)
+target_compile_definitions(xips-hdl-check PRIVATE QT_NO_KEYWORDS)
+target_link_libraries(xips-hdl-check PRIVATE Qt6::Core slang::slang)
+set_target_properties(xips-hdl-check PROPERTIES AUTOMOC OFF AUTORCC OFF)
+if(MINGW)
+    target_compile_options(xips-hdl-check PRIVATE -Wa,-mbig-obj)
+endif()
+install(TARGETS xips-hdl-check RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+add_dependencies(xips xips-hdl-check)
+add_dependencies(xips_browser_impl xips-hdl-check)

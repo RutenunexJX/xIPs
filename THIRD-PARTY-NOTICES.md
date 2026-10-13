@@ -34,3 +34,12 @@ commit 129479a23beaf23c2eeff9470432f7135a7d1f22. See docs/PROJECT-ARCHIVE.md
 for scope and provenance. Its Windows helper is unmodified 7-Zip Extra 26.03
 7za.exe. The helper's original notices and matching source archive are included
 under licenses/7zip; source materials are retained in thirdparty/7zip.
+
+
+The HDL semantic helper statically links Slang 10.0 (MIT), pinned to
+ace09c5d7c9f4e28eed654d2f353c6dc792ebf67, and fmt 12.1.0 (MIT), pinned to
+407c905e45ad75fc29bf0f9bb7c5c2fd3475976f. Slang's vendored boost_unordered and
+expected-lite retain the Boost Software License 1.0. Their license texts and
+source copyright notices are collected into build/hdl-licenses at configure
+time and carried into licenses/slang and licenses/fmt in an application package.
+Slang threads, mimalloc and cpptrace dependencies are disabled for this helper.

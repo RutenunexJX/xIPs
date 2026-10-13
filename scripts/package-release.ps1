@@ -49,12 +49,16 @@ if ($Standalone) {
     $suiteSdkVersion = $suiteVersionMatch.Groups[1].Value
 }
 $binaryRoot = Join-Path $buildRoot 'bin'
-$binaries = @('xips.exe', 'xips-cli.exe', 'xips-browser.dll', 'xips-browser-impl.dll', 'XipsEla.dll')
+$binaries = @('xips.exe', 'xips-cli.exe', 'xips-browser.dll', 'xips-browser-impl.dll', 'XipsEla.dll', 'xips-hdl-check.exe')
 foreach ($name in $binaries) {
     if (-not (Test-Path -LiteralPath (Join-Path $binaryRoot $name) -PathType Leaf)) { throw "Missing $name" }
 }
 if ((Get-Item -LiteralPath (Join-Path $binaryRoot 'xips.exe')).VersionInfo.ProductVersion -ne $version) {
     throw 'Executable version differs from the source version.'
+}
+$hdlNotices = Join-Path $buildRoot 'hdl-licenses'
+if (-not (Test-Path -LiteralPath (Join-Path $hdlNotices 'slang/NOTICE.txt') -PathType Leaf)) {
+    throw 'Missing HDL semantic dependency notices; reconfigure this build.'
 }
 New-Item -ItemType Directory -Path $outputRoot | Out-Null
 foreach ($name in $binaries) {
@@ -73,6 +77,9 @@ foreach ($name in @('libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dl
 $icons = Join-Path $outputRoot 'assets/icons'
 $licenses = Join-Path $outputRoot 'licenses'
 New-Item -ItemType Directory -Path $icons, $licenses | Out-Null
+foreach ($dependency in @('slang', 'fmt')) {
+    Copy-Item -LiteralPath (Join-Path $hdlNotices $dependency) -Destination (Join-Path $licenses $dependency) -Recurse
+}
 foreach ($name in @('xips.ico', 'xips-256.png', 'DESIGN.md')) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot "assets/icons/$name") -Destination $icons
 }

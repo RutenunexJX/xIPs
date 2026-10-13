@@ -54,3 +54,14 @@ inline QByteArray xipsExpectedBrowserAbi()
 // and leave Cancel reachable until this returns false. setContext/restoreState
 // defer during this work. Forced panel destruction cancels and joins its workers.
 // Resolve helper files using the layout in xips-native-runtime.json.
+
+// Additive HDL command capability: hdl-commands-v1 (native ABI remains v1).
+// hdlCommandCatalog()->QVariantMap returns the cached xips.hdl-catalog/v1 snapshot.
+// useHdlCommand(QVariantMap)->QVariantMap accepts requestId/generation/commandId/
+// revision and explicitly opens the existing source export flow.
+// openHdlCommands() opens create/bind/edit/source/version controls for the asset.
+// Signals: hdlCommandCatalogChanged(QString), hdlCommandUseFinished(QVariantMap).
+// Successful xips.use/v1 receipts include hdlCommand (xips.hdl-use/v1).
+// Deploy xips-hdl-check.exe beside the component with its static-library notices;
+// shared QtCore/compiler dependencies must match the host. See docs/hdl-commands.md
+// for exact catalog fields, rejection/completion states and lifecycle rules.

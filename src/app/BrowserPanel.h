@@ -1,6 +1,7 @@
 #pragma once
 
 #include "library/SnapshotLibrary.h"
+#include "library/HdlCommands.h"
 #include <QPointer>
 #include <QHash>
 #include <QSet>
@@ -50,15 +51,20 @@ class BrowserPanel final : public QWidget
     Q_INVOKABLE void restoreState(const QVariantMap &state);
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void openArchiveProject();
+    Q_INVOKABLE QVariantMap hdlCommandCatalog() const;
+    Q_INVOKABLE QVariantMap useHdlCommand(const QVariantMap &request);
+    Q_INVOKABLE void openHdlCommands();
     Q_INVOKABLE void setDarkTheme(bool dark);
     Q_INVOKABLE bool isCatalogBusy() const
     {
-        return m_busy || m_loadingDetails || m_archiveBusy;
+        return m_busy || m_loadingDetails || m_archiveBusy || m_loadingHdl || !m_hdlUse.isEmpty();
     }
     std::optional<CatalogAsset> catalogAsset(const QString &id) const;
 
   signals:
     void contextChanging();
+    void hdlCommandCatalogChanged(const QString &generation);
+    void hdlCommandUseFinished(const QVariantMap &result);
 
   protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -70,6 +76,19 @@ class BrowserPanel final : public QWidget
     bool eventFilter(QObject *watched, QEvent *event) override;
 
   private:
+    void refreshHdlCatalog();
+    void startHdlUse(QVariantMap entry);
+    void prepareHdlUse(const CatalogAsset &asset, const QVariantMap &entry);
+    void finishHdlUse(const QString &status, const QString &code = {}, const QString &message = {}, const QVariantMap &receipt = {});
+    void editHdlCommand(CatalogAsset asset, const QJsonObject &command = {});
+    QVariantMap m_hdlCatalog;
+    QVariantMap m_hdlUse;
+    QString m_hdlUseLibrary, m_hdlUseWorkspace;
+    int m_hdlGeneration = 0;
+    bool m_loadingHdl = false;
+    bool m_hdlImported = false;
+    std::shared_ptr<OperationControl> m_hdlOperation;
+    QFutureWatcher<HdlCatalogResult> *m_hdlWatcher = nullptr;
     archive::ArchiveWindow *m_archiveWindow = nullptr;
     bool m_archiveBusy = false;
     struct WorkingViewState
@@ -101,7 +120,7 @@ class BrowserPanel final : public QWidget
     void refreshIndexes();
     void updateAsset();
     void exportAsset();
-    void exportPrepared(const SnapshotResult &prepared);
+    void exportPrepared(const SnapshotResult &prepared, const QVariantMap &hdlCommand = {});
     void savePrepared(const SnapshotResult &prepared, const QStringList &sources);
     void changeReference();
     void locateReference(CatalogAsset reference);
@@ -118,7 +137,8 @@ class BrowserPanel final : public QWidget
     void showIssues();
     void detailsDialog();
     void run(const QString &message, std::function<SnapshotResult()> work,
-             std::function<void(const SnapshotResult &)> finished = {}, bool updateCatalog = false);
+             std::function<void(const SnapshotResult &)> finished = {}, bool updateCatalog = false,
+             std::function<void(const SnapshotResult &)> failed = {});
     void setBusy(bool value, const QString &message = {});
     void notice(const QString &message, bool error = false);
     void applyTheme();

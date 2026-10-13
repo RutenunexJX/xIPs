@@ -1,4 +1,6 @@
 #include "BrowserPanel.h"
+#include "BrowserForms.h"
+#include "library/HdlCommands.h"
 #include "archive/ArchiveWindow.h"
 #include "CatalogModel.h"
 #include "CatalogWatcher.h"
@@ -96,170 +98,6 @@ ElaToolButton *actionButton(QWidget *parent, const char *name, UiIcon icon, cons
     enableToolTip(button);
     return button;
 }
-template <class Editor> void editingMenu(Editor *editor, const QPoint &position)
-{
-    auto *menu = new ElaMenu(editor);
-    menu->setObjectName("xipsEditMenu");
-    menu->setAttribute(Qt::WA_DeleteOnClose);
-    prepareMenu(menu, editor);
-    bool selection, undo, redo, empty;
-    if constexpr (std::is_base_of_v<QLineEdit, Editor>)
-    {
-        selection = editor->hasSelectedText();
-        undo = editor->isUndoAvailable();
-        redo = editor->isRedoAvailable();
-        empty = editor->text().isEmpty();
-    }
-    else
-    {
-        selection = editor->textCursor().hasSelection();
-        undo = editor->document()->isUndoAvailable();
-        redo = editor->document()->isRedoAvailable();
-        empty = editor->document()->isEmpty();
-    }
-    const bool writable = !editor->isReadOnly();
-    const auto add =
-        [&](const QString &text, const QKeySequence &shortcut, auto operation, bool enabled)
-    {
-        auto *action = menu->addAction(text);
-        action->setShortcut(shortcut);
-        action->setEnabled(enabled);
-        QObject::connect(action, &QAction::triggered, editor, operation);
-    };
-    add(QStringLiteral("Undo"), QKeySequence::Undo, [editor] { editor->undo(); }, writable && undo);
-    add(QStringLiteral("Redo"), QKeySequence::Redo, [editor] { editor->redo(); }, writable && redo);
-    menu->addSeparator();
-    add(
-        QStringLiteral("Cut"), QKeySequence::Cut, [editor] { editor->cut(); },
-        writable && selection);
-    add(QStringLiteral("Copy"), QKeySequence::Copy, [editor] { editor->copy(); }, selection);
-    add(
-        QStringLiteral("Paste"), QKeySequence::Paste, [editor] { editor->paste(); },
-        writable && !QApplication::clipboard()->text().isEmpty());
-    add(
-        QStringLiteral("Delete"), {},
-        [editor]
-        {
-            if constexpr (std::is_base_of_v<QLineEdit, Editor>)
-                editor->del();
-            else
-            {
-                auto cursor = editor->textCursor();
-                cursor.removeSelectedText();
-            }
-        },
-        writable && selection);
-    menu->addSeparator();
-    add(
-        QStringLiteral("Select all"), QKeySequence::SelectAll, [editor] { editor->selectAll(); },
-        !empty);
-    menu->popup(position);
-}
-class EnglishLineEdit final : public ElaLineEdit
-{
-  public:
-    explicit EnglishLineEdit(QWidget *parent = nullptr) : ElaLineEdit(parent)
-    {
-        setTextMargins(10, 0, 6, 0);
-        setFixedHeight(30);
-    }
-
-  protected:
-    void contextMenuEvent(QContextMenuEvent *event) override
-    {
-        editingMenu(this, event->globalPos());
-    }
-};
-class EnglishPlainTextEdit final : public ElaPlainTextEdit
-{
-  public:
-    explicit EnglishPlainTextEdit(QWidget *parent = nullptr) : ElaPlainTextEdit(parent)
-    {
-        enableSmoothScrolling(this);
-    }
-
-  protected:
-    void contextMenuEvent(QContextMenuEvent *event) override
-    {
-        editingMenu(this, event->globalPos());
-    }
-};
-class Form final : public ElaContentDialog
-{
-  public:
-    QVBoxLayout *body;
-    ElaPushButton *acceptButton;
-    Form(QWidget *parent, const QString &title, const QString &action)
-        : ElaContentDialog(parent->window())
-    {
-        setObjectName("xipsForm");
-        const auto detach = [this] { reject(); setParent(nullptr); };
-        connect(parent, &QObject::destroyed, this, detach);
-        if (auto *panel = qobject_cast<BrowserPanel *>(parent))
-            connect(panel, &BrowserPanel::contextChanging, this, &QDialog::reject);
-        if (parent != parent->window())
-            connect(parent->window(), &QObject::destroyed, this, detach);
-        setWindowTitle(title);
-        setFont(parent->font());
-        setStandardButtonsVisible(false);
-        auto *content = new QWidget(this);
-        auto *layout = new QVBoxLayout(content);
-        layout->setContentsMargins(14, 12, 14, 12);
-        layout->setSpacing(8);
-        auto *heading = new ElaText(title, 16, content);
-        heading->setTextFormat(Qt::PlainText);
-        layout->addWidget(heading);
-        body = new QVBoxLayout;
-        body->setSpacing(8);
-        layout->addLayout(body);
-        auto *buttons = new QHBoxLayout;
-        buttons->addStretch();
-        auto *cancel = new ElaPushButton(QStringLiteral("Cancel"), content);
-        acceptButton = new ElaPushButton(action, content);
-        acceptButton->setObjectName("formAccept");
-        acceptButton->setDefault(true);
-        primaryButton(acceptButton);
-        buttons->addWidget(cancel);
-        buttons->addWidget(acceptButton);
-        layout->addLayout(buttons);
-        connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
-        connect(acceptButton, &QPushButton::clicked, this, &QDialog::accept);
-        setCentralWidget(content);
-        setMinimumWidth(400);
-    }
-    int exec() override
-    {
-        for (auto *control : findChildren<QWidget *>())
-            if (qobject_cast<ElaPushButton *>(control) || qobject_cast<ElaComboBox *>(control))
-            {
-                control->setFixedHeight(30);
-                control->setFont(font());
-                if (auto *button = qobject_cast<ElaPushButton *>(control))
-                    button->setMinimumWidth(button->fontMetrics().horizontalAdvance(button->text()) + 28);
-            }
-        return ElaContentDialog::exec();
-    }
-    void showEvent(QShowEvent *event) override
-    {
-        ElaContentDialog::showEvent(event);
-        keepDialogOnScreen(this);
-        QTimer::singleShot(0, this, [this] { keepDialogOnScreen(this); });
-    }
-    void resizeEvent(QResizeEvent *event) override
-    {
-        ElaContentDialog::resizeEvent(event);
-        if (isVisible()) keepDialogOnScreen(this);
-    }
-    void message(const QString &text)
-    {
-        auto *label = new ElaText(text, this);
-        label->setTextPixelSize(13);
-        label->setTextFormat(Qt::PlainText);
-        label->setWordWrap(true);
-        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        body->addWidget(label);
-    }
-};
 ElaComboBox *categories(QWidget *parent, const QString &category)
 {
     auto *combo = new ElaComboBox(parent);
@@ -483,6 +321,10 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
         QStringLiteral("Filter by type and index"));
     m_filterToggle->setCheckable(true);
     toolbar->addWidget(m_filterToggle);
+    auto *commandsButton = actionButton(toolbar, "hdlCommandsButton", UiIcon::File, QStringLiteral("HDL commands"),
+        QStringLiteral("Create or bind HDL commands; manage package sources and versions"));
+    toolbar->addWidget(commandsButton);
+    connect(commandsButton, &QToolButton::clicked, this, &BrowserPanel::openHdlCommands);
     m_theme = actionButton(toolbar, "themeButton", UiIcon::Theme, QStringLiteral("Dark theme"));
     m_theme->setCheckable(true);
     m_theme->setVisible(!m_embedded);
@@ -913,6 +755,7 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     connect(m_cancel, &QPushButton::clicked, this, [this]
     {
         if (m_operation && m_operation->cancel()) notice(QStringLiteral("Cancelling before publication…"));
+        if (!m_busy && m_hdlOperation && m_hdlOperation->cancel()) notice(QStringLiteral("Cancelling HDL source analysis…"));
         m_cancel->setEnabled(false);
     });
     m_progressTimer = new QTimer(this);
@@ -1047,9 +890,12 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
     adaptEmbeddedLayout();
     applyTheme();
     setBusy(false);
+    QTimer::singleShot(0, this, &BrowserPanel::refreshHdlCatalog);
 }
 BrowserPanel::~BrowserPanel()
 {
+    if (m_hdlOperation) m_hdlOperation->cancel();
+    if (m_hdlWatcher) m_hdlWatcher->waitForFinished();
     if (m_archiveWindow) {
         disconnect(m_archiveWindow, nullptr, this, nullptr);
         delete m_archiveWindow;
@@ -1282,7 +1128,14 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
     path = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
     if (m_contextInitialized && path == m_library && workspace == m_workspace && !m_pendingContext)
         return;
+    const QPointer<BrowserPanel> alive(this);
     emit contextChanging();
+    if (!alive) return;
+    ++m_hdlGeneration;
+    if (m_hdlOperation) m_hdlOperation->cancel();
+    if (!m_busy) finishHdlUse("cancelled", "context_changed");
+    if (!alive) return;
+    if (path != m_library) m_hdlCatalog.clear();
     if (m_busy || m_archiveBusy)
     {
         m_pendingContext = qMakePair(path, workspace);
@@ -1293,7 +1146,7 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
     m_contextInitialized = true;
     m_workspace = workspace;
     m_take->setToolTip(QStringLiteral("Copy the selected version's source files to a destination you choose; creates an independent copy"));
-    if (sameLibrary) return;
+    if (sameLibrary) { refreshHdlCatalog(); return; }
     rememberWorkingView();
     m_catalogWatcher->clear();
     m_library = path;
@@ -1310,7 +1163,8 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
     m_loadingDetails = false;
     ++m_generation;
     filter();
-    refresh();
+    if (m_library.isEmpty()) refreshHdlCatalog();
+    else refresh();
 }
 bool BrowserPanel::eventFilter(QObject *watched, QEvent *event)
 {
@@ -1621,6 +1475,7 @@ void BrowserPanel::refreshCatalog(bool automatic, bool full, const QStringList &
                 m_backgroundRefresh = false;
                 if (applyPendingContext())
                     return;
+                refreshHdlCatalog();
                 if (changed) filter();
                 if (automatic && !m_loadingDetails && !m_selected.id.isEmpty() &&
                     (full || ids.contains(m_selected.id)) && m_selected.discovered)
@@ -2103,7 +1958,12 @@ void BrowserPanel::setBusy(bool value, const QString &message)
 }
 void BrowserPanel::updateActivity()
 {
-    const bool active = m_busy || m_loadingDetails;
+    const bool active = m_busy || m_loadingDetails || m_loadingHdl;
+    if (!m_busy)
+    {
+        m_cancel->setVisible(m_loadingHdl && bool(m_hdlOperation));
+        m_cancel->setEnabled(m_loadingHdl && m_hdlOperation && m_hdlOperation->state.load() == OperationControl::Running);
+    }
     m_activity->setVisible(active);
     m_feedback->setVisible(active || !m_status->toolTip().isEmpty() || !m_problems.isEmpty() || (!m_embedded && m_lastExport.ok));
     const bool animate = active && isVisible();
@@ -2121,7 +1981,8 @@ void BrowserPanel::notice(const QString &message, bool error)
     applyTheme();
 }
 void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> work,
-                       std::function<void(const SnapshotResult &)> finished, bool updateCatalog)
+                       std::function<void(const SnapshotResult &)> finished, bool updateCatalog,
+                       std::function<void(const SnapshotResult &)> failed)
 {
     if (m_busy)
         return;
@@ -2134,7 +1995,7 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
     const auto watchPlan = std::make_shared<CatalogWatcher::Plan>();
     auto *watcher = new QFutureWatcher<SnapshotResult>(this);
     connect(watcher, &QFutureWatcher<SnapshotResult>::finished, this,
-            [this, watcher, finished, updateCatalog, watchPlan]
+            [this, watcher, finished, updateCatalog, watchPlan, failed]
             {
                 const auto result = watcher->result();
                 watcher->deleteLater();
@@ -2144,6 +2005,9 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
                 if (result.cancelled)
                 {
                     notice(result.error);
+                    const QPointer<BrowserPanel> alive(this);
+                    if (failed) failed(result);
+                    if (!alive) return;
                     applyPendingContext();
                     return;
                 }
@@ -2154,6 +2018,9 @@ void BrowserPanel::run(const QString &message, std::function<SnapshotResult()> w
                         message += QStringLiteral("\nRetained at: %1").arg(result.retainedPath);
                     m_problems.append(message);
                     notice(message, true);
+                    const QPointer<BrowserPanel> alive(this);
+                    if (failed) failed(result);
+                    if (!alive) return;
                     applyPendingContext();
                     return;
                 }
@@ -2211,7 +2078,7 @@ void BrowserPanel::applyAssetResult(const SnapshotResult &result, const QString 
         }
     m_selected = {};
     if (applyPendingContext()) return;
-    if (updated) filter();
+    if (updated) { refreshHdlCatalog(); filter(); }
     else refresh();
 }
 void BrowserPanel::chooseLibrary()
@@ -2660,7 +2527,7 @@ void BrowserPanel::exportAsset()
     run(QStringLiteral("Reviewing export…"), [asset, snapshot] { return SnapshotLibrary::previewExport(asset, snapshot.id); },
         [this](const auto &prepared) { if (m_pendingContext) { applyPendingContext(); return; } exportPrepared(prepared); });
 }
-void BrowserPanel::exportPrepared(const SnapshotResult &prepared)
+void BrowserPanel::exportPrepared(const SnapshotResult &prepared, const QVariantMap &hdlCommand)
 {
     const auto asset = prepared.asset;
     const auto snapshot = prepared.snapshot;
@@ -2704,8 +2571,8 @@ void BrowserPanel::exportPrepared(const SnapshotResult &prepared)
     };
     connect(destination, &QLineEdit::textChanged, &form, validate);
     validate();
-    if (form.exec() != QDialog::Accepted)
-        return;
+    if (form.exec() != QDialog::Accepted || m_pendingContext || workspace != m_workspace)
+    { if (!hdlCommand.isEmpty()) finishHdlUse("cancelled"); return; }
     const QString target = QFileInfo(destination->text().trimmed()).absoluteFilePath();
     if (m_embedded)
     {
@@ -2714,20 +2581,22 @@ void BrowserPanel::exportPrepared(const SnapshotResult &prepared)
                                        Q_RETURN_ARG(QString, error), Q_ARG(QString, target)))
         {
             notice(QStringLiteral("The host did not provide destination validation."), true);
+            if (!hdlCommand.isEmpty()) finishHdlUse("error", "host_unavailable", QStringLiteral("The host did not provide destination validation."));
             return;
         }
         if (!error.isEmpty())
         {
             notice(error, true);
+            if (!hdlCommand.isEmpty()) finishHdlUse("error", "destination_rejected", error);
             return;
         }
     }
     run(
         QStringLiteral("Copying selected revision…"), [asset, snapshot, target, expected]
         { return SnapshotLibrary::exportSnapshot(asset, snapshot.id, target, asset.legacy ? nullptr : &expected); },
-        [this, workspace](const auto &result)
+        [this, workspace, hdlCommand](const auto &result)
         {
-            const QVariantMap provenance{{"schema", "xips.use/v1"},
+            QVariantMap provenance{{"schema", "xips.use/v1"},
                                          {"assetId", result.asset.id},
                                          {"name", result.asset.name},
                                          {"revision", result.snapshot.id},
@@ -2736,6 +2605,12 @@ void BrowserPanel::exportPrepared(const SnapshotResult &prepared)
                                          {"workspace", workspace},
                                          {"files", result.snapshot.files},
                                          {"category", result.asset.category}};
+            if (!hdlCommand.isEmpty()) provenance.insert("hdlCommand", HdlCommands::receiptDetails(hdlCommand));
+            if (!hdlCommand.isEmpty() && (m_pendingContext || workspace != m_workspace))
+            {
+                finishHdlUse("error", "context_changed", "Context changed; exported files remain at " + result.exportedPath);
+                return;
+            }
             if (m_embedded)
             {
                 QString error;
@@ -2750,12 +2625,17 @@ void BrowserPanel::exportPrepared(const SnapshotResult &prepared)
                                              : QStringLiteral(
                                                    "The host could not record their origin.")),
                            true);
+                    if (!hdlCommand.isEmpty()) finishHdlUse("error", "receipt_failed", "Export retained at " + result.exportedPath + ": " + error);
                     return;
                 }
             }
             m_lastExport = result;
             notice(QStringLiteral("Created %1 from %2").arg(result.exportedPath, versionText(result.asset, result.snapshot))
                 + (m_embedded ? QString() : QStringLiteral(". Use Save receipt to record its origin.")));
+            if (!hdlCommand.isEmpty()) finishHdlUse("exported", {}, {}, provenance);
+        }, false, [this, hdlCommand](const SnapshotResult &failure)
+        {
+            if (!hdlCommand.isEmpty()) finishHdlUse(failure.cancelled ? "cancelled" : "error", "export_failed", failure.error);
         });
 }
 void BrowserPanel::saveOrigin()

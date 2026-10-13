@@ -1,0 +1,79 @@
+{
+  "schema": "xips.hdl-commands/v1",
+  "origin": "builtin",
+  "bundle": "xips.tb-behaviors/v1",
+  "commands": [
+    {
+      "id": "8b7ebe9b-61bf-5087-990d-0122bd78611e",
+      "name": "复位",
+      "aliases": [
+        "reset",
+        "复位"
+      ],
+      "description": "按真实时钟边沿保持并释放复位，极性与周期显式指定。",
+      "file": "tb_reset_package.sv",
+      "package": "tb_reset_package",
+      "symbol": "tb_reset_package::reset_driver::run",
+      "files": [
+        "tb_signal_package.sv",
+        "tb_reset_package.sv",
+        "tb_sequence_package.sv",
+        "tb_random_package.sv"
+      ]
+    },
+    {
+      "id": "54407830-84a4-5908-806c-658896087a58",
+      "name": "递增序列",
+      "aliases": [
+        "ramp",
+        "递增序列"
+      ],
+      "description": "按指定次数、起始值和步长驱动序列，保持目标类型与位宽。",
+      "file": "tb_sequence_package.sv",
+      "package": "tb_sequence_package",
+      "symbol": "tb_sequence_package::ramp_driver::run",
+      "files": [
+        "tb_signal_package.sv",
+        "tb_reset_package.sv",
+        "tb_sequence_package.sv",
+        "tb_random_package.sv"
+      ]
+    },
+    {
+      "id": "aed5617f-a56b-5c3c-a2f3-02a120de9247",
+      "name": "随机序列",
+      "aliases": [
+        "random",
+        "随机序列"
+      ],
+      "description": "按指定边沿在闭区间内生成随机值，支持宽总线与有符号值。",
+      "file": "tb_random_package.sv",
+      "package": "tb_random_package",
+      "symbol": "tb_random_package::random_driver::run",
+      "files": [
+        "tb_signal_package.sv",
+        "tb_reset_package.sv",
+        "tb_sequence_package.sv",
+        "tb_random_package.sv"
+      ]
+    },
+    {
+      "id": "8567a7b9-6f50-5249-b7fc-2f85e4b4d7f4",
+      "name": "时段随机",
+      "aliases": [
+        "random window",
+        "时段随机"
+      ],
+      "description": "在绝对时间窗内驱动随机值，终点不驱动，时钟停止也按时返回。",
+      "file": "tb_random_package.sv",
+      "package": "tb_random_package",
+      "symbol": "tb_random_package::random_driver::window",
+      "files": [
+        "tb_signal_package.sv",
+        "tb_reset_package.sv",
+        "tb_sequence_package.sv",
+        "tb_random_package.sv"
+      ]
+    }
+  ]
+}

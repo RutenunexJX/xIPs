@@ -277,3 +277,12 @@ Third-party code, fonts and data retain their licenses in [THIRD-PARTY-NOTICES.m
 [Public-release review](docs/PUBLIC-RELEASE-REVIEW.md) lists the checks still required before publication.
 
 Library issues are grouped by verified catalog entry, with a short reason and impact, optional technical details, and **Recheck library**. Missing working sources can be relocated within the library or unregistered while retaining files and saved history. Broken references can locate their owner or remove the local reference. Relocation preserves the asset ID, groups and saved versions and rejects locations owned by another asset. Unidentified or damaged metadata is never deleted to dismiss a warning; it can be inspected and rechecked after recovery.
+
+
+## HDL commands
+
+The browser toolbar's **HDL commands** entry creates or binds real package
+task/function sources, edits searchable mappings and saves source versions.
+Four builtin TB behaviors cover reset, ramp, counted random data and an absolute
+random time window. **Use** explicitly exports the selected immutable packages
+to a project. See [source, package and native API documentation](docs/hdl-commands.md).

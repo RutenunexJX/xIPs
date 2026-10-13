@@ -1,0 +1,7 @@
+<RCC><qresource prefix="/xips/hdl">
+  <file>tb_signal_package.sv</file>
+  <file>tb_reset_package.sv</file>
+  <file>tb_sequence_package.sv</file>
+  <file>tb_random_package.sv</file>
+  <file>xips-commands.json</file>
+</qresource></RCC>

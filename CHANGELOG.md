@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.15.0 — 2026-10-13
+
+- Add source-backed HDL commands with reset, ramp, random-count and absolute-window behavior packages.
+- Create or bind user task/function commands, validate actual signatures with Slang, archive immutable versions and export through the existing asset workflow.
+- Expose the additive HDL command catalog to ZeroSlack and ship the semantic helper with its runtime and license metadata.
+- Keep source-extracted third-party user assets outside the application payload.
+
 ## 2.14.2 — 2026-10-10
 
 - Remove application function shortcuts while retaining native text editing and ordinary control navigation.

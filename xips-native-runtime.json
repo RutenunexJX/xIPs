@@ -6,6 +6,7 @@
     "xips-browser.dll",
     "xips-browser-impl.dll",
     "XipsEla.dll",
+    "xips-hdl-check.exe",
     "tools/7zip/7za.exe",
     "xips-capabilities.json",
     "build-info.json",
@@ -31,7 +32,11 @@
     "licenses/7zip/UPSTREAM.md",
     "licenses/7zip/License.txt",
     "licenses/7zip/COPYING.txt",
-    "licenses/7zip/readme.txt"
+    "licenses/7zip/readme.txt",
+    "licenses/slang/MIT.txt",
+    "licenses/slang/BSL-1.0.txt",
+    "licenses/slang/NOTICE.txt",
+    "licenses/fmt/LICENSE"
   ],
   "notes": "Deploy componentFiles relative to the xIPs component directory. Qt runtime files must match the host Qt build. Keep all xIPs license material in the host component notices directory; do not change native surface v1."
 }

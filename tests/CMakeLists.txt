@@ -1,3 +1,16 @@
+add_executable(tst_hdl_native tst_hdl_native.cpp)
+target_include_directories(tst_hdl_native PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(tst_hdl_native PRIVATE XIPS_BROWSER_PATH="$<TARGET_FILE:xips_browser>")
+target_link_libraries(tst_hdl_native PRIVATE xips_core Qt6::Test Qt6::Widgets)
+add_dependencies(tst_hdl_native xips_browser)
+add_test(NAME hdl_native COMMAND tst_hdl_native -o -,txt)
+set_tests_properties(hdl_native PROPERTIES TIMEOUT 120)
+
+add_executable(tst_hdl_commands tst_hdl_commands.cpp)
+target_link_libraries(tst_hdl_commands PRIVATE xips_core Qt6::Test)
+add_dependencies(tst_hdl_commands xips-hdl-check)
+add_test(NAME hdl_commands COMMAND tst_hdl_commands -o -,txt)
+
 add_executable(tst_core tst_core.cpp)
 target_compile_definitions(tst_core
     PRIVATE
@@ -120,8 +133,8 @@ endif()
 get_filename_component(_xips_qt_bin_dir "${_xips_qt_core_location}" DIRECTORY)
 get_filename_component(_xips_qt_prefix "${_xips_qt_bin_dir}/.." ABSOLUTE)
 get_filename_component(_xips_compiler_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-set(_xips_tests archive_host archive_standalone archive core snapshots workflows cli gui_smoke user_journey native interactions working_model catalog_model embedded)
-set(_xips_gui_tests archive_host archive_standalone archive gui_smoke user_journey native interactions working_model catalog_model embedded)
+set(_xips_tests hdl_native hdl_commands archive_host archive_standalone archive core snapshots workflows cli gui_smoke user_journey native interactions working_model catalog_model embedded)
+set(_xips_gui_tests hdl_native archive_host archive_standalone archive gui_smoke user_journey native interactions working_model catalog_model embedded)
 if(TARGET xips_suite)
     add_executable(tst_suite tst_suite.cpp)
     target_compile_definitions(tst_suite PRIVATE
@@ -151,7 +164,7 @@ if(WIN32)
     set_tests_properties(native_layout PROPERTIES TIMEOUT 120)
     list(APPEND _xips_tests native_layout)
     # Match deployed hosts even when shared Qt modules have not been loaded yet.
-    foreach(_probe IN ITEMS tst_native tst_embedded tst_archive_host)
+    foreach(_probe IN ITEMS tst_hdl_native tst_native tst_embedded tst_archive_host)
         foreach(_module IN ITEMS Network Sql Xml)
             add_custom_command(TARGET ${_probe} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
