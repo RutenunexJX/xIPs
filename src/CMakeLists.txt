@@ -15,6 +15,8 @@ add_library(xips_core STATIC
     library/ContentStore.cpp
     library/ContentStore.h
     library/OperationControl.h
+    library/LibraryTransaction.cpp library/LibraryTransaction.h
+    library/CatalogOperations.cpp library/CatalogOperations.h
     library/CatalogIndex.cpp
     library/CatalogIndex.h
     library/CatalogGroups.cpp
@@ -26,6 +28,13 @@ target_include_directories(xips_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xips_core PUBLIC Qt6::Core Qt6::Sql)
 if(BUILD_TESTING)
     target_compile_definitions(xips_core PUBLIC XIPS_ENABLE_TEST_HOOKS)
+endif()
+
+add_library(xips_sessions STATIC integration/SessionClient.cpp integration/SessionClient.h)
+target_link_libraries(xips_sessions PUBLIC xips_core)
+if(XIPS_ENABLE_SUITEAPP AND SuiteApp_FOUND)
+    target_link_libraries(xips_sessions PUBLIC SuiteApp::suiteapp)
+    target_compile_definitions(xips_sessions PUBLIC XIPS_HAS_SESSION_TRANSPORT=1)
 endif()
 
 add_subdirectory(archive)
@@ -53,11 +62,16 @@ target_include_directories(xips_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xips_app
     PUBLIC
         xips_core
+        xips_sessions
         xips_archive_ui
         Qt6::Concurrent
         Qt6::Widgets
         Ela::WidgetTools
 )
+
+if(XIPS_ENABLE_SUITEAPP AND SuiteApp_FOUND)
+    target_sources(xips_app PRIVATE integration/CatalogSession.cpp integration/CatalogSession.h)
+endif()
 
 add_executable(xips app/main.cpp)
 target_compile_definitions(xips PRIVATE XIPS_VERSION="${PROJECT_VERSION}")
@@ -80,9 +94,9 @@ set_target_properties(xips PROPERTIES
     MACOSX_BUNDLE TRUE
 )
 
-add_executable(xips-cli cli/main.cpp)
+add_executable(xips-cli cli/main.cpp cli/RequestCli.cpp cli/RequestCli.h cli/ArchiveCli.cpp cli/ArchiveCli.h)
 target_compile_definitions(xips-cli PRIVATE XIPS_VERSION="${PROJECT_VERSION}")
-target_link_libraries(xips-cli PRIVATE xips_core)
+target_link_libraries(xips-cli PRIVATE xips_core xips_sessions xips_archive_core)
 
 set_target_properties(xips xips-cli PROPERTIES FOLDER "qtc_runnable")
 

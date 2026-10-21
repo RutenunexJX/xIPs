@@ -181,3 +181,8 @@ structured errors. No suite action writes the library or materializes files.
 The **AppSuite/Apps/xIPs/** component contains its own Qt/Ela dependencies,
 **xips.exe**, **xips-cli.exe**, **xips-browser.dll**, **xips-browser-impl.dll**, **XipsEla.dll**, and
 **assets/icons/xips-256.png**. The Windows executable embeds **xips.ico**.
+
+
+## Structured catalog and session operations
+
+See [structured-cli.md](structured-cli.md) for the additive preview/apply protocol, current ordinary asset operations, explicit GUI session adoption and Archive Project requests. The original list/resolve interface above remains supported.

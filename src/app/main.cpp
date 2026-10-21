@@ -60,6 +60,9 @@ int main(int argc, char *argv[])
     parser.addOption(libraryOption);
     parser.addOption(assetOption);
     parser.addOption(searchOption);
+    parser.addOption({"no-runtime", "Do not register this instance with the global AppSuite broker."});
+    parser.addOption({"profile", "Use isolated INI settings in this directory.", "directory"});
+    parser.addOption({"session-dir", "Directory for this instance's session registration.", "directory"});
     parser.addPositionalArgument(
         QStringLiteral("uri"),
         QStringLiteral("Optional xips://asset/... or xips://search?... URI."),
@@ -80,6 +83,14 @@ int main(int argc, char *argv[])
                             << QCoreApplication::applicationVersion() << u'\n';
         return 0;
     }
+
+    if (parser.isSet("profile")) {
+        const auto profile = QFileInfo(parser.value("profile")).absoluteFilePath();
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, profile);
+        QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, profile);
+    }
+    if (parser.isSet("session-dir")) application.setProperty("xips.sessionDirectory", QFileInfo(parser.value("session-dir")).absoluteFilePath());
 
     std::optional<xips::ActivationRequest> activation;
     if (parser.isSet(assetOption) && parser.isSet(searchOption))
@@ -132,8 +143,10 @@ int main(int argc, char *argv[])
         window.applyActivation(*activation);
     }
 #ifdef XIPS_HAS_SUITEAPP
-    xips::SuiteIntegration suite(window.findChild<xips::BrowserPanel *>(), &window);
-    QTimer::singleShot(0, &suite, [&suite] { suite.start(); });
+    if (!parser.isSet("no-runtime")) {
+        auto *suite = new xips::SuiteIntegration(window.findChild<xips::BrowserPanel *>(), &window);
+        QTimer::singleShot(0, suite, [suite] { suite->start(); });
+    }
 #endif
     return application.exec();
 }

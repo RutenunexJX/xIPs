@@ -166,6 +166,10 @@ class SnapshotLibrary
     static SnapshotResult eraseSnapshot(const CatalogAsset &asset, const QString &revision,
                                         bool permanent = false);
     static SnapshotResult eraseAsset(const CatalogAsset &asset, bool permanent = false);
+    static SnapshotResult deletedSnapshot(const CatalogAsset &asset, const QString &revision);
+    static SnapshotResult restoreSnapshot(const CatalogAsset &asset, const QString &revision);
+    static SnapshotResult verifyReceipt(const QString &receipt, const QString &ownerLibrary,
+                                        bool verifyExport = true);
     static SnapshotResult migrate(const CatalogAsset &asset);
 };
 

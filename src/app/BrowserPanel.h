@@ -53,8 +53,12 @@ class BrowserPanel final : public QWidget
     Q_INVOKABLE void setDarkTheme(bool dark);
     Q_INVOKABLE bool isCatalogBusy() const
     {
-        return m_busy || m_loadingDetails || m_archiveBusy;
+        return m_busy || m_loadingDetails || m_archiveBusy || !m_externalLease.isEmpty();
     }
+    QString libraryRoot() const { return m_library; }
+    QJsonObject externalState() const;
+    QString beginExternalWrite(const QString &lease, const QString &viewToken);
+    void finishExternalWrite(const QString &lease, const QJsonObject &focus);
     std::optional<CatalogAsset> catalogAsset(const QString &id) const;
 
   signals:
@@ -131,6 +135,7 @@ class BrowserPanel final : public QWidget
     void handleFileDrop(QDropEvent *event, bool working, bool import);
     bool overWorkingPage(const QPoint &position) const;
     QStringList pickSources();
+    QString m_externalLease;
     QString m_library;
     QString m_workspace;
     QString m_category;

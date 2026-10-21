@@ -1,7 +1,9 @@
 #pragma once
 #include <QList>
+#include <QJsonObject>
 #include <QStringList>
 #include <QThread>
+#include <functional>
 
 namespace xips::archive {
 struct Installation { QString version; QString launcher; };
@@ -12,6 +14,8 @@ struct Request {
     Installation vivado;
     QString compressor; // Optional trusted helper override for embedding; empty uses the bundled runtime.
     QString archiveName; // Optional folder and 7z basename; blank keeps automatic naming.
+    QStringList sharedRoots{}; // Explicit shared dependency roots; empty discovers declared directories.
+    QString expectedInputHash{}; // Optional CLI preview guard, checked before source copying.
 };
 // Surrounding whitespace is ignored. Empty means automatic naming; otherwise one Windows-safe component.
 QString archiveNameError(const QString& name);
@@ -19,6 +23,7 @@ QString archiveNameError(const QString& name);
 ProjectInfo inspectProject(const QString& xpr);
 QList<Installation> discoverInstallations(const QStringList& roots = {});
 QString installationVersion(const QString& launcher);
+QJsonObject previewArchive(const Request& request, const std::function<void()>& check = [] {});
 
 // All filesystem and process work stays on this thread. Cancellation is cooperative.
 class ArchiveJob final : public QThread {

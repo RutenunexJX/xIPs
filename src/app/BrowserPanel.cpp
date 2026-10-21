@@ -1,4 +1,8 @@
 #include "BrowserPanel.h"
+#include "library/CatalogOperations.h"
+#ifdef XIPS_HAS_SESSION_TRANSPORT
+#include "integration/CatalogSession.h"
+#endif
 #include "archive/ArchiveWindow.h"
 #include "CatalogModel.h"
 #include "CatalogWatcher.h"
@@ -1036,6 +1040,9 @@ BrowserPanel::BrowserPanel(QWidget *parent, QObject *host, bool embedded)
         (m_splitter->orientation() == Qt::Horizontal ? m_horizontalRatio : m_verticalRatio) = splitRatio();
     });
     connect(eTheme, &ElaTheme::themeModeChanged, this, [this] { applyTheme(); });
+#ifdef XIPS_HAS_SESSION_TRANSPORT
+    new CatalogSession(this);
+#endif
     m_catalogWatcher = new CatalogWatcher(this);
     connect(m_catalogWatcher, &CatalogWatcher::refreshRequested, this,
         [this](bool full, const QStringList &ids) { refreshCatalog(true, full, ids); });
@@ -1283,7 +1290,7 @@ void BrowserPanel::setContext(const QString &library, const QString &workspace)
     if (m_contextInitialized && path == m_library && workspace == m_workspace && !m_pendingContext)
         return;
     emit contextChanging();
-    if (m_busy || m_archiveBusy)
+    if (m_busy || m_archiveBusy || !m_externalLease.isEmpty())
     {
         m_pendingContext = qMakePair(path, workspace);
         m_pendingState.reset();
@@ -1507,6 +1514,40 @@ bool BrowserPanel::applyPendingContext()
     else if (context && !m_busy) filter();
     return bool(context) || bool(state);
 }
+QJsonObject BrowserPanel::externalState() const
+{
+    bool editing = QApplication::activeModalWidget() != nullptr;
+    for (const auto *window : QApplication::topLevelWidgets())
+        editing |= window->isVisible() && window->inherits("QDialog") && isAncestorOf(window);
+    return {{"library", m_library}, {"workspace", m_workspace}, {"busy", isCatalogBusy()},
+        {"editing", editing}, {"embedded", m_embedded}, {"viewToken", CatalogOperations::viewToken(m_assets, m_model->groups())},
+        {"selection", QJsonObject{{"asset", m_selected.id}, {"revision", saveState().value("revision").toString()}}}};
+}
+QString BrowserPanel::beginExternalWrite(const QString &lease, const QString &viewToken)
+{
+    const auto state = externalState();
+    if (state.value("busy").toBool() || state.value("editing").toBool() || !isEnabled())
+        return QStringLiteral("The target window is busy or has an active dialog. Finish it before applying the preview.");
+    if (viewToken.isEmpty() || state.value("viewToken") != viewToken)
+        return QStringLiteral("The target window has not adopted this preview's library state. Refresh and retry.");
+    m_externalLease = lease;
+    setEnabled(false);
+    return {};
+}
+void BrowserPanel::finishExternalWrite(const QString &lease, const QJsonObject &focus)
+{
+    if (m_externalLease != lease) return;
+    m_externalLease.clear();
+    setEnabled(true);
+    if (!focus.isEmpty()) {
+        m_search->clear(); m_category.clear(); m_indexTerm.clear(); m_activeGroup.clear();
+        m_types->setCurrentIndex(0);
+        m_pendingPage = focus.contains("revision") ? 1 : m_pages->currentIndex();
+    }
+    m_pendingId = focus.value("asset").toString(m_selected.id);
+    m_pendingRevision = focus.isEmpty() ? saveState().value("revision").toString() : focus.value("revision").toString();
+    refreshCatalog(false);
+}
 void BrowserPanel::refresh()
 {
     refreshCatalog(false);
@@ -1518,7 +1559,7 @@ void BrowserPanel::refreshCatalog(bool automatic, bool full, const QStringList &
         m_catalogWatcher->queue(full, ids);
         return;
     }
-    if (m_busy) return;
+    if (m_busy || !m_externalLease.isEmpty()) return;
     if (m_library.isEmpty())
     {
         if (!automatic) notice(QStringLiteral("Choose a catalog folder, then create a Module, IP or Project."));
@@ -3244,7 +3285,7 @@ void BrowserPanel::restoreState(const QVariantMap &state)
     const auto library = state.value("library").toString();
     if (!library.isEmpty() && library != (m_pendingContext ? m_pendingContext->first : m_library))
         setContext(library, m_pendingContext ? m_pendingContext->second : m_workspace);
-    if (m_busy || m_archiveBusy) { m_pendingState = state; return; }
+    if (m_busy || m_archiveBusy || !m_externalLease.isEmpty()) { m_pendingState = state; return; }
     rememberWorkingView();
     const QScopedValueRollback<bool> restoring(m_restoringWorkingView, true);
     if (state.contains("workingViews"))

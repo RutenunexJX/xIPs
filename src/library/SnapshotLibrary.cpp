@@ -5,6 +5,7 @@
 #include "CatalogIndex.h"
 #include "FileSystemUtil.h"
 #include "OperationControl.h"
+#include "LibraryTransaction.h"
 #include "manifest/ManifestService.h"
 
 #include <QCryptographicHash>
@@ -715,20 +716,7 @@ void verifyCurrentSource(const CatalogAsset &asset, const Snapshot &snapshot)
                 currentSource(asset).snapshots.last().files == snapshot.files,
             QStringLiteral("Source changed while copying. Rescan and retry."));
 }
-class LibraryLock
-{
-    QLockFile lock;
-
-  public:
-    explicit LibraryLock(const QString &root) : lock(child(root, ".xips-library.lock"))
-    {
-        existingDirectory(root);
-        safePath(child(root, ".xips-library.lock"));
-        lock.setStaleLockTime(0);
-        require(lock.tryLock(0),
-                QStringLiteral("Another library operation is running. Try again shortly."));
-    }
-};
+using LibraryLock = LibraryTransaction;
 struct InputFile
 {
     QString source;
@@ -2589,6 +2577,83 @@ SnapshotResult SnapshotLibrary::eraseAsset(const CatalogAsset &asset, bool perma
             removeDirectory(isolated, permanent);
             result.retainedPath.clear();
         });
+}
+SnapshotResult SnapshotLibrary::deletedSnapshot(const CatalogAsset &asset, const QString &revision)
+{
+    return operation([&](auto &result)
+    {
+        require(asset.referencePath.isEmpty() && !asset.legacy, QStringLiteral("Choose an original new-format asset."));
+        const auto root = asset.historyRoot.isEmpty() ? asset.root : asset.historyRoot;
+        const auto current = load(root, asset.library);
+        healthyHistory(current);
+        require(current.id == asset.id && current.deletedRevisionParents.contains(revision),
+                QStringLiteral("Deleted revision not found. Use its exact ID."));
+        Snapshot snapshot;
+        for (const auto &value : current.document.value("revisions").toArray())
+            if (value.toObject().value("id").toString() == revision) snapshot = parseSnapshot(value.toObject());
+        if (snapshot.id.isEmpty()) snapshot = parseSnapshot(readJson(child(root, ".xips/revisions/" + revision + ".json")));
+        require(snapshot.id == revision, QStringLiteral("Deleted revision identity mismatch."));
+        const auto deleted = readJson(child(root, ".xips/deleted-revisions/" + revision + ".json"));
+        require(deleted.value("assetId").toString() == current.id && deleted.value("revision").toString() == revision &&
+                    (!deleted.contains("hash") || deleted.value("hash").toString() == snapshot.hash),
+                QStringLiteral("Invalid deletion record."));
+        verifySaved(current, snapshot);
+        result.asset = asset;
+        result.snapshot = snapshot;
+    });
+}
+SnapshotResult SnapshotLibrary::restoreSnapshot(const CatalogAsset &asset, const QString &revision)
+{
+    return operation([&](auto &result)
+    {
+        LibraryLock lock(asset.library);
+        const auto prepared = deletedSnapshot(asset, revision);
+        if (prepared.cancelled) throw OperationCancelled();
+        require(prepared.ok, prepared.error);
+        const auto root = asset.historyRoot.isEmpty() ? asset.root : asset.historyRoot;
+        const auto source = child(root, ".xips/deleted-revisions/" + revision + ".json");
+        const auto destination = child(root, ".xips/restored-revisions/" + unique(revision + "-") + ".json");
+        ContentStore::makeDirectory(QFileInfo(destination).absolutePath());
+        OperationScope::publish();
+        require(QFile::rename(source, destination), QStringLiteral("Cannot restore revision deletion record."));
+        result.asset = resolveAsset(asset);
+        result.snapshot = selected(result.asset, revision);
+    });
+}
+SnapshotResult SnapshotLibrary::verifyReceipt(const QString &receiptPath, const QString &ownerLibrary, bool verifyExport)
+{
+    return operation([&](auto &result)
+    {
+        safePath(receiptPath);
+        const auto receipt = readJson(receiptPath);
+        require(receipt.value("schema") == "xips.use/v1" && receipt.value("sourceImmutable") == true,
+                QStringLiteral("Choose a receipt for an immutable saved version."));
+        const auto catalog = scan(ownerLibrary);
+        if (catalog.cancelled) throw OperationCancelled();
+        QList<CatalogAsset> owners;
+        for (const auto &entry : catalog.assets)
+            if (entry.id == receipt.value("assetId").toString() && entry.referencePath.isEmpty()) owners.append(entry);
+        require(owners.size() == 1, QStringLiteral("Receipt owner is missing or ambiguous in this library."));
+        result.asset = owners.first();
+        result.snapshot = selected(result.asset, receipt.value("revision").toString());
+        require(result.snapshot.id == receipt.value("revision").toString() &&
+                    result.snapshot.hash == receipt.value("contentHash").toString() &&
+                    result.snapshot.files == strings(receipt.value("files").toArray()),
+                QStringLiteral("Receipt does not match the exact immutable version."));
+        verifySaved(result.asset, result.snapshot);
+        const auto relative = receipt.value("path").toString();
+        require(!relative.isEmpty(), QStringLiteral("Receipt payload location is missing."));
+        result.exportedPath = absolute(child(QFileInfo(receiptPath).absolutePath(), relative));
+        if (verifyExport)
+        {
+            safePath(result.exportedPath);
+            const bool singleFile = result.snapshot.files.size() == 1 && QFileInfo(result.exportedPath).isFile();
+            require(singleFile || QFileInfo(result.exportedPath).isDir(), QStringLiteral("Receipt payload is unavailable."));
+            for (const auto &file : result.snapshot.files)
+                require(ContentStore::fingerprint(singleFile ? result.exportedPath : child(result.exportedPath, file)) == result.snapshot.objects.value(file),
+                        QStringLiteral("Receipt payload differs: %1").arg(file));
+        }
+    });
 }
 SnapshotResult SnapshotLibrary::migrate(const CatalogAsset &asset)
 {

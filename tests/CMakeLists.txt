@@ -168,3 +168,12 @@ set_tests_properties(${_xips_tests} PROPERTIES
 set_property(TEST ${_xips_gui_tests} APPEND PROPERTY
     ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen"
 )
+
+if(XIPS_ENABLE_SUITEAPP AND SuiteApp_FOUND)
+    add_executable(tst_cli_session tst_cli_session.cpp)
+    target_link_libraries(tst_cli_session PRIVATE xips_app Qt6::Test)
+    target_compile_definitions(tst_cli_session PRIVATE XIPS_CLI_PATH="$<TARGET_FILE:xips-cli>")
+    add_dependencies(tst_cli_session xips-cli)
+    xips_enable_strict_warnings(tst_cli_session)
+    add_test(NAME cli_session COMMAND tst_cli_session -o -,txt)
+endif()

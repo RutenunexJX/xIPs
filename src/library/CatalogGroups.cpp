@@ -1,5 +1,6 @@
 #include "CatalogGroups.h"
 #include "ContentStore.h"
+#include "LibraryTransaction.h"
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -85,6 +86,7 @@ GroupResult change(const QString &library, const QString &id,
     GroupResult result;
     try
     {
+        LibraryTransaction transaction(library);
         const auto root = directory(library);
         if (!id.isEmpty()) filePath(root, id);
         ContentStore::makeDirectory(root);
@@ -182,6 +184,7 @@ GroupResult CatalogGroups::moveMember(const QString &library, const QString &sou
     {
         require(sourceId != targetId, QStringLiteral("Choose another group."));
         require(!assetId.isEmpty() && assetId.size() <= 512, QStringLiteral("Invalid asset ID."));
+        LibraryTransaction transaction(library);
         const auto root = directory(library);
         const auto sourcePath = filePath(root, sourceId), targetPath = filePath(root, targetId);
         const auto lockPath = QDir(root).filePath(".groups.lock");

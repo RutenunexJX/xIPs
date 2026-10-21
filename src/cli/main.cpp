@@ -1,3 +1,4 @@
+#include "RequestCli.h"
 #include "assetcore/JsonUtil.h"
 #include "integration/IntegrationService.h"
 #include "library/AssetLibraryService.h"
@@ -171,7 +172,7 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     parser.addVersionOption();
     const QCommandLineOption actionOption(QStringLiteral("action"),
-                                          QStringLiteral("Action: list or resolve."),
+                                          QStringLiteral("Action: list, resolve, capabilities, sessions, or session-status."),
                                           QStringLiteral("name"), QStringLiteral("list"));
     const QCommandLineOption libraryOption({QStringLiteral("l"), QStringLiteral("library")},
                                            QStringLiteral("Asset library directory."),
@@ -193,6 +194,7 @@ int main(int argc, char *argv[])
     parser.addOption(versionOption);
     parser.addOption(queryOption);
     parser.addOption(destinationOption);
+    xips::cli::addRequestOptions(parser);
     if (!parser.parse(application.arguments()))
     {
         QTextStream(stderr) << parser.errorText() << u'\n';
@@ -209,6 +211,8 @@ int main(int argc, char *argv[])
                             << QCoreApplication::applicationVersion() << u'\n';
         return 0;
     }
+
+    if (const auto handled = xips::cli::runRequest(parser)) return *handled;
 
     const QString action = parser.value(actionOption).trimmed().toLower();
     QTextStream output(stdout);

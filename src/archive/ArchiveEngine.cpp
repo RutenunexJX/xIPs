@@ -3,6 +3,9 @@
 #include "CoreContainer.h"
 #include "VivadoWorkspace.h"
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QDateTime>
 #include <QDir>
 #include <QDomDocument>
@@ -144,10 +147,10 @@ QString expandedPath(QString value, const ProjectInfo& project)
         fail("Unsupported variable or path list in XPR: " + value);
     return clean(QDir::isAbsolutePath(value) ? value : project.root + '/' + value);
 }
-QString resolve(const QString& value, const ProjectInfo& project)
+QString resolve(const QString& value, const ProjectInfo& project, bool external = false)
 {
     const auto result = expandedPath(value, project);
-    if (!within(result, project.root)) fail("External reference cannot be isolated safely: " + value + ". Import it into the project before archiving.");
+    if (!external && !within(result, project.root)) fail("External reference cannot be isolated safely: " + value + ". Import it into the project before archiving.");
     noLinks(result);
     return result;
 }
@@ -156,6 +159,11 @@ bool pathValue(const QString& key, const QString& value)
     return !value.isEmpty() && (value.startsWith('$') || value.startsWith('.') || QDir::isAbsolutePath(value)
         || key.contains("Dir", Qt::CaseInsensitive) || key.contains("Path", Qt::CaseInsensitive)
         || key == "File" || key.contains("Tcl", Qt::CaseInsensitive));
+}
+bool dependencyDirectory(const QString& key)
+{
+    return key.contains("IncludeDir", Qt::CaseInsensitive) || key.contains("IPRepo", Qt::CaseInsensitive)
+        || key.contains("BoardRepo", Qt::CaseInsensitive) || key.compare("VerilogDir", Qt::CaseInsensitive) == 0;
 }
 QList<Entry> projectArtifacts(const ProjectInfo& info, const QList<Entry>& files)
 {
@@ -223,7 +231,8 @@ QList<Entry> projectArtifacts(const ProjectInfo& info, const QList<Entry>& files
 // Validate BEFORE launching Vivado. Only the independent XML copy is rewritten.
 QDomDocument relocate(const ProjectInfo& info, const QString& destination, QSet<QString>& imports,
                       QSet<QString>& generatedSources, const QMap<QString, QString>& containerSources,
-                      bool archiveCleanup = false, QStringList* missingRepositories = nullptr)
+                      bool archiveCleanup = false, QStringList* missingRepositories = nullptr,
+                      const QMap<QString, QString>& shared = {})
 {
     auto doc = xml(info.xpr);
     QList<QDomElement> elements;
@@ -246,7 +255,7 @@ QDomDocument relocate(const ProjectInfo& info, const QString& destination, QSet<
     };
     for (const auto& element : elements) {
         if (element.tagName() != "File") continue;
-        const auto path = resolve(element.attribute("Path"), info).toCaseFolded();
+        const auto path = resolve(element.attribute("Path"), info, true).toCaseFolded();
         if (path.endsWith(".xcix")) declaredContainers.insert(path);
         if (!autoDisabled(element)) requiredSources.insert(path);
     }
@@ -268,7 +277,7 @@ QDomDocument relocate(const ProjectInfo& info, const QString& destination, QSet<
             }
         }
         if (archiveCleanup && element.tagName() == "File" && autoDisabled(element)) {
-            const auto path = resolve(element.attribute("Path"), info);
+            const auto path = resolve(element.attribute("Path"), info, true);
             if (!QFileInfo::exists(path) && !requiredSources.contains(path.toCaseFolded())
                 && !containerSources.contains(path.toCaseFolded())) {
                 element.parentNode().removeChild(element);
@@ -284,7 +293,7 @@ QDomDocument relocate(const ProjectInfo& info, const QString& destination, QSet<
                 const auto attribute = attributes.at(n).toElement();
                 if (attribute.attribute("Name") == "AutoDcp" && attribute.attribute("Val") == "1") automatic = true;
             }
-            if (automatic && !QFileInfo::exists(resolve(element.attribute("Path"), info))) {
+            if (automatic && !QFileInfo::exists(resolve(element.attribute("Path"), info, true))) {
                 element.parentNode().removeChild(element);
                 continue;
             }
@@ -316,11 +325,21 @@ QDomDocument relocate(const ProjectInfo& info, const QString& destination, QSet<
                 fail("Custom Tcl hooks are not supported by safe archiving: " + key);
             // Values such as numeric TransportPathDelay and non-path boolean options are not paths.
             if (!value.contains('/') && !value.contains('\\') && !value.startsWith('$') && attr.name() == "Val") continue;
-            const auto resolved = resolve(value, info);
+            const auto resolved = resolve(value, info, true);
             const QString rel = QDir(info.root).relativeFilePath(resolved);
             const bool fileReference = element.tagName() == "File" && attr.name() == "Path";
-            const bool directoryReference = key.contains("IncludeDir", Qt::CaseInsensitive)
-                || key.contains("IPRepo", Qt::CaseInsensitive) || key.contains("BoardRepo", Qt::CaseInsensitive);
+            const bool directoryReference = dependencyDirectory(key);
+            if (!within(resolved, info.root)) {
+                if (!fileReference && !directoryReference) fail("External output or unsupported XPR path: " + value);
+                QString mapped;
+                for (auto it = shared.cbegin(); it != shared.cend(); ++it)
+                    if (within(resolved, it.key())) { mapped = it.value() + '/' + QDir(it.key()).relativeFilePath(resolved); break; }
+                if (mapped.isEmpty()) fail("External dependency was not included in the shared-root plan: " + resolved);
+                if ((fileReference && !QFileInfo(resolved).isFile()) || (directoryReference && !QFileInfo(resolved).isDir()))
+                    fail("Missing shared dependency: " + resolved);
+                element.setAttribute(attr.name(), "$PPRDIR/" + clean(mapped));
+                continue;
+            }
             if (fileReference || directoryReference) {
                 const auto container = containerSources.value(resolved.toCaseFolded());
                 const bool virtualSource = !container.isEmpty() && declaredContainers.contains(container.toCaseFolded());
@@ -334,7 +353,7 @@ QDomDocument relocate(const ProjectInfo& info, const QString& destination, QSet<
                         const bool generatedRoot = top.compare(info.name + ".gen", Qt::CaseInsensitive) == 0
                             || top.compare(info.name + ".ip_user_files", Qt::CaseInsensitive) == 0;
                         const bool hdlFile = fileReference && hdlTypes.contains(QFileInfo(resolved).suffix().toLower());
-                        const bool includeDirectory = directoryReference && key.contains("IncludeDir", Qt::CaseInsensitive);
+                        const bool includeDirectory = directoryReference && (key.contains("IncludeDir", Qt::CaseInsensitive) || key.compare("VerilogDir", Qt::CaseInsensitive) == 0);
                         if (!generatedRoot || (!hdlFile && !includeDirectory))
                             fail("Unsupported dependency in generated project data: " + value);
                         const auto directory = fileReference ? QFileInfo(resolved).absolutePath() : resolved;
@@ -410,6 +429,137 @@ QMap<QString, QString> validateMetadata(const QString& root, const QList<Entry>&
     }
     return containers;
 }
+QString fileHash(const QString& path, const Check& check)
+{
+    noLinks(path);
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) fail("Cannot fingerprint input: " + path);
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    while (!file.atEnd()) { check(); const auto bytes = file.read(1024 * 1024); if (bytes.isEmpty() && file.error() != QFile::NoError) fail("Cannot read input: " + path); hash.addData(bytes); }
+    return QString::fromLatin1(hash.result().toHex());
+}
+QString withoutHdlComments(QString text)
+{
+    bool line = false, block = false, quoted = false, escaped = false;
+    for (qsizetype i = 0; i < text.size(); ++i) {
+        const auto c = text[i]; const auto next = i + 1 < text.size() ? text[i + 1] : QChar{};
+        if (line) { if (c == '\n') line = false; else text[i] = ' '; continue; }
+        if (block) { text[i] = c == '\n' ? '\n' : ' '; if (c == '*' && next == '/') { text[++i] = ' '; block = false; } continue; }
+        if (quoted) { if (!escaped && c == '"') quoted = false; escaped = !escaped && c == '\\'; continue; }
+        if (c == '"') { quoted = true; escaped = false; }
+        else if (c == '/' && (next == '/' || next == '*')) { line = next == '/'; block = next == '*'; text[i] = ' '; text[++i] = ' '; }
+    }
+    return text;
+}
+void validateHdlPaths(const QString& root, const QList<Entry>& entries, const Check& check)
+{
+    const QRegularExpression dependency(R"re((?:`include\s+|\$readmem[hb]\s*\(\s*)"([^"]+)")re");
+    for (const auto& entry : entries) {
+        check();
+        if (entry.directory || !QStringList{"v", "sv", "vh", "svh"}.contains(QFileInfo(entry.relative).suffix().toLower())) continue;
+        if (entry.size > 64 * 1024 * 1024) fail("HDL file is too large to inspect: " + entry.relative);
+        const auto text = withoutHdlComments(QString::fromUtf8(readFile(root + '/' + entry.relative)));
+        auto matches = dependency.globalMatch(text);
+        while (matches.hasNext()) {
+            const auto name = QDir::fromNativeSeparators(matches.next().captured(1));
+            const auto path = clean(QFileInfo(root + '/' + entry.relative).dir().absoluteFilePath(name));
+            if (QDir::isAbsolutePath(name) || (name.startsWith("..") && !within(path, root)))
+                fail("An HDL file path cannot survive isolated relocation. Use a self-contained source/shared root with relative paths: " + path);
+        }
+    }
+}
+QMap<QString, QString> sharedPlan(const ProjectInfo& info, const QStringList& requested, const Check& check)
+{
+    QStringList roots;
+    for (const auto& root : requested) roots.append(clean(QFileInfo(root).absoluteFilePath()));
+    const auto doc = xml(info.xpr);
+    QList<QDomElement> nodes;
+    std::function<void(QDomElement)> visit = [&](QDomElement element) {
+        nodes.append(element);
+        for (auto child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) visit(child);
+    };
+    visit(doc.documentElement());
+    for (const auto& node : nodes) {
+        check();
+        QString value;
+        bool file = node.tagName() == "File" && node.hasAttribute("Path");
+        const auto key = node.attribute("Name", node.attribute("Id"));
+        const bool directory = dependencyDirectory(key);
+        if (file) value = node.attribute("Path");
+        else if (directory) value = node.attribute("Val");
+        if (value.isEmpty()) continue;
+        const auto path = expandedPath(value, info); noLinks(path);
+        if (within(path, info.root)) continue;
+        if (!QFileInfo::exists(path) && key == "IPRepoPath") continue;
+        if ((file && !QFileInfo(path).isFile()) || (directory && !QFileInfo(path).isDir())) fail("Missing shared dependency: " + path);
+        bool covered = false;
+        for (const auto& root : roots) covered |= within(path, root);
+        if (!covered) roots.append(file ? QFileInfo(path).absolutePath() : path);
+    }
+    roots.removeDuplicates();
+    roots.sort();
+    QMap<QString, QString> result;
+    for (const auto& root : roots) {
+        noLinks(root);
+        if (!QFileInfo(root).isDir() || QDir(root).isRoot() || within(info.root, root) || within(root, info.root))
+            fail("Shared roots must be dedicated directories outside the project, not drives or project ancestors: " + root);
+        bool nested = false;
+        for (const auto& other : roots) if (other != root && within(root, other)) nested = true;
+        if (nested) continue;
+        const auto key = QString::fromLatin1(QCryptographicHash::hash(root.toUtf8(), QCryptographicHash::Sha256).toHex().left(16));
+        result.insert(root, info.name + ".srcs/_archive_shared/" + key);
+    }
+    for (auto it = result.cbegin(); it != result.cend(); ++it) {
+        const auto entries = inventory(it.key(), check);
+        validateMetadata(it.key(), entries, check);
+        validateHdlPaths(it.key(), entries, check);
+    }
+    return result;
+}
+QJsonObject inputManifest(const ProjectInfo& info, const QMap<QString, QString>& shared, const Check& check)
+{
+    QJsonObject inputs;
+    const auto add = [&](const QString& root) {
+        for (const auto& entry : inventory(root, check)) {
+            const auto path = root + '/' + entry.relative;
+            inputs.insert(path, entry.directory ? QJsonValue("directory") : QJsonValue(fileHash(path, check)));
+        }
+    };
+    add(info.root);
+    for (auto it = shared.cbegin(); it != shared.cend(); ++it) add(it.key());
+    return inputs;
+}
+QString inputHash(const QJsonObject& manifest)
+{
+    return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(manifest).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
+}
+void copyShared(const QMap<QString, QString>& shared, const QString& project, const Check& check)
+{
+    for (auto it = shared.cbegin(); it != shared.cend(); ++it) {
+        const auto destination = project + '/' + it.value();
+        if (QFileInfo::exists(destination)) fail("Shared dependency destination already exists: " + destination);
+        if (!QDir().mkpath(destination)) fail("Cannot create shared dependency copy.");
+        for (const auto& entry : inventory(it.key(), check)) {
+            const auto target = destination + '/' + entry.relative;
+            if (entry.directory) { if (!QDir().mkpath(target)) fail("Cannot create shared directory."); }
+            else copyFile(it.key() + '/' + entry.relative, target, check);
+        }
+    }
+}
+void verifyCopied(const ProjectInfo& info, const QMap<QString, QString>& shared, const QJsonObject& inputs, const QString& project, const Check& check)
+{
+    for (auto it = inputs.begin(); it != inputs.end(); ++it) {
+        QString target;
+        if (within(it.key(), info.root)) target = project + '/' + QDir(info.root).relativeFilePath(it.key());
+        else for (auto root = shared.cbegin(); root != shared.cend(); ++root)
+            if (within(it.key(), root.key())) { target = project + '/' + root.value() + '/' + QDir(root.key()).relativeFilePath(it.key()); break; }
+        if (target.isEmpty()) fail("Unmapped input in archive plan.");
+        if (it.value() == "directory") { if (!QFileInfo(target).isDir()) fail("Missing copied input directory: " + target); }
+        else if (fileHash(target, check) != it.value().toString()) fail("Input changed while copying: " + it.key());
+    }
+    if (inputManifest(info, shared, check) != inputs) fail("Source project or shared inputs changed while copying. Retry with a fresh preview.");
+}
+
 const char* resetScript = R"TCL(
 proc ftb_inside {path root} {
     set p [string tolower [file normalize $path]]
@@ -627,10 +777,13 @@ ProjectInfo isolateProject(const QString& xpr, const QString& destination, const
     noLinks(target);
     if (within(target, info.root) || within(info.root, target)) fail("The copy and source project must not contain one another.");
     if (QFileInfo::exists(target)) fail("The independent copy destination already exists.");
+    const auto shared = sharedPlan(info, {}, check);
+    const auto inputs = inputManifest(info, shared, check);
     QSet<QString> imports, generated;
     const auto entries = inventory(info.root, check);
     const auto containers = validateMetadata(info.root, entries, check);
-    relocate(info, target, imports, generated, containers);
+    validateHdlPaths(info.root, entries, check);
+    relocate(info, target, imports, generated, containers, false, nullptr, shared);
     if (!QDir().mkpath(target)) fail("Cannot create the independent project copy.");
     for (const auto& entry : entries) {
         check();
@@ -638,6 +791,8 @@ ProjectInfo isolateProject(const QString& xpr, const QString& destination, const
         if (entry.directory) { if (!QDir().mkpath(path)) fail("Cannot create " + path); }
         else copyFile(info.root + '/' + entry.relative, path, check);
     }
+    copyShared(shared, target, check);
+    verifyCopied(info, shared, inputs, target, check);
     const auto srcs = target + '/' + info.name + ".srcs";
     QDir().mkpath(srcs);
     for (const auto& entry : entries) {
@@ -656,7 +811,7 @@ ProjectInfo isolateProject(const QString& xpr, const QString& destination, const
     const auto copiedXpr = target + '/' + QFileInfo(info.xpr).fileName();
     auto copiedInfo = info; copiedInfo.xpr = copiedXpr;
     QSet<QString> copiedImports, copiedGenerated;
-    const auto document = relocate(copiedInfo, target, copiedImports, copiedGenerated, containers);
+    const auto document = relocate(copiedInfo, target, copiedImports, copiedGenerated, containers, false, nullptr, shared);
     if (imports != copiedImports || generated != copiedGenerated) fail("Project references changed while copying.");
     writeFile(copiedXpr, document.toByteArray(2));
     copiedInfo.root = target;
@@ -697,6 +852,32 @@ ProjectInfo inspectProject(const QString& path)
     info.version = *versions.begin();
     return info;
 }
+QJsonObject previewArchive(const Request& request, const std::function<void()>& check)
+{
+    const auto info = inspectProject(request.xpr);
+    const auto error = archiveNameError(request.archiveName);
+    if (!error.isEmpty()) fail(error);
+    if (request.vivado.version != info.version || !QFileInfo(request.vivado.launcher).isFile()) fail("Configure the exact Vivado release required by the project: " + info.version);
+    const auto compressor = request.compressor.isEmpty() ? bundledCompressor() : request.compressor;
+    if (!QFileInfo(compressor).isFile()) fail("Bundled 7-Zip is unavailable.");
+    const auto output = clean(QFileInfo(request.outputRoot).absoluteFilePath()); noLinks(output);
+    if (within(output, info.root) || within(info.root, output)) fail("Output and source project must not contain one another.");
+    if (!request.archiveName.isEmpty() && (QFileInfo::exists(output + '/' + request.archiveName) || QFileInfo::exists(output + '/' + request.archiveName + ".7z"))) fail("Archive destination already exists.");
+    const auto shared = sharedPlan(info, request.sharedRoots, check);
+    for (auto it = shared.cbegin(); it != shared.cend(); ++it) if (within(output, it.key()) || within(it.key(), output)) fail("Output and shared roots must not contain one another.");
+    const auto entries = inventory(info.root, check);
+    const auto containers = validateMetadata(info.root, entries, check);
+    validateHdlPaths(info.root, entries, check);
+    QSet<QString> imports, generated; QStringList missing;
+    relocate(info, "VALIDATION_ONLY", imports, generated, containers, true, &missing, shared);
+    projectArtifacts(info, entries);
+    QJsonObject mapping; for (auto it = shared.cbegin(); it != shared.cend(); ++it) mapping.insert(it.key(), it.value());
+    const auto inputs = inputManifest(info, shared, check);
+    return {{"project", info.xpr}, {"version", info.version}, {"inputHash", inputHash(inputs)}, {"inputs", inputs},
+            {"sharedRoots", mapping}, {"missingRepositoryPaths", QJsonArray::fromStringList(missing)},
+            {"destination", output + '/' + request.archiveName}, {"compressor", compressor}};
+}
+
 QString installationVersion(const QString& launcher)
 {
     auto dir = QFileInfo(launcher).dir();
@@ -781,11 +962,18 @@ void ArchiveJob::run()
                 fail("The archive folder or 7z file already exists. Choose another archive name.");
         };
         requireAvailableDestination();
+        const auto shared = sharedPlan(info, request_.sharedRoots, check);
+        for (auto it = shared.cbegin(); it != shared.cend(); ++it)
+            if (within(output, it.key()) || within(it.key(), output)) fail("Output and shared roots must not contain one another.");
+        const auto inputs = inputManifest(info, shared, check);
+        if (!request_.expectedInputHash.isEmpty() && inputHash(inputs) != request_.expectedInputHash)
+            fail("Archive inputs changed after preview. Review a new preview.");
         QSet<QString> imports, generatedSources;
         const auto files = inventory(info.root, check);
         const auto containers = validateMetadata(info.root, files, check);
+        validateHdlPaths(info.root, files, check);
         QStringList missingRepositories;
-        relocate(info, "VALIDATION_ONLY", imports, generatedSources, containers, true, &missingRepositories);
+        relocate(info, "VALIDATION_ONLY", imports, generatedSources, containers, true, &missingRepositories, shared);
         for (const auto& path : missingRepositories)
             emit logMessage("Omitting missing IP catalog path from the archive copy: " + path + ". Vivado will verify the copied IP definitions before reset.");
         const auto outputs = projectArtifacts(info, files);
@@ -798,6 +986,8 @@ void ArchiveJob::run()
             totalBytes += entry.size;
             if (preserveGenerated(entry.relative)) generatedBytes += entry.size;
         }
+        for (auto it = shared.cbegin(); it != shared.cend(); ++it)
+            for (const auto& entry : inventory(it.key(), check)) totalBytes += entry.size;
         if (!QDir().mkpath(output)) fail("Cannot create the archive output folder.");
         const QStorageInfo storage(output);
         if (storage.isValid() && storage.bytesAvailable() >= 0 && storage.bytesAvailable() < totalBytes * 3 + generatedBytes * 2 + 32 * 1024 * 1024)
@@ -824,7 +1014,9 @@ void ArchiveJob::run()
                 if (pct != lastPercent) { lastPercent = pct; emit progress(1, pct, "Copying " + entry.relative); }
             });
         }
-        emit progress(1, 100, "Project copy complete.");
+        copyShared(shared, project, check);
+        verifyCopied(info, shared, inputs, project, check);
+        emit progress(1, 100, "Project and shared dependency copy complete.");
         emit progress(2, 0, "Preserving project implementation outputs and active BD handoffs...");
         emit logMessage("Artifact policy: registered design implementation runs; enabled synthesis BDs in the current design source set.");
         QSet<QString> reservedNames, savedNames;
@@ -879,7 +1071,7 @@ void ArchiveJob::run()
             if (outputs[index].relative != copiedOutputs[index].relative) fail("Project artifact settings changed while copying. Close Vivado and retry.");
         QSet<QString> copiedImports, copiedGenerated;
         QStringList copiedMissingRepositories;
-        auto relocated = relocate(copiedInfo, project, copiedImports, copiedGenerated, containers, true, &copiedMissingRepositories);
+        auto relocated = relocate(copiedInfo, project, copiedImports, copiedGenerated, containers, true, &copiedMissingRepositories, shared);
         if (imports != copiedImports || generatedSources != copiedGenerated || missingRepositories != copiedMissingRepositories)
             fail("Project references changed while copying. Close Vivado and retry.");
         writeFile(xpr, relocated.toByteArray(2));

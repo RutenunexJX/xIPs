@@ -160,6 +160,58 @@ private slots:
         } catch (const std::exception& ex) { QFAIL(ex.what()); }
         QVERIFY(QFileInfo::exists(root + "/fixture/fixture.xpr"));
     }
+    void createCliSharedFixture()
+    {
+        const auto root = qEnvironmentVariable("XIPS_CLI_REAL_FIXTURE");
+        const auto launcher = qEnvironmentVariable("FTB_TEST_VIVADO");
+        if (root.isEmpty() || launcher.isEmpty()) QSKIP("Opt-in fresh real Vivado CLI fixture.");
+        QVERIFY(!QFileInfo::exists(root + "/source"));
+        try {
+            runBatch({installationVersion(launcher), launcher}, root,
+                get(QString(FTB_TEST_SOURCE_DIR) + "/fixtures/create-cli-shared-project.tcl"), {}, [] {}, [](const QString& line) { qInfo().noquote() << line; });
+        } catch (const std::exception& ex) { QFAIL(ex.what()); }
+        QVERIFY(QFileInfo::exists(root + "/source/demo.xpr"));
+    }
+    void sharedInputsAreIsolatedAndGuarded()
+    {
+        QTemporaryDir temp;
+        const auto xpr = fixture(temp.path(), "$PPRDIR/../shared/rtl/top.v");
+        put(temp.filePath("shared/rtl/top.v"), "`include \"defs.vh\"\nmodule top; endmodule\n");
+        put(temp.filePath("shared/include/defs.vh"), "`define DATA 1\n");
+        auto text = get(xpr); text.replace("</Configuration>", "<Option Name=\"IncludeDirs\" Val=\"$PPRDIR/../shared/include\"/></Configuration>"); put(xpr, text);
+        const auto beforeProject = snapshot(temp.filePath("source"));
+        const auto beforeShared = snapshot(temp.filePath("shared"));
+        Request request{xpr, temp.filePath("output"), {"2023.1", fake()}, {}, "shared-case", {temp.filePath("shared")}};
+        const auto plan = previewArchive(request);
+        QVERIFY(!plan.value("inputHash").toString().isEmpty());
+        QCOMPARE(plan.value("sharedRoots").toObject().size(), 1);
+        request.expectedInputHash = plan.value("inputHash").toString();
+        const auto result = execute(request);
+        QVERIFY2(!result.isEmpty() && result[0].toBool(), result.isEmpty() ? "No completion" : result[4].toString().toUtf8().constData());
+        const auto mapped = plan.value("sharedRoots").toObject().value(temp.filePath("shared")).toString();
+        QVERIFY(QFileInfo::exists(temp.filePath("output/shared-case/") + mapped + "/rtl/top.v"));
+        QVERIFY(QFileInfo::exists(temp.filePath("output/shared-case/") + mapped + "/include/defs.vh"));
+        QCOMPARE(snapshot(temp.filePath("source")), beforeProject);
+        QCOMPARE(snapshot(temp.filePath("shared")), beforeShared);
+        request.archiveName = "stale-case";
+        put(temp.filePath("shared/include/defs.vh"), "`define DATA 2\n");
+        const auto stale = execute(request);
+        QVERIFY(!stale.isEmpty() && !stale[0].toBool());
+        QVERIFY(stale[4].toString().contains("changed after preview"));
+        QVERIFY(!QFileInfo::exists(temp.filePath("output/stale-case")));
+    }
+    void escapingHdlDependenciesAreRejectedBeforeCopy()
+    {
+        QTemporaryDir temp;
+        const auto xpr = fixture(temp.path());
+        put(temp.filePath("source/demo.srcs/top.v"), "`include \"../../shared/header.vh\"\nmodule top; endmodule\n");
+        put(temp.filePath("shared/header.vh"), "`define SHARED 1\n");
+        const Request request{xpr, temp.filePath("output"), {"2023.1", fake()}, {}, "invalid", {temp.filePath("shared")}};
+        QVERIFY_EXCEPTION_THROWN(previewArchive(request), std::runtime_error);
+        QVERIFY(!QFileInfo::exists(temp.filePath("output")));
+        put(temp.filePath("source/demo.srcs/top.v"), "// `include \"../../shared/header.vh\"\nmodule top; endmodule\n");
+        QVERIFY(!previewArchive(request).value("inputHash").toString().isEmpty());
+    }
     void parseAndDiscover()
     {
         QTemporaryDir temp;
@@ -838,9 +890,16 @@ private slots:
         put(path, data);
         const auto before = snapshot(temp.path());
         const auto result = execute({path, temp.filePath("output"), {"2023.1", fake()}});
-        QVERIFY(!result.isEmpty()); QVERIFY(!result[0].toBool());
-        QVERIFY(!QFileInfo::exists(temp.filePath("output")));
-        QCOMPARE(snapshot(temp.path()), before);
+        QVERIFY(!result.isEmpty());
+        if (kind == "existing-external") {
+            QVERIFY2(result[0].toBool(), result[4].toString().toUtf8().constData());
+            for (auto it = before.cbegin(); it != before.cend(); ++it)
+                QCOMPARE(snapshot(temp.path()).value(it.key()), it.value());
+        } else {
+            QVERIFY(!result[0].toBool());
+            QVERIFY(!QFileInfo::exists(temp.filePath("output")));
+            QCOMPARE(snapshot(temp.path()), before);
+        }
     }
     void catalogVerificationPrecedesReset_data()
     {
