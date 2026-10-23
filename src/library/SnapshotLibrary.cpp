@@ -686,7 +686,7 @@ CatalogAsset currentSource(const CatalogAsset &asset, const CatalogAsset *stored
             QStringLiteral("The source has changed. Rescan the folder."));
     return result;
 }
-CatalogAsset resolveAsset(const CatalogAsset &asset)
+CatalogAsset resolveAsset(const CatalogAsset &asset, const CatalogAsset *storedHistory = nullptr)
 {
     if (!asset.referencePath.isEmpty())
         return readReference(asset.referencePath);
@@ -694,10 +694,11 @@ CatalogAsset resolveAsset(const CatalogAsset &asset)
         return load(asset.root, asset.library);
     if (asset.historyRoot.isEmpty())
         return currentSource(asset);
-    const auto history = load(asset.historyRoot, asset.library);
+    // Reuse metadata only within this read; the next operation still reloads it.
+    const auto history = storedHistory ? *storedHistory : load(asset.historyRoot, asset.library);
     require(history.id == asset.id, QStringLiteral("The asset identity has changed."));
     auto retained = attachHistory(history);
-    try { return currentSource(asset); }
+    try { return currentSource(asset, &history); }
     catch (const OperationCancelled &) { throw; }
     catch (const Failure &failure) { retained.sourceProblem = failure.message; }
     catch (const std::exception &failure) { retained.sourceProblem = QString::fromUtf8(failure.what()); }
@@ -1047,7 +1048,7 @@ CatalogResult SnapshotLibrary::scan(const QString &library)
                 auto saved = attachHistory(history);
                 require(!attached.contains(saved.root), QStringLiteral("Conflicting source histories: %1").arg(saved.root));
                 attached.insert(saved.root);
-                saved = resolveAsset(saved);
+                saved = resolveAsset(saved, &history);
                 result.problems.append(saved.problems);
                 result.assets.append(saved);
             }

@@ -66,7 +66,67 @@ class SnapshotTest : public QObject
     void relocatingSourceRetainsHistoryAndRejectsConflicts();
     void opensOriginalsAndReadOnlySavedFiles();
     void workingPreviewDistinguishesEmptySetsAndExplicitSelection();
+    void snapshotReadsStayFreshAcrossOperations();
 };
+void SnapshotTest::snapshotReadsStayFreshAcrossOperations()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition; definition.name = "fresh_reads";
+    auto result = SnapshotLibrary::create(library, definition);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    put(result.asset.root + "/top.sv", "first");
+    const auto first = SnapshotLibrary::saveCurrent(result.asset);
+    QVERIFY2(first.ok, qPrintable(first.error));
+    const auto initial = SnapshotLibrary::scan(library);
+    QVERIFY(initial.problems.isEmpty()); QCOMPARE(initial.assets.size(), 1);
+    const auto stale = initial.assets.first();
+
+    definition.category = "ip";
+    definition.description = "Changed by a later operation";
+    result = SnapshotLibrary::setDefinition(stale, definition);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    put(result.asset.root + "/top.sv", "second");
+    put(result.asset.root + "/added.sv", "new source");
+    const auto second = SnapshotLibrary::saveCurrent(result.asset);
+    QVERIFY2(second.ok, qPrintable(second.error));
+    result = SnapshotLibrary::describe(stale);
+    QVERIFY2(result.ok, qPrintable(result.error));
+    QCOMPARE(result.asset.description, definition.description);
+    QCOMPARE(result.asset.category, definition.category);
+    QCOMPARE(result.asset.snapshots.size(), 3); // Two immutable versions and current files.
+    QCOMPARE(result.asset.workingFiles, (QStringList{"added.sv", "top.sv"}));
+    QVERIFY(SnapshotLibrary::verifySnapshot(stale, first.snapshot.id).ok);
+
+    const auto badManifest = result.asset.historyRoot + "/.xips/revisions/broken.json";
+    put(badManifest, "{}");
+    result = SnapshotLibrary::describe(stale);
+    QVERIFY(result.ok); QVERIFY(result.asset.historyIncomplete);
+    const auto damaged = SnapshotLibrary::scan(library);
+    QCOMPARE(damaged.assets.size(), 1); QVERIFY(!damaged.problems.isEmpty());
+    QVERIFY(damaged.assets.first().historyIncomplete);
+    QVERIFY(QFile::remove(badManifest));
+
+    const auto hidden = tmp.filePath("temporarily missing");
+    QVERIFY(QDir().rename(stale.root, hidden));
+    result = SnapshotLibrary::describe(stale);
+    QVERIFY(result.ok); QVERIFY(!result.asset.sourceProblem.isEmpty());
+    QCOMPARE(result.asset.snapshots.size(), 2);
+    const auto missing = SnapshotLibrary::scan(library);
+    QCOMPARE(missing.assets.size(), 1); QVERIFY(!missing.problems.isEmpty());
+    QVERIFY(QDir().rename(hidden, stale.root));
+    result = SnapshotLibrary::describe(stale);
+    QVERIFY(result.ok); QVERIFY(result.asset.sourceProblem.isEmpty());
+    QVERIFY(!result.asset.historyIncomplete);
+
+    const auto metadata = result.asset.historyRoot + "/.xips.json";
+    auto replaced = QJsonDocument::fromJson(get(metadata)).object();
+    replaced.insert("id", "replacement-identity");
+    put(metadata, QJsonDocument(replaced).toJson());
+    QVERIFY(!SnapshotLibrary::describe(stale).ok);
+}
+
 void SnapshotTest::workingPreviewDistinguishesEmptySetsAndExplicitSelection()
 {
     QTemporaryDir tmp;

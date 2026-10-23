@@ -177,3 +177,10 @@ if(XIPS_ENABLE_SUITEAPP AND SuiteApp_FOUND)
     xips_enable_strict_warnings(tst_cli_session)
     add_test(NAME cli_session COMMAND tst_cli_session -o -,txt)
 endif()
+
+# Development-only catalog timing probe; no installed command or CTest timing gate.
+add_executable(bench_catalog bench_catalog.cpp)
+target_link_libraries(bench_catalog PRIVATE xips_app)
+if(WIN32)
+    target_link_libraries(bench_catalog PRIVATE psapi)
+endif()

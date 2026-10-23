@@ -1,5 +1,7 @@
 # xIPs
 
+Release 2.14.4 reuses revision history within each asset resolution, reducing catalog and detail refresh work while retaining snapshot and reference validation.
+
 xIPs is a small, local library for reusable FPGA assets: Module, IP, Project, Artifact, or Other.
 It manages explicitly created Module/IP/Project definitions, working sources, immutable revisions and shared references.
 The interface uses Ela controls and shares ZeroSlack's compact panel layout. All application text is English.
