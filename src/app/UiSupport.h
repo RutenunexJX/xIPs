@@ -19,6 +19,7 @@ void primaryButton(ElaPushButton *button);
 void enableSmoothScrolling(QAbstractScrollArea *area);
 void enableToolTip(QWidget *widget);
 void keepDialogOnScreen(QWidget *dialog);
+void applyDialogTheme(QWidget *dialog);
 void prepareMenu(ElaMenu *menu, QWidget *owner);
 QAction *executeMenu(ElaMenu &menu, QWidget *owner, const QPoint &position);
 }

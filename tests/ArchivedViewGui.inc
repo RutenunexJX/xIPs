@@ -26,15 +26,16 @@ void GuiSmokeTest::refreshPreservesArchivedFileBrowsing()
     QTRY_VERIFY(!panel.isCatalogBusy()); panel.revealAsset(first.asset.id);
     auto *pages = panel.findChild<ElaTabWidget *>("assetPages");
     auto *versions = panel.findChild<ElaTableView *>("revisionTable");
-    auto *files = panel.findChild<ElaListView *>("fileList");
+    auto *files = panel.findChild<ElaTreeView *>("fileList");
     QVERIFY(pages && versions && files);
     pages->setCurrentIndex(1);
     versions->setCurrentIndex(revisionIndex(versions, first.snapshot.id));
-    QTRY_COMPARE(files->model()->rowCount(), first.snapshot.files.size());
+    QCOMPARE(historyPaths(files->model()), first.snapshot.files);
+    files->expandAll(); ElaTreeView::finishExpansion(files);
     QTRY_VERIFY(files->verticalScrollBar()->maximum() > 0);
     const auto selected = first.snapshot.files.at(60);
-    const auto selectedIndex = files->model()->index(60, 0);
-    QCOMPARE(selectedIndex.data().toString(), selected);
+    const auto selectedIndex = selectHistoryFile(files, selected);
+    QCOMPARE(selectedIndex.data(Qt::UserRole).toString(), selected);
     files->setCurrentIndex(selectedIndex);
     files->scrollTo(selectedIndex, QAbstractItemView::PositionAtTop);
     QTRY_VERIFY(files->verticalScrollBar()->value() > 0);
@@ -47,7 +48,7 @@ void GuiSmokeTest::refreshPreservesArchivedFileBrowsing()
         panel.catalogAsset(other.asset.id)->workingFiles.contains("synchronized.sv"), 10000);
     QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(versions->currentIndex().data(Qt::UserRole).toString(), first.snapshot.id);
-    QCOMPARE(files->currentIndex().data().toString(), selected);
+    QCOMPARE(files->currentIndex().data(Qt::UserRole).toString(), selected);
     QTRY_COMPARE(files->verticalScrollBar()->value(), scroll);
     QCOMPARE(resets.count(), 0);
 
@@ -57,22 +58,20 @@ void GuiSmokeTest::refreshPreservesArchivedFileBrowsing()
     QTRY_VERIFY_WITH_TIMEOUT(revisionIndex(versions, third.snapshot.id).isValid(), 10000);
     QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(versions->currentIndex().data(Qt::UserRole).toString(), first.snapshot.id);
-    QCOMPARE(files->currentIndex().data().toString(), selected);
+    QCOMPARE(files->currentIndex().data(Qt::UserRole).toString(), selected);
     QTRY_COMPARE(files->verticalScrollBar()->value(), scroll);
     QCOMPARE(resets.count(), 0);
 
     panel.refresh(); QTRY_VERIFY(!panel.isCatalogBusy());
     QCOMPARE(pages->currentIndex(), 1);
     QCOMPARE(versions->currentIndex().data(Qt::UserRole).toString(), first.snapshot.id);
-    QCOMPARE(files->currentIndex().data().toString(), selected);
+    QCOMPARE(files->currentIndex().data(Qt::UserRole).toString(), selected);
     QTRY_COMPARE(files->verticalScrollBar()->value(), scroll);
     QCOMPARE(resets.count(), 0);
 
     // Retaining the old view must not suppress a real version change.
     versions->setCurrentIndex(revisionIndex(versions, third.snapshot.id));
-    QStringList shown;
-    for (int row = 0; row < files->model()->rowCount(); ++row)
-        shown.append(files->model()->index(row, 0).data().toString());
+    const auto shown = historyPaths(files->model());
     QCOMPARE(shown, third.snapshot.files);
     QVERIFY(!shown.contains("rtl/file-00.sv"));
     QVERIFY(shown.contains("rtl/third-only.sv"));

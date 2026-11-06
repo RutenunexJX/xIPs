@@ -15,7 +15,7 @@ xips-cli --apply preview.json
 
 New requests are UTF-8 JSON objects, with an optional UTF-8 BOM. Request limit: 1 MiB; saved preview limit: 64 MiB. Relative filesystem paths are resolved against the request JSON file's directory, then bound as absolute paths in the preview. `files` contains relative payload names, never arbitrary filesystem paths. A request accepts only the fields belonging to its action. Do not mix structured requests with the old `--library`, `--asset`, `--query`, `--destination` or `--action` flags.
 
-A read runs directly. Every structured mutation requires a reviewed preview followed by `--apply`; `--request` by itself never performs a mutation. Applying accepts either the complete preview response or its `data.plan` object. Plans include the normalized request, current library generations, immutable heads, selected file hashes and a content token. Edits, source changes and destination conflicts invalidate the preview. Two processes applying one creation preview cannot publish two assets. An unchanged save does not create a new version.
+A read runs directly. Every structured mutation requires a reviewed preview followed by `--apply`; `--request` by itself never performs a mutation. Applying accepts either the complete preview response or its `data.plan` object. Plans include the normalized request, current library generations, immutable heads, selected file hashes and a content token. Edits, source changes and destination conflicts invalidate the preview. Two processes applying one creation preview cannot publish two assets. An unchanged save does not create a new version unless a new unique `version` is explicitly requested; reusing the latest exact name with identical content retains that revision. The version name is included in the reviewed plan token.
 
 Example `create.json` (first create the `library` directory):
 
@@ -56,7 +56,7 @@ All catalog requests require `action` and `library`. Most asset actions addition
 | `create` with import | Set `sources`; optionally `files`, `move`, `note`, `version`. The selected files are imported and immediately archived. Cannot also use `source`. |
 | `collect` | `name`, `sources`, optional `category`/`note`; creates an archived-only asset. |
 | `import` | Existing working asset, `sources`, optional `files`/`move`/`note`/`version`; imports and immediately saves a version. A move removes only successfully published, unchanged selected input files. Retained inputs are reported. |
-| `save` | Working asset: optional selected `files`. Archived-only asset: required `sources`. Optional `note`. The expected preview is enforced by the original save service. |
+| `save` | Working asset: optional selected `files`. Archived-only asset: required `sources`. Optional `note` and `version` (empty for automatic naming). The expected preview is enforced by the original save service. |
 | `metadata` | Optional `name`, `category`, `description`, `indexes`; unspecified fields are preserved. `indexes` is an object of string arrays with keys `category`, `tag`, `interface`, `purpose`. Existing managed-folder rename behavior is reused. |
 | `version-rename` | `revision`, `name`; changes the display label, never the revision ID/content. |
 | `delete-version`, `restore-version` | Soft deletion preserves manifests, blobs and ancestry. Recovery requires the exact deleted UUID and verifies retained content before restoring visibility. |

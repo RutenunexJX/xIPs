@@ -127,7 +127,7 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
     QCOMPARE(versions->model()->rowCount(), 2);
     const auto first = versions->currentIndex().data(Qt::UserRole).toString();
     QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("rev2"));
-    QCOMPARE(versions->model()->index(0, 1).data().toString(), QString("Archived"));
+    QVERIFY(versions->model()->index(0, 1).data(Qt::ToolTipRole).toString().contains("Read-only"));
     QCOMPARE(model->checkedFiles(), selected);
     const auto asset = SnapshotLibrary::scan(library).assets.first();
     const auto manifest = asset.historyRoot + "/.xips/revisions/" + first + ".json", copy = tmp.filePath("project-copy");
@@ -144,7 +144,7 @@ void GuiSmokeTest::emptyIpImportCheckAndCreateVersions()
     QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("rev3")); QCOMPARE(get(manifest), firstBytes);
     versions->setCurrentIndex(revisionIndex(versions, first));
     FileOpenCapture opened;
-    auto *files = panel.findChild<ElaListView *>("fileList"); files->setCurrentIndex(files->model()->index(0, 0));
+    auto *files = panel.findChild<ElaTreeView *>("fileList"); files->setCurrentIndex(files->model()->index(0, 0));
     panel.findChild<QToolButton *>("openFileButton")->click(); QTRY_COMPARE(opened.urls.size(), 1);
     QCOMPARE(get(opened.urls.first().toLocalFile()), QByteArray("original notes"));
     QVERIFY(!QFileInfo(opened.urls.first().toLocalFile()).permissions().testFlag(QFile::WriteOwner));

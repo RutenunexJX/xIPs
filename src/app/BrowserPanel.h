@@ -63,6 +63,8 @@ class BrowserPanel final : public QWidget
 
   signals:
     void contextChanging();
+    void libraryChanging();
+    void libraryChanged();
 
   protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -115,6 +117,10 @@ class BrowserPanel final : public QWidget
     void openFile();
     void openSourceFolder();
     void updateActions();
+    void updateOverview();
+    void showMoreActions();
+    void compareVersions();
+    void rememberHistoryView();
     void removeMembership();
     void removeAssetMembership(CatalogAsset asset);
     void renameVersion();
@@ -122,7 +128,8 @@ class BrowserPanel final : public QWidget
     void showIssues();
     void detailsDialog();
     void run(const QString &message, std::function<SnapshotResult()> work,
-             std::function<void(const SnapshotResult &)> finished = {}, bool updateCatalog = false);
+             std::function<void(const SnapshotResult &)> finished = {}, bool updateCatalog = false,
+             std::function<void(const SnapshotResult &)> failed = {});
     void setBusy(bool value, const QString &message = {});
     void notice(const QString &message, bool error = false);
     void applyTheme();
@@ -147,6 +154,8 @@ class BrowserPanel final : public QWidget
     QString m_displayedRevision;
     QHash<QString, QSet<QString>> m_checkedFiles;
     QHash<QString, WorkingViewState> m_workingViews;
+    QHash<QString, WorkingViewState> m_historyViews;
+    bool m_restoringHistoryView = false;
     bool m_restoringWorkingView = false;
     QSet<QString> m_collapsedGroups;
     QStringList m_problems;
@@ -179,6 +188,14 @@ class BrowserPanel final : public QWidget
     ElaText *m_status = nullptr;
     ElaText *m_name = nullptr;
     ElaText *m_description = nullptr;
+    ElaText *m_assetSummary = nullptr;
+    ElaText *m_assetInfo = nullptr;
+    ElaToolButton *m_infoToggle = nullptr;
+    ElaToolButton *m_more = nullptr;
+    QWidget *m_filterSummary = nullptr;
+    ElaText *m_resultCount = nullptr;
+    ElaToolButton *m_typeChip = nullptr;
+    ElaToolButton *m_indexChip = nullptr;
     ElaText *m_fileHeading = nullptr;
     ElaLineEdit *m_search = nullptr;
     ElaTableView *m_versions = nullptr;
@@ -197,6 +214,8 @@ class BrowserPanel final : public QWidget
     ElaToolButton *m_edit = nullptr;
     ElaToolButton *m_remove = nullptr;
     ElaToolButton *m_changeReference = nullptr;
+    ElaToolButton *m_compareRevision = nullptr;
+    ElaText *m_versionSummary = nullptr;
     ElaToolButton *m_renameRevision = nullptr;
     ElaToolButton *m_deleteRevision = nullptr;
     ElaToolButton *m_deleteAsset = nullptr;
@@ -219,10 +238,10 @@ class BrowserPanel final : public QWidget
     ElaText *m_workingStatus = nullptr;
     ElaText *m_workingEmpty = nullptr;
     ElaText *m_historyEmpty = nullptr;
-    ElaListView *m_files = nullptr;
+    ElaTreeView *m_files = nullptr;
     CatalogModel *m_model = nullptr;
     CatalogWatcher *m_catalogWatcher = nullptr;
-    QStringListModel *m_fileModel = nullptr;
+    WorkingFilesModel *m_fileModel = nullptr;
     ElaPushButton *m_new = nullptr;
     ElaToolButton *m_folder = nullptr;
     ElaPushButton *m_take = nullptr;

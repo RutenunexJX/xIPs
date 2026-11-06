@@ -32,7 +32,7 @@ const QMap<QString, QStringList> fields = {
      {"name", "category", "source", "description", "indexes", "sources", "files", "move", "note", "version"}},
     {"collect", {"name", "category", "sources", "note"}},
     {"import", {"asset", "sources", "files", "move", "note", "version"}},
-    {"save", {"asset", "sources", "files", "note"}},
+    {"save", {"asset", "sources", "files", "note", "version"}},
     {"metadata", {"asset", "name", "category", "description", "indexes"}},
     {"version-rename", {"asset", "revision", "name"}},
     {"delete-version", {"asset", "revision"}},
@@ -650,7 +650,7 @@ QJsonObject CatalogOperations::apply(const QJsonObject &submitted)
     else
     {
         const ImportRequest imported{strings(r, "sources"), p, r.value("move").toBool(),
-                                     r.value("note").toString(), r.value("version").toString()};
+                                     r.value("note").toString(), r.value("version").toString(), {}};
         if (action == "create")
             result =
                 SnapshotLibrary::create(library, definition(r), r.contains("sources") ? &imported : nullptr);
@@ -662,8 +662,8 @@ QJsonObject CatalogOperations::apply(const QJsonObject &submitted)
             result = SnapshotLibrary::importAndSave(a, imported);
         else if (action == "save")
             result = a.discovered
-                         ? SnapshotLibrary::saveSelected(a, p.files, r.value("note").toString(), &p)
-                         : SnapshotLibrary::update(a, strings(r, "sources"), r.value("note").toString(), &p);
+                         ? SnapshotLibrary::saveSelected(a, p.files, r.value("note").toString(), &p, r.value("version").toString())
+                         : SnapshotLibrary::update(a, strings(r, "sources"), r.value("note").toString(), &p, r.value("version").toString());
         else if (action == "metadata")
             result = SnapshotLibrary::setDefinition(a, definition(r, a));
         else if (action == "version-rename")

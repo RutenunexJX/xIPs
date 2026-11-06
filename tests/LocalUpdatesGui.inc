@@ -63,7 +63,7 @@ void GuiSmokeTest::localUpdatesPreserveViewsAndReviewChanges()
     bool reviewed = false;
     whenVisible(&panel, "payloadReviewForm", [&](QWidget *form)
     {
-        const auto closeOnFailure = qScopeGuard([&] { if (form->isVisible()) qobject_cast<QDialog *>(form)->reject(); });
+        auto closeOnFailure = qScopeGuard([&] { if (form->isVisible()) qobject_cast<QDialog *>(form)->reject(); });
         const auto preview = form->findChild<QPlainTextEdit *>("payloadPreview")->toPlainText();
         QVERIFY(preview.contains("Added\nextra.sv"));
         QVERIFY(preview.contains("Modified\n" + selected));
@@ -72,6 +72,7 @@ void GuiSmokeTest::localUpdatesPreserveViewsAndReviewChanges()
         const auto screenshots = qEnvironmentVariable("XIPS_SCREENSHOT_DIR");
         if (!screenshots.isEmpty()) { QDir().mkpath(screenshots); form->grab().save(screenshots + "/version-changes.png"); }
         reviewed = true;
+        closeOnFailure.dismiss();
         form->findChild<ElaPushButton *>("formAccept")->click();
     });
     panel.findChild<QToolButton *>("updateButton")->click();

@@ -15,6 +15,8 @@ class MainWindow final : public ElaWidget
     void closeEvent(QCloseEvent *event) override;
 
   private:
+    void saveBrowserState();
+    void restoreBrowserState();
     BrowserPanel *m_browser;
 };
 } // namespace xips

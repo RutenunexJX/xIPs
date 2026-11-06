@@ -9,6 +9,7 @@
 #include <QDropEvent>
 #include <QDragEnterEvent>
 #include <QFile>
+#include <QFontDatabase>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -19,6 +20,7 @@
 #include <QSemaphore>
 #include <QSettings>
 #include <QTabWidget>
+#include <QTableView>
 #include <QTabBar>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -51,8 +53,12 @@ QRect globalRect(QWidget *widget)
 { return QRect(widget->mapToGlobal(QPoint()), widget->size()); }
 void expose(QWidget *widget)
 {
-    for (auto *parent = widget->parentWidget(); parent && !widget->isWindow(); parent = parent->parentWidget())
-        if (auto *scroll = qobject_cast<QScrollArea *>(parent)) scroll->ensureWidgetVisible(widget, 4, 4);
+    for (int pass = 0; pass < 3; ++pass)
+    {
+        QCoreApplication::processEvents();
+        for (auto *parent = widget->parentWidget(); parent && !widget->isWindow(); parent = parent->parentWidget())
+            if (auto *scroll = qobject_cast<QScrollArea *>(parent)) scroll->ensureWidgetVisible(widget, 4, 4);
+    }
     QCoreApplication::processEvents();
 }
 void reachable(QWidget *widget)
@@ -249,7 +255,7 @@ class EmbeddedTest final : public QObject
         owner->layout()->setSpacing(0);
         owner->layout()->setSizeConstraint(QLayout::SetNoConstraint);
         owner->layout()->addWidget(panel);
-        owner->setFixedSize(hostSize); owner->show();
+        owner->setFixedSize(hostSize); owner->setWindowFlag(Qt::WindowStaysOnTopHint); owner->show();
 #ifdef Q_OS_WIN
         // STARTUPINFO's SW_HIDE can suppress the process's first ShowWindow
         // despite QWidget::isVisible(). Show this test-owned window again.
@@ -264,6 +270,7 @@ class EmbeddedTest final : public QObject
     void initTestCase()
     {
         QVERIFY(settings.isValid());
+        QFontDatabase::addApplicationFont(QDir(qEnvironmentVariable("WINDIR")).filePath("Fonts/segoeui.ttf"));
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
         const auto hostPath = qEnvironmentVariable("XIPS_TEST_HOST_ELA");
@@ -535,7 +542,9 @@ class EmbeddedTest final : public QObject
         showPage(panel, 0); showPage(panel, 1);
         auto *versions = panel->findChild<QAbstractItemView *>("revisionTable");
         QCOMPARE(versions->model()->rowCount(), 1);
-        QCOMPARE(versions->model()->index(0, 1).data().toString(), QString("Archived"));
+        auto *versionTable = qobject_cast<QTableView *>(versions);
+        QTRY_COMPARE(versionTable->isColumnHidden(1), panel->findChild<QWidget *>("assetDetails")->width() < 480);
+        QVERIFY(versions->model()->index(0, 1).data(Qt::ToolTipRole).toString().contains("Read-only"));
         QCOMPARE(versions->model()->index(0, 0).data().toString(), QString("drop-v1.0"));
         const auto pinnedVersion = state(panel)["revision"].toString();
         whenVisible(&owner, "renameRevisionForm", [](QWidget *form)
@@ -639,7 +648,8 @@ class EmbeddedTest final : public QObject
         click(panel, "newGroupButton"); QTRY_VERIFY(!busy(panel));
         auto *catalog = panel->findChild<QTreeView *>("assetList");
         const auto empty = catalog->currentIndex();
-        QCOMPARE(empty.data().toString(), QString("Empty group"));
+        QCOMPARE(empty.data(Qt::UserRole + 2).toString(), QString("Empty group"));
+        QVERIFY(empty.data().toString().contains("0/0"));
         click(panel, "hideEmptyGroupsButton");
         QVERIFY(catalog->isRowHidden(empty.row(), {}));
         QVERIFY(state(panel)["hideEmptyGroups"].toBool());

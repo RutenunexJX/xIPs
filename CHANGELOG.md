@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.16.0 — 2026-11-07
+
+- Add an asset overview, expandable details and contextual actions; expose active filters, distinct result counts and matching/total group counts.
+- Restore standalone window and per-library browser state while retaining explicit activation targets and the host-managed embedded state contract.
+- Show version dates, file counts and notes, and browse archived files in a separate read-only folder tree with stable browsing position.
+- Compare any two saved revisions by content hashes, filter or swap the result, open verified read-only files and inspect bounded Unicode text differences.
+- Review pinned-reference differences before explicitly selecting a replacement revision; retain unavailable-owner/pin diagnostics.
+- Group folder-import decisions with the actual destination and selection summary; retain inputs on failure and support safe retry/cancellation.
+- Set version names when saving ordinary or collected assets, including through structured CLI previews. Roll back labels if publication fails and retain immutable manifests and pinned UUIDs.
+- Keep clean, missing-only and unavailable Working files blank; retain conflict rejection, verified move semantics and private native runtime ABI v1.
+
+This release continues the deployed 2.14.4 ordinary-asset line. The historical 2.15.0 HDL/template feature branch is not included.
+
 ## 2.14.2 — 2026-10-10
 
 - Remove application function shortcuts while retaining native text editing and ordinary control navigation.

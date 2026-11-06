@@ -8,6 +8,8 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QHelpEvent>
+#include <QHeaderView>
+#include <QLabel>
 #include <QIconEngine>
 #include <QPainter>
 #include <QPainterPath>
@@ -31,6 +33,27 @@ void keepDialogOnScreen(QWidget *dialog)
                                qBound(area.top(), frame.top(), qMax(area.top(), area.bottom() - frame.height() + 1)));
     // QWidget::move positions a top-level frame, including native borders.
     dialog->move(topLeft);
+}
+void applyDialogTheme(QWidget *dialog)
+{
+    using namespace ElaThemeType;
+    const auto mode = eTheme->getThemeMode();
+    const auto base = eTheme->getThemeColor(mode, DialogBase);
+    const auto text = eTheme->getThemeColor(mode, BasicText);
+    auto palette = dialog->palette();
+    for (const auto role : {QPalette::Base, QPalette::Window, QPalette::Button}) palette.setColor(role, base);
+    for (const auto role : {QPalette::Text, QPalette::WindowText, QPalette::ButtonText, QPalette::HighlightedText}) palette.setColor(role, text);
+    palette.setColor(QPalette::Highlight, eTheme->getThemeColor(mode, BasicSelectedAlpha));
+    dialog->setPalette(palette);
+    for (auto *label : dialog->findChildren<QLabel *>()) label->setPalette(palette);
+    for (auto *view : dialog->findChildren<QAbstractItemView *>())
+    {
+        view->setStyleSheet({}); view->setFont(dialog->font()); view->setPalette(palette);
+        view->viewport()->setFont(dialog->font()); view->viewport()->setPalette(palette);
+        view->viewport()->setAutoFillBackground(true);
+    }
+    for (auto *header : dialog->findChildren<QHeaderView *>())
+        header->setStyleSheet(QStringLiteral("QHeaderView::section { background: %1; color: %2; border: none; padding: 3px; }").arg(base.name(), text.name()));
 }
 void primaryButton(ElaPushButton *button)
 {
@@ -150,7 +173,6 @@ class DetailDelegate final : public QStyledItemDelegate
     {
         const bool dark = eTheme->getThemeMode() == ElaThemeType::Dark;
         const bool selected = option.state.testFlag(QStyle::State_Selected);
-        const bool editing = revisions && index.data(Qt::UserRole + 1).toBool();
         auto text = option.palette.color(QPalette::Text);
         const auto muted = eTheme->getThemeColor(eTheme->getThemeMode(), ElaThemeType::BasicDetailsText);
         painter->save();
@@ -160,21 +182,10 @@ class DetailDelegate final : public QStyledItemDelegate
                                                            : option.palette.color(QPalette::Base));
         QRect area = option.rect.adjusted(7, 0, -7, 0);
         auto font = option.font;
-        if (revisions && index.column() == 1)
+        if (revisions && index.column() != 0)
         {
             font.setPixelSize(12);
-            painter->setFont(font);
-            text = editing ? QColor(dark ? "#f0c47b" : "#8b5a11") : muted;
-            if (editing)
-            {
-                painter->setPen(Qt::NoPen);
-                painter->setBrush(QColor(dark ? "#3b3325" : "#faf0dc"));
-                painter->drawRoundedRect(QRect(area.left() - 3, area.center().y() - 10,
-                    painter->fontMetrics().horizontalAdvance(index.data().toString()) + 24, 21), 4, 4);
-            }
-            drawIcon(painter, QRect(area.left(), area.center().y() - 6, 12, 12),
-                     editing ? UiIcon::Edit : UiIcon::Lock, text);
-            area.adjust(18, 0, 0, 0);
+            text = muted;
         }
         else if (revisions && selected)
         {

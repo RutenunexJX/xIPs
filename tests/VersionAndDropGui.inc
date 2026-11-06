@@ -64,7 +64,8 @@ void GuiSmokeTest::archivedVersionsCanBeDeleted()
     QCOMPARE(versions->currentIndex().data(Qt::UserRole).toString(), first.snapshot.id);
     QVERIFY(button->isVisible() && button->isEnabled());
     FileOpenCapture opened;
-    auto *files = panel.findChild<ElaListView *>("fileList");
+    auto *files = panel.findChild<ElaTreeView *>("fileList");
+    selectHistoryFile(files, first.snapshot.files.first());
     files->setCurrentIndex(files->model()->index(0, 0));
     panel.findChild<QToolButton *>("openFileButton")->click(); QTRY_COMPARE(opened.urls.size(), 1);
     QFile original(opened.urls.first().toLocalFile()); QVERIFY(original.open(QIODevice::ReadOnly));

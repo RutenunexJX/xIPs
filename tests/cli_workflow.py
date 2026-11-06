@@ -15,6 +15,7 @@ lib.mkdir()
 cli = str(args.cli.resolve())
 
 def run(arguments, expected=0):
+    if '--session-dir' not in arguments: arguments = [*arguments, '--session-dir', work/'offline sessions']
     proc = subprocess.run([cli, *map(str, arguments)], capture_output=True, encoding='utf-8', errors='replace', timeout=120)
     try:
         value = json.loads(proc.stdout)
@@ -57,7 +58,8 @@ def main():
     asset = apply('create', name='demo', category='ip')['asset']
     aid = asset['id']; working = Path(asset['workingRoot'])
     source = working / 'top.sv'; source.write_text('module top; localparam VALUE = 1; endmodule\n', encoding='utf-8')
-    v1 = apply('save', asset=aid, note='first')['snapshot']
+    v1 = apply('save', asset=aid, note='first', version='v1.0')['snapshot']
+    assert v1['label'] == 'v1.0'
     assert v1['id'] and len(request('history', asset=aid)['versions']) == 1
     assert not request('working', asset=aid)['changed']
     source.write_text('module top; localparam VALUE = 2; endmodule\n', encoding='utf-8')
@@ -134,8 +136,17 @@ def main():
     collected = apply('collect', name='archive_only', category='module', sources=[str(more)])['asset']
     assert request('working', asset=collected['id'])['working'] is None
     (more/'next.sv').write_text('module next; wire revised; endmodule\n')
-    apply('save', asset=collected['id'], sources=[str(more)])
-    assert len(request('history', asset=collected['id'])['versions'])==2
+    c2=apply('save', asset=collected['id'], sources=[str(more)], version='collected-v2')['snapshot']
+    assert c2['label']=='collected-v2'
+    assert apply('save', asset=collected['id'], sources=[str(more)])['unchanged']
+    named_plan,_=preview('save',asset=collected['id'],sources=[str(more)],version='release candidate')
+    altered_name=json.loads(named_plan.read_text(encoding='utf-8'))
+    altered_name['data']['plan']['request']['version']='changed without review'
+    tampered_name=work/'altered-version.json';tampered_name.write_text(json.dumps(altered_name),encoding='utf-8')
+    run(['--apply',tampered_name],2)
+    assert len(request('history',asset=collected['id'])['versions'])==2
+    c3=run(['--apply',named_plan])['data']['snapshot']
+    assert c3['label']=='release candidate' and c3['id']!=c2['id'] and c3['hash']==c2['hash']
     request('history', expected=4, asset='missing-id')
     invalid = work/'bad.json'; invalid.write_text('{"action":"create","library":'+json.dumps(str(lib))+',"name":"bad","typo":1}')
     run(['--request', invalid, '--dry-run'], 2)

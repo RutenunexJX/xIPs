@@ -30,6 +30,7 @@ class CatalogModel final : public QAbstractItemModel
     bool updateAsset(const CatalogAsset &asset);
     QModelIndex indexForId(const QString &id, const QString &group = {}) const;
     int assetIndex(const QModelIndex &index) const;
+    int visibleAssetCount() const { return m_visible.size(); }
     QString groupId(const QModelIndex &index) const;
     const QList<CatalogGroup> &groups() const { return m_groups; }
   signals:

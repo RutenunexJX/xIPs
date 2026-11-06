@@ -485,6 +485,27 @@ void writeJson(const QString &path, const QJsonObject &document,
     OperationScope::publish();
     require(file.commit(), QStringLiteral("Cannot commit metadata: %1").arg(path));
 }
+void publishNamedSnapshot(const QString &root, const CatalogAsset &history, Snapshot &snapshot,
+                          const QString &version, SnapshotResult &result)
+{
+    if (version.isEmpty()) { publishSnapshot(root, history.id, snapshot); return; }
+    auto document = history.document;
+    setRevisionLabel(document, snapshot, version, history.snapshots);
+    const auto path = child(root, ".xips.json");
+    const auto original = bytes(path);
+    require(QJsonDocument::fromJson(original).object() == history.document,
+            QStringLiteral("Version details changed. Refresh and retry."));
+    writeJson(path, document, &original);
+    try { publishSnapshot(root, history.id, snapshot); }
+    catch (...)
+    {
+        const auto expected = QJsonDocument(document).toJson(QJsonDocument::Indented);
+        try { writeJson(path, history.document, &expected); }
+        catch (...) { result.retainedPath = root; }
+        throw;
+    }
+    snapshot.label = version;
+}
 bool skipSource(const QFileInfo &entry)
 {
     return entry.fileName().startsWith('.') || files::isLinkLike(entry) ||
@@ -1330,7 +1351,7 @@ SnapshotResult SnapshotLibrary::collect(const QString &library, const QStringLis
         });
 }
 SnapshotResult SnapshotLibrary::update(const CatalogAsset &asset, const QStringList &sources,
-                                       const QString &note, const PayloadPreview *expected)
+                                       const QString &note, const PayloadPreview *expected, const QString &version)
 {
     return operation(
         [&](auto &result)
@@ -1342,6 +1363,7 @@ SnapshotResult SnapshotLibrary::update(const CatalogAsset &asset, const QStringL
             require(result.asset.id == asset.id && result.asset.document.value("schemaVersion").toInt() == 3,
                     QStringLiteral("Saving revisions requires a new-format asset."));
             healthyHistory(result.asset);
+            const auto name = version.trimmed().isEmpty() ? QString() : checkedRevisionLabel(version);
             const QByteArray original = bytes(child(asset.root, ".xips.json"));
             const auto inputs = sourceFiles(sources, result.asset.category == "artifact");
             const auto parents = parentRevisions(result.asset);
@@ -1352,7 +1374,8 @@ SnapshotResult SnapshotLibrary::update(const CatalogAsset &asset, const QStringL
             for (qsizetype i = 0; i < inputs.size(); ++i)
                 require(inputs[i].source == confirmed[i].source && inputs[i].relative == confirmed[i].relative,
                         QStringLiteral("Source file list changed while saving"));
-            if (parents.size() == 1 && sameContent(result.asset, result.asset.snapshots.last(), result.snapshot))
+            if (parents.size() == 1 && sameContent(result.asset, result.asset.snapshots.last(), result.snapshot) &&
+                (name.isEmpty() || name == SnapshotLibrary::revisionLabel(result.asset.snapshots.last())))
             {
                 const auto &latest = result.asset.snapshots.last();
                 verifySaved(result.asset, latest);
@@ -1364,7 +1387,7 @@ SnapshotResult SnapshotLibrary::update(const CatalogAsset &asset, const QStringL
                     QStringLiteral("The asset has been updated. Refresh to continue."));
             require(parentRevisions(load(asset.root, asset.library)) == parents,
                     QStringLiteral("Versions changed during saving. Refresh and retry."));
-            publishSnapshot(asset.root, asset.id, result.snapshot);
+            publishNamedSnapshot(asset.root, result.asset, result.snapshot, name, result);
             result.asset = load(asset.root, asset.library);
         });
 }
@@ -1407,10 +1430,11 @@ QJsonObject definitionFields(const CatalogDefinition &definition)
 }
 void saveSourceRevision(const CatalogAsset &asset, const QString &note, SnapshotResult &result,
                         const QJsonObject &definition = {}, const PayloadPreview *expected = nullptr,
-                        const QStringList *selection = nullptr)
+                        const QStringList *selection = nullptr, const QString &version = {})
 {
         require(asset.discovered, QStringLiteral("Select original files to save a revision."));
         require(asset.referencePath.isEmpty(), QStringLiteral("Open the owning library to modify a referenced IP."));
+        const auto name = version.trimmed().isEmpty() ? QString() : checkedRevisionLabel(version);
         auto current = currentSource(asset);
         healthyHistory(current);
         const QString relative = QDir(asset.library).relativeFilePath(asset.root);
@@ -1445,14 +1469,15 @@ void saveSourceRevision(const CatalogAsset &asset, const QString &note, Snapshot
         {
             const auto history = load(destination, asset.library);
             require(parentRevisions(history) == parents, QStringLiteral("Versions changed during saving. Rescan and retry."));
-            if (parents.size() == 1 && sameContent(history, history.snapshots.last(), result.snapshot))
+            if (parents.size() == 1 && sameContent(history, history.snapshots.last(), result.snapshot) &&
+                (name.isEmpty() || name == SnapshotLibrary::revisionLabel(history.snapshots.last())))
             {
                 verifySaved(history, history.snapshots.last());
                 result.unchanged = true;
                 result.snapshot = history.snapshots.last();
             }
             else
-                publishSnapshot(destination, history.id, result.snapshot);
+                publishNamedSnapshot(destination, history, result.snapshot, name, result);
         }
         else
         {
@@ -1463,6 +1488,7 @@ void saveSourceRevision(const CatalogAsset &asset, const QString &note, Snapshot
             for (auto it = definition.begin(); it != definition.end(); ++it)
                 document.insert(it.key(), it.value());
             document.insert("source", QJsonObject{{"path", relative}, {"directory", current.sourceIsDirectory}});
+            if (!name.isEmpty()) { setRevisionLabel(document, result.snapshot, name); result.snapshot.label = name; }
             writeJson(child(staging.path(), ".xips.json"), document);
             publishSnapshot(staging.path(), id, result.snapshot);
             safePath(destination);
@@ -1484,21 +1510,21 @@ void saveSourceRevision(const CatalogAsset &asset, const QString &note, Snapshot
         result.asset = currentSource(current);
 }
 }
-SnapshotResult SnapshotLibrary::saveCurrent(const CatalogAsset &asset, const QString &note, const PayloadPreview *expected)
+SnapshotResult SnapshotLibrary::saveCurrent(const CatalogAsset &asset, const QString &note, const PayloadPreview *expected, const QString &version)
 {
     return operation([&](auto &result)
     {
         LibraryLock lock(asset.library);
-        saveSourceRevision(asset, note, result, {}, expected);
+        saveSourceRevision(asset, note, result, {}, expected, nullptr, version);
     });
 }
 SnapshotResult SnapshotLibrary::saveSelected(const CatalogAsset &asset, const QStringList &files,
-                                            const QString &note, const PayloadPreview *expected)
+                                            const QString &note, const PayloadPreview *expected, const QString &version)
 {
     return operation([&](auto &result)
     {
         LibraryLock lock(asset.library);
-        saveSourceRevision(asset, note, result, {}, expected, &files);
+        saveSourceRevision(asset, note, result, {}, expected, &files, version);
     });
 }
 namespace
@@ -1578,6 +1604,7 @@ QMap<QString, ContentObject> stageImports(const QString &targetRoot, const QStri
             require(!planned.contains(relativeParent), QStringLiteral("Conflicting file and folder names: %1").arg(relativeParent));
             parent = QFileInfo(parent).absolutePath();
         }
+        if (stageRoot.isEmpty()) continue;
         const auto stagedPath = child(stageRoot, input.relative);
         ContentStore::makeDirectory(QFileInfo(stagedPath).absolutePath());
         QFile in(input.source), out(stagedPath);
@@ -1654,6 +1681,8 @@ SnapshotResult SnapshotLibrary::create(const QString &library, const CatalogDefi
         LibraryLock lock(library);
         const bool managed = definition.source.isEmpty();
         QString source = managed ? availableRoot(library, definition.name) : absolute(definition.source);
+        require(!request || request->expectedRoot.isEmpty() || absolute(request->expectedRoot) == source,
+                QStringLiteral("The proposed working folder changed. Review the destination again."));
         std::unique_ptr<QTemporaryDir> sourceStage;
         if (managed)
         {
@@ -1764,6 +1793,8 @@ SnapshotResult importWorking(const CatalogAsset &asset, const QStringList &sourc
             require(!current.historyRoot.isEmpty() && current.document == asset.document &&
                         parentRevisions(current) == parentRevisions(asset),
                     QStringLiteral("The destination changed. Refresh and review again."));
+        require(!request || request->expectedRoot.isEmpty() || absolute(request->expectedRoot) == absolute(asset.root),
+                QStringLiteral("The destination working folder changed. Review again."));
         auto planned = importInputs(sources, asset.root, request != nullptr);
         if (request) selectImports(planned, request->selection);
         ContentStore::makeDirectory(child(asset.library, ".xips/imports"));
@@ -1927,6 +1958,50 @@ SnapshotResult SnapshotLibrary::previewImport(const QStringList &sources)
             result.preview.bytes += object.size;
         }
         result.preview.files = result.preview.objects.keys();
+    });
+}
+QString SnapshotLibrary::suggestedWorkingDirectory(const QString &library, const QString &name)
+{
+    try { return availableRoot(library, name); }
+    catch (...) { return {}; }
+}
+SnapshotResult SnapshotLibrary::previewImportTarget(const QString &library, const CatalogDefinition &definition,
+                                                   const CatalogAsset &target, const ImportRequest &request)
+{
+    return operation([&](auto &result)
+    {
+        const auto version = request.version.trimmed().isEmpty() ? QString() : checkedRevisionLabel(request.version);
+        QString destination;
+        if (target.id.isEmpty())
+        {
+            definitionFields(definition);
+            require(QStringList{"module", "ip", "project"}.contains(definition.category), QStringLiteral("Choose Module, IP or Project."));
+            destination = availableRoot(library, definition.name);
+        }
+        else
+        {
+            result.asset = currentSource(target);
+            healthyHistory(result.asset);
+            require(result.asset.discovered && result.asset.sourceIsDirectory && result.asset.referencePath.isEmpty(),
+                    QStringLiteral("Choose a writable working folder."));
+            require(result.asset.document == target.document && parentRevisions(result.asset) == parentRevisions(target),
+                    QStringLiteral("The destination changed. Refresh and review again."));
+            destination = result.asset.root;
+            if (!version.isEmpty())
+                for (const auto &saved : result.asset.snapshots)
+                    if (saved.id != "current" && SnapshotLibrary::revisionLabel(saved).compare(version, Qt::CaseInsensitive) == 0)
+                        require(parentRevisions(result.asset).size() == 1 && parentRevisions(result.asset).contains(saved.id) &&
+                                saved.objects == request.selection.objects && version == SnapshotLibrary::revisionLabel(saved),
+                                QStringLiteral("Another version already uses this name."));
+        }
+        require(request.expectedRoot.isEmpty() || absolute(request.expectedRoot) == absolute(destination),
+                QStringLiteral("The proposed working folder changed. Review the destination again."));
+        auto planned = importInputs(request.sources, destination, true);
+        selectImports(planned, request.selection);
+        // Empty stageRoot performs the same conflict checks without writing any files.
+        stageImports(destination, {}, planned, &request.selection);
+        result.exportedPath = destination;
+        result.preview = request.selection;
     });
 }
 SnapshotResult SnapshotLibrary::setDefinition(const CatalogAsset &asset, const CatalogDefinition &definition)
@@ -2193,6 +2268,28 @@ void excludedFiles(const QString &directory, const QString &prefix, bool registe
         else if (entry.isDir()) excludedFiles(entry.absoluteFilePath(), relative + '/', registered, artifact, excluded, included);
     }
 }
+void compareObjects(PayloadPreview &preview, const QMap<QString, ContentObject> &previous)
+{
+    preview.added.clear(); preview.modified.clear(); preview.removed.clear(); preview.unchanged = 0;
+    for (auto it = preview.objects.cbegin(); it != preview.objects.cend(); ++it)
+        if (!previous.contains(it.key())) preview.added.append(it.key());
+        else if (previous.value(it.key()) != it.value()) preview.modified.append(it.key());
+        else ++preview.unchanged;
+    for (auto it = previous.cbegin(); it != previous.cend(); ++it)
+        if (!preview.objects.contains(it.key())) preview.removed.append(it.key());
+}
+QMap<QString, ContentObject> snapshotObjects(const CatalogAsset &asset, const Snapshot &snapshot)
+{
+    if (!snapshot.objects.isEmpty()) return snapshot.objects;
+    verifySaved(asset, snapshot);
+    QMap<QString, ContentObject> objects;
+    for (const auto &file : snapshot.files)
+    {
+        OperationScope::checkpoint();
+        objects.insert(file, ContentStore::fingerprint(child(revisionRoot(asset, snapshot), file)));
+    }
+    return objects;
+}
 void comparePreview(PayloadPreview &preview, const CatalogAsset &asset)
 {
     QMap<QString, ContentObject> previous;
@@ -2208,12 +2305,7 @@ void comparePreview(PayloadPreview &preview, const CatalogAsset &asset)
             }
             break;
         }
-    for (auto it = preview.objects.cbegin(); it != preview.objects.cend(); ++it)
-        if (!previous.contains(it.key())) preview.added.append(it.key());
-        else if (previous.value(it.key()) != it.value()) preview.modified.append(it.key());
-        else ++preview.unchanged;
-    for (auto it = previous.cbegin(); it != previous.cend(); ++it)
-        if (!preview.objects.contains(it.key())) preview.removed.append(it.key());
+    compareObjects(preview, previous);
 }
 SnapshotResult previewWorkingCopy(const CatalogAsset &asset, const QStringList *selection)
 {
@@ -2289,6 +2381,30 @@ SnapshotResult SnapshotLibrary::previewSave(const CatalogAsset &asset, const QSt
 SnapshotResult SnapshotLibrary::previewWorking(const CatalogAsset &asset)
 {
     return previewWorkingCopy(asset, nullptr);
+}
+SnapshotResult SnapshotLibrary::compareSnapshots(const CatalogAsset &asset, const QString &baseRevision,
+                                                 const QString &targetRevision)
+{
+    return operation([&](auto &result)
+    {
+        result.asset = resolveAsset(asset);
+        require(result.asset.id == asset.id, QStringLiteral("The asset identity has changed."));
+        require(!result.asset.legacy, QStringLiteral("Convert the legacy asset before comparing versions."));
+        for (const auto &id : {baseRevision, targetRevision})
+            require(!id.isEmpty() && id != "current" && id != "working", QStringLiteral("Choose two saved versions."));
+        result.comparisonBase = selected(result.asset, baseRevision);
+        result.snapshot = selected(result.asset, targetRevision);
+        require(result.comparisonBase.id == baseRevision && result.snapshot.id == targetRevision,
+                QStringLiteral("The selected version is unavailable. Refresh the catalog."));
+        result.comparisonBase.objects = snapshotObjects(result.asset, result.comparisonBase);
+        result.snapshot.objects = snapshotObjects(result.asset, result.snapshot);
+        result.preview.assetId = asset.id;
+        result.preview.revision = targetRevision;
+        result.preview.comparisonRevision = baseRevision;
+        result.preview.files = result.snapshot.files;
+        result.preview.objects = result.snapshot.objects;
+        compareObjects(result.preview, result.comparisonBase.objects);
+    });
 }
 SnapshotResult SnapshotLibrary::previewSelected(const CatalogAsset &asset, const QStringList &files)
 {

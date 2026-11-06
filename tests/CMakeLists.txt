@@ -1,3 +1,7 @@
+add_executable(tst_usability tst_usability.cpp)
+target_link_libraries(tst_usability PRIVATE xips_app Qt6::Test)
+add_test(NAME usability COMMAND tst_usability -o -,txt)
+set_tests_properties(usability PROPERTIES TIMEOUT 240)
 add_executable(tst_core tst_core.cpp)
 target_compile_definitions(tst_core
     PRIVATE
@@ -120,8 +124,8 @@ endif()
 get_filename_component(_xips_qt_bin_dir "${_xips_qt_core_location}" DIRECTORY)
 get_filename_component(_xips_qt_prefix "${_xips_qt_bin_dir}/.." ABSOLUTE)
 get_filename_component(_xips_compiler_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-set(_xips_tests archive_host archive_standalone archive core snapshots workflows cli gui_smoke user_journey native interactions working_model catalog_model embedded)
-set(_xips_gui_tests archive_host archive_standalone archive gui_smoke user_journey native interactions working_model catalog_model embedded)
+set(_xips_tests usability archive_host archive_standalone archive core snapshots workflows cli gui_smoke user_journey native interactions working_model catalog_model embedded)
+set(_xips_gui_tests usability archive_host archive_standalone archive gui_smoke user_journey native interactions working_model catalog_model embedded)
 if(TARGET xips_suite)
     add_executable(tst_suite tst_suite.cpp)
     target_compile_definitions(tst_suite PRIVATE

@@ -48,7 +48,9 @@ QVariant CatalogModel::data(const QModelIndex &index, int role) const
     if (value->asset < 0)
     {
         const auto &group = m_groups[value->group];
-        if (role == Qt::DisplayRole) return group.name;
+        if (role == Qt::DisplayRole) return QStringLiteral("%1 · %2/%3")
+            .arg(group.name).arg(value->children.size()).arg(value->allChildren.size());
+        if (role == Qt::UserRole + 2) return group.name;
         if (role == Qt::ToolTipRole) return QStringLiteral("%1 · %2 assets\nDrag to move from the original group; Ctrl-drag to add an association. Files stay in place.")
             .arg(group.name).arg(value->children.size());
         if (role == Qt::DecorationRole) return uiIcon(UiIcon::Folder);

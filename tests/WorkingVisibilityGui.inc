@@ -218,7 +218,7 @@ void GuiSmokeTest::workingStatusDistinguishesEmptyAndMissing()
         if (fileCount)
         {
             pages->setCurrentIndex(1);
-            QCOMPARE(panel.findChild<ElaListView *>("fileList")->model()->rowCount(), fileCount);
+            QCOMPARE(historyPaths(panel.findChild<ElaTreeView *>("fileList")->model()).size(), fileCount);
             QVERIFY(panel.findChild<ElaPushButton *>("takeButton")->isEnabled());
             const auto verification = SnapshotLibrary::verifySnapshot(fixture.asset, fixture.snapshot.id);
             QVERIFY2(verification.ok, qPrintable(verification.error));

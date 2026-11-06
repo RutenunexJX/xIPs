@@ -96,6 +96,7 @@ struct ImportRequest
     bool move = false;
     QString note;
     QString version;
+    QString expectedRoot;
 };
 
 struct SnapshotResult
@@ -108,6 +109,7 @@ struct SnapshotResult
     QStringList retainedSources;
     CatalogAsset asset;
     Snapshot snapshot;
+    Snapshot comparisonBase;
     QString exportedPath;
     PayloadPreview preview;
 };
@@ -127,16 +129,21 @@ class SnapshotLibrary
     static SnapshotResult addReference(const CatalogAsset &asset, const QString &revision,
                                        const QString &destinationLibrary);
     static SnapshotResult saveCurrent(const CatalogAsset &asset, const QString &note = {},
-                                      const PayloadPreview *expected = nullptr);
+                                      const PayloadPreview *expected = nullptr, const QString &version = {});
     static SnapshotResult previewSave(const CatalogAsset &asset, const QStringList &sources = {});
     static SnapshotResult importFiles(const CatalogAsset &asset, const QStringList &sources);
     static SnapshotResult previewImport(const QStringList &sources);
+    static QString suggestedWorkingDirectory(const QString &library, const QString &name);
+    static SnapshotResult previewImportTarget(const QString &library, const CatalogDefinition &definition,
+                                             const CatalogAsset &target, const ImportRequest &request);
     static SnapshotResult importAndSave(const CatalogAsset &asset, const ImportRequest &request);
     // Compare every current working file, including a valid empty working set.
     static SnapshotResult previewWorking(const CatalogAsset &asset);
+    static SnapshotResult compareSnapshots(const CatalogAsset &asset, const QString &baseRevision,
+                                           const QString &targetRevision);
     static SnapshotResult previewSelected(const CatalogAsset &asset, const QStringList &files);
     static SnapshotResult saveSelected(const CatalogAsset &asset, const QStringList &files,
-                                       const QString &note = {}, const PayloadPreview *expected = nullptr);
+                                       const QString &note = {}, const PayloadPreview *expected = nullptr, const QString &version = {});
     static SnapshotResult previewCollect(const QStringList &sources, const QString &category);
     static SnapshotResult previewExport(const CatalogAsset &asset, const QString &revision);
     static QStringList heads(const CatalogAsset &asset);
@@ -156,7 +163,7 @@ class SnapshotLibrary
                                   const QString &name, const QString &category,
                                   const QString &note = {}, const PayloadPreview *expected = nullptr);
     static SnapshotResult update(const CatalogAsset &asset, const QStringList &sources,
-                                 const QString &note = {}, const PayloadPreview *expected = nullptr);
+                                 const QString &note = {}, const PayloadPreview *expected = nullptr, const QString &version = {});
     static SnapshotResult edit(const CatalogAsset &asset, const QString &name,
                                const QString &category, const QString &description);
     static SnapshotResult exportSnapshot(const CatalogAsset &asset, const QString &revision,

@@ -45,6 +45,8 @@ add_library(xips_app STATIC
     ${CMAKE_SOURCE_DIR}/assets/xips.qrc
     app/BrowserPanel.cpp
     app/BrowserPanel.h
+    app/RevisionCompareDialog.cpp
+    app/RevisionCompareDialog.h
     app/ElaFilePicker.cpp
     app/ElaFilePicker.h
     app/MainWindow.cpp

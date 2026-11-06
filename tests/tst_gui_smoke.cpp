@@ -230,16 +230,16 @@ void GuiSmokeTest::doubleClickAndButtonOpenTheSelectedVersion()
     panel.show();
     panel.setContext(library, {});
     QTRY_VERIFY(!panel.isCatalogBusy());
-    auto *files = panel.findChild<ElaListView *>("fileList");
+    auto *files = panel.findChild<ElaTreeView *>("fileList");
     auto *versions = panel.findChild<ElaTableView *>("revisionTable");
     auto *archive = panel.findChild<QToolButton *>("updateButton");
     auto *working = panel.findChild<ElaTreeView *>("workingFiles");
     auto *workingModel = qobject_cast<WorkingFilesModel *>(working->model());
     auto *pages = panel.findChild<ElaTabWidget *>("assetPages");
     QAbstractItemModelTester tableCheck(versions->model(), QAbstractItemModelTester::FailureReportingMode::QtTest);
-    QCOMPARE(versions->model()->headerData(1, Qt::Horizontal).toString(), QString("Status"));
+    QCOMPARE(versions->model()->headerData(1, Qt::Horizontal).toString(), QString("Saved"));
     QCOMPARE(versions->model()->rowCount(), 1);
-    QCOMPARE(versions->model()->index(0, 1).data().toString(), QString("Archived"));
+    QVERIFY(versions->model()->index(0, 1).data(Qt::ToolTipRole).toString().contains("Read-only"));
     QVERIFY(versions->model()->index(0, 1).data(Qt::AccessibleTextRole).toString().contains("read-only"));
     QVERIFY(!archive->isEnabled());
     panel.findChild<ElaCheckBox *>("checkAllFiles")->click();
@@ -261,7 +261,8 @@ void GuiSmokeTest::doubleClickAndButtonOpenTheSelectedVersion()
     source.close();
     versions->setCurrentIndex(revisionIndex(versions, created.snapshot.id));
     pages->setCurrentIndex(1);
-    QVERIFY(archive->isEnabled());
+    selectHistoryFile(files, created.snapshot.files.first());
+    QVERIFY(!archive->isVisible());
     QCOMPARE(panel.findChild<QToolButton *>("openFileButton")->text(), QString("Open read-only"));
     panel.activateWindow();
     files->setFocus();
@@ -455,7 +456,8 @@ void GuiSmokeTest::damagedHistoryAndUnavailableReferencesRemainVisible()
     for (const auto *name : {"removeSourceButton", "changeReferenceButton"})
     {
         const auto *button = panel.findChild<QToolButton *>(name);
-        QVERIFY(button && button->isEnabled() && button->isVisible());
+        QVERIFY(button && button->isEnabled());
+        QVERIFY(panel.findChild<QToolButton *>("moreAssetActions")->isVisible());
     }
 }
 void GuiSmokeTest::compactPanelFiltersAndSelectsVersions()
@@ -1181,21 +1183,21 @@ void GuiSmokeTest::compactWindowKeepsActionsBesideContent()
     }
     auto *versions = panel->findChild<ElaTableView *>("revisionTable");
     panel->findChild<ElaTabWidget *>("assetPages")->setCurrentIndex(1);
-    QCOMPARE(versions->model()->columnCount(), 2);
+    QCOMPARE(versions->model()->columnCount(), 3);
     QCOMPARE(versions->model()->rowCount(), 2);
     const auto contentTop = versions->mapTo(panel, QPoint()).y();
-    for (const auto &name : {"takeButton", "updateButton"})
+    for (const auto &name : {"takeButton"})
     {
         auto *button = panel->findChild<QAbstractButton *>(name);
         QVERIFY(button->isVisible());
         QVERIFY(button->mapTo(panel, QPoint(0, button->height())).y() <= contentTop);
     }
     QCOMPARE(panel->findChild<ElaPushButton *>("takeButton")->text(), QString("Copy to project"));
-    QVERIFY(panel->findChild<ElaListView *>("fileList")->height() <= 32);
-    QVERIFY(!panel->findChild<QToolButton *>("moreButton"));
+    QVERIFY(panel->findChild<ElaTreeView *>("fileList")->height() >= 28);
+    QVERIFY(panel->findChild<QToolButton *>("moreAssetActions")->isVisible());
     QList<QRect> actionRects;
-    for (const auto *name : {"folderButton", "refreshButton", "themeButton", "openFileButton", "takeButton", "updateButton",
-                             "openSourceButton", "referenceButton", "editAssetButton", "removeSourceButton"})
+    for (const auto *name : {"folderButton", "refreshButton", "themeButton", "openFileButton", "takeButton",
+                             "openSourceButton", "moreAssetActions", "editAssetButton", "assetInfoToggle"})
     {
         auto *button = panel->findChild<QWidget *>(name);
         QVERIFY2(button && button->isVisible(), name);
