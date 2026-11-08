@@ -1,6 +1,7 @@
 #include "CatalogFixture.h"
 #include "library/AssetLibraryService.h"
 #include "library/SnapshotLibrary.h"
+#include "library/SnapshotFilePaths.h"
 #include "library/CatalogIndex.h"
 #include <QDir>
 #include <QDirIterator>
@@ -46,6 +47,12 @@ class SnapshotTest : public QObject
 {
     Q_OBJECT
   private slots:
+    void snapshotFilePathsUsePortableCaseFolding_data();
+    void snapshotFilePathsUsePortableCaseFolding();
+    void conflictingCollectionAndImportKeepSourcesAndHistory();
+    void caseSensitiveWorkingSavesAreAtomic_data();
+    void caseSensitiveWorkingSavesAreAtomic();
+    void caseConflictingHistoryRetainsHealthyRevisions();
     void linearVersionsAndPinnedCopies();
     void artifactsKeepBuildOutputs();
     void rejectsCorruptionAndConflicts();
@@ -68,6 +75,201 @@ class SnapshotTest : public QObject
     void workingPreviewDistinguishesEmptySetsAndExplicitSelection();
     void snapshotReadsStayFreshAcrossOperations();
 };
+void SnapshotTest::snapshotFilePathsUsePortableCaseFolding_data()
+{
+    QTest::addColumn<QStringList>("paths");
+    QTest::addColumn<bool>("valid");
+    QTest::newRow("mixed-case-distinct") << QStringList{"A.sv", "a_test.sv"} << true;
+    QTest::newRow("separate-directories") << QStringList{"rtl/A.sv", "tb/a.sv"} << true;
+    QTest::newRow("selected-subset") << QStringList{"A.sv"} << true;
+    QTest::newRow("case-collision") << QStringList{"A.sv", "a.sv"} << false;
+    QTest::newRow("nested-case-collision") << QStringList{"RTL/A.sv", "rtl/a.sv"} << false;
+    QTest::newRow("exact-duplicate") << QStringList{"a.sv", "a.sv"} << false;
+    QTest::newRow("unicode-case-collision")
+        << QStringList{QString::fromUtf8("\xCE\xA3.sv"), QString::fromUtf8("\xCF\x83.sv")} << false;
+    QTest::newRow("empty-path") << QStringList{QString()} << false;
+    QTest::newRow("parent-escape") << QStringList{"../a.sv"} << false;
+    QTest::newRow("backslash") << QStringList{"rtl\\a.sv"} << false;
+    QTest::newRow("unclean-path") << QStringList{"rtl/../a.sv"} << false;
+}
+void SnapshotTest::snapshotFilePathsUsePortableCaseFolding()
+{
+    QFETCH(QStringList, paths);
+    QFETCH(bool, valid);
+    const auto original = paths;
+    const auto error = detail::snapshotFilePathsError(paths);
+    QCOMPARE(error.isEmpty(), valid);
+    if (!valid) QVERIFY(error.startsWith("Invalid revision file path:"));
+    QCOMPARE(paths, original);
+}
+void SnapshotTest::conflictingCollectionAndImportKeepSourcesAndHistory()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    const auto upper = tmp.filePath("left/A.sv"), lower = tmp.filePath("right/a.sv");
+    put(upper, "upper source"); put(lower, "lower source");
+    const QStringList inputs{upper, lower};
+    const auto healthy = SnapshotLibrary::collect(library, {upper}, "healthy", "ip");
+    QVERIFY2(healthy.ok, qPrintable(healthy.error));
+    const auto manifestPath = healthy.asset.root + "/.xips/revisions/" + healthy.snapshot.id + ".json";
+    const auto manifest = get(manifestPath), metadata = get(healthy.asset.root + "/.xips.json");
+    const int objects = objectCount(library);
+    QVERIFY(!SnapshotLibrary::collect(library, inputs, "rejected", "ip").ok);
+    QVERIFY(!QFileInfo::exists(library + "/rejected"));
+    const auto updated = SnapshotLibrary::update(healthy.asset, inputs, {}, nullptr, "rejected-name");
+    QVERIFY(!updated.ok);
+    QCOMPARE(get(manifestPath), manifest);
+    QCOMPARE(get(healthy.asset.root + "/.xips.json"), metadata);
+    const auto described = SnapshotLibrary::describe(healthy.asset);
+    QVERIFY(described.ok && !described.asset.historyIncomplete);
+    QCOMPARE(SnapshotLibrary::heads(described.asset), QStringList{healthy.snapshot.id});
+    QCOMPARE(described.asset.snapshots.size(), 1);
+    QCOMPARE(objectCount(library), objects);
+
+    ImportRequest request;
+    request.sources = inputs; request.move = true; request.version = "rejected-name";
+    request.selection.files = {"A.sv", "a.sv"};
+    request.selection.objects.insert("A.sv", ContentStore::fingerprint(upper));
+    request.selection.objects.insert("a.sv", ContentStore::fingerprint(lower));
+    CatalogDefinition definition; definition.name = "rejected-create";
+    QVERIFY(!SnapshotLibrary::create(library, definition, &request).ok);
+    QVERIFY(!QFileInfo::exists(library + "/rejected-create"));
+    definition.name = "managed";
+    const auto managed = SnapshotLibrary::create(library, definition);
+    QVERIFY2(managed.ok, qPrintable(managed.error));
+    const auto managedMetadata = get(managed.asset.historyRoot + "/.xips.json");
+    QVERIFY(!SnapshotLibrary::importAndSave(managed.asset, request).ok);
+    QCOMPARE(get(managed.asset.historyRoot + "/.xips.json"), managedMetadata);
+    QVERIFY(QDir(managed.asset.root).entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot).isEmpty());
+    const auto unchanged = SnapshotLibrary::describe(managed.asset);
+    QVERIFY(unchanged.ok && !unchanged.asset.historyIncomplete);
+    QVERIFY(SnapshotLibrary::heads(unchanged.asset).isEmpty());
+    QCOMPARE(objectCount(library), objects);
+    QCOMPARE(get(upper), QByteArray("upper source")); QCOMPARE(get(lower), QByteArray("lower source"));
+    const auto exported = SnapshotLibrary::exportSnapshot(healthy.asset, healthy.snapshot.id, tmp.filePath("healthy.sv"));
+    QVERIFY2(exported.ok, qPrintable(exported.error));
+    QCOMPARE(get(tmp.filePath("healthy.sv")), QByteArray("upper source"));
+}
+void SnapshotTest::caseSensitiveWorkingSavesAreAtomic_data()
+{
+    QTest::addColumn<bool>("managed");
+    QTest::newRow("linked-source") << false;
+    QTest::newRow("managed-workspace") << true;
+}
+void SnapshotTest::caseSensitiveWorkingSavesAreAtomic()
+{
+    QFETCH(bool, managed);
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library");
+    QVERIFY(QDir().mkpath(library));
+    CatalogDefinition definition; definition.name = "case_test";
+    if (!managed) { definition.source = library + "/linked"; QVERIFY(QDir().mkpath(definition.source)); }
+    auto created = SnapshotLibrary::create(library, definition);
+    QVERIFY2(created.ok, qPrintable(created.error));
+    const auto upper = created.asset.root + "/A.sv", lower = created.asset.root + "/a.sv";
+    put(upper, "upper source");
+    QFile lowerFile(lower);
+    if (!lowerFile.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+    {
+        QCOMPARE(get(lower), QByteArray("upper source"));
+        QSKIP("The test filesystem is case-insensitive; real A.sv/a.sv save coverage requires a case-sensitive filesystem.");
+    }
+    QCOMPARE(lowerFile.write("lower source"), qint64(12)); lowerFile.close();
+    QCOMPARE(get(upper), QByteArray("upper source"));
+    QCOMPARE(get(lower), QByteArray("lower source"));
+    const auto metadataPath = created.asset.historyRoot + "/.xips.json";
+    const auto metadata = get(metadataPath);
+    const auto revisions = created.asset.historyRoot + "/.xips/revisions";
+    const auto initialRecords = QDir(revisions).entryList(QDir::Files);
+    const int initialObjects = objectCount(library);
+    for (bool selection : {false, true})
+    {
+        const auto rejected = selection
+            ? SnapshotLibrary::saveSelected(created.asset, {"A.sv", "a.sv"}, {}, nullptr, "must-not-publish")
+            : SnapshotLibrary::saveCurrent(created.asset, {}, nullptr, "must-not-publish");
+        QVERIFY(!rejected.ok);
+        QVERIFY2(rejected.error.startsWith("Invalid revision file path:"), qPrintable(rejected.error));
+        QCOMPARE(get(metadataPath), metadata);
+        QCOMPARE(QDir(revisions).entryList(QDir::Files), initialRecords);
+        QCOMPARE(objectCount(library), initialObjects);
+    }
+    const auto selected = SnapshotLibrary::saveSelected(created.asset, {"A.sv"});
+    QVERIFY2(selected.ok, qPrintable(selected.error));
+    QVERIFY(!selected.asset.historyIncomplete);
+    QCOMPARE(selected.snapshot.files, QStringList{"A.sv"});
+    const auto selectedMetadata = get(metadataPath);
+    const auto selectedRecords = QDir(revisions).entryList(QDir::Files);
+    const auto selectedManifest = get(revisions + '/' + selected.snapshot.id + ".json");
+    const int selectedObjects = objectCount(library);
+    for (bool selection : {false, true})
+    {
+        const auto rejected = selection
+            ? SnapshotLibrary::saveSelected(selected.asset, {"A.sv", "a.sv"}, {}, nullptr, "must-not-publish")
+            : SnapshotLibrary::saveCurrent(selected.asset, {}, nullptr, "must-not-publish");
+        QVERIFY(!rejected.ok);
+        QVERIFY2(rejected.error.startsWith("Invalid revision file path:"), qPrintable(rejected.error));
+        QCOMPARE(get(metadataPath), selectedMetadata);
+        QCOMPARE(QDir(revisions).entryList(QDir::Files), selectedRecords);
+        QCOMPARE(get(revisions + '/' + selected.snapshot.id + ".json"), selectedManifest);
+        QCOMPARE(objectCount(library), selectedObjects);
+        const auto described = SnapshotLibrary::describe(selected.asset);
+        QVERIFY(described.ok && !described.asset.historyIncomplete);
+        QCOMPARE(SnapshotLibrary::heads(described.asset), QStringList{selected.snapshot.id});
+    }
+    const auto exported = SnapshotLibrary::exportSnapshot(selected.asset, selected.snapshot.id, tmp.filePath("healthy.sv"));
+    QVERIFY2(exported.ok, qPrintable(exported.error));
+    QCOMPARE(get(tmp.filePath("healthy.sv")), QByteArray("upper source"));
+    QCOMPARE(get(upper), QByteArray("upper source")); QCOMPARE(get(lower), QByteArray("lower source"));
+    QVERIFY(QFile::remove(lower));
+    put(created.asset.root + "/B.sv", "non-conflicting source");
+    const auto retried = SnapshotLibrary::saveCurrent(selected.asset);
+    QVERIFY2(retried.ok, qPrintable(retried.error));
+    QCOMPARE(retried.snapshot.sequence, selected.snapshot.sequence + 1);
+    QCOMPARE(retried.snapshot.files, (QStringList{"A.sv", "B.sv"}));
+    QVERIFY(!SnapshotLibrary::describe(retried.asset).asset.historyIncomplete);
+    QVERIFY(SnapshotLibrary::verifySnapshot(retried.asset, retried.snapshot.id).ok);
+}
+void SnapshotTest::caseConflictingHistoryRetainsHealthyRevisions()
+{
+    QTemporaryDir tmp;
+    const auto library = tmp.filePath("library"), source = tmp.filePath("source/A.sv");
+    QVERIFY(QDir().mkpath(library)); put(source, "healthy source");
+    const auto healthy = SnapshotLibrary::collect(library, {source}, "healthy", "ip");
+    QVERIFY2(healthy.ok, qPrintable(healthy.error));
+    const auto revisions = healthy.asset.root + "/.xips/revisions/";
+    const auto goodRecord = get(revisions + healthy.snapshot.id + ".json");
+    const auto metadata = get(healthy.asset.root + "/.xips.json");
+    auto bad = QJsonDocument::fromJson(goodRecord).object();
+    const auto badId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    auto objects = healthy.snapshot.objects;
+    objects.insert("a.sv", objects.value("A.sv"));
+    auto jsonObjects = bad.value("objects").toObject();
+    jsonObjects.insert("a.sv", jsonObjects.value("A.sv"));
+    bad.insert("id", badId); bad.insert("sequence", 2);
+    bad.insert("parents", QJsonArray{healthy.snapshot.id});
+    bad.insert("files", QJsonArray{"A.sv", "a.sv"});
+    bad.insert("objects", jsonObjects); bad.insert("hash", ContentStore::treeHash(objects));
+    const auto badPath = revisions + badId + ".json";
+    put(badPath, QJsonDocument(bad).toJson());
+    const auto badRecord = get(badPath);
+    const auto described = SnapshotLibrary::describe(healthy.asset);
+    QVERIFY(described.ok && described.asset.historyIncomplete);
+    QCOMPARE(described.asset.snapshots.size(), 1);
+    QVERIFY(described.asset.problems.join('\n').contains("Invalid revision file path: a.sv"));
+    QVERIFY(!SnapshotLibrary::scan(library).problems.isEmpty());
+    QVERIFY(SnapshotLibrary::verifySnapshot(described.asset, healthy.snapshot.id).ok);
+    QVERIFY(!SnapshotLibrary::verifySnapshot(described.asset, badId).ok);
+    QVERIFY(!SnapshotLibrary::update(described.asset, {source}).ok);
+    const auto exported = SnapshotLibrary::exportSnapshot(described.asset, healthy.snapshot.id, tmp.filePath("healthy.sv"));
+    QVERIFY2(exported.ok, qPrintable(exported.error));
+    QCOMPARE(get(tmp.filePath("healthy.sv")), QByteArray("healthy source"));
+    QCOMPARE(get(badPath), badRecord);
+    QCOMPARE(get(revisions + healthy.snapshot.id + ".json"), goodRecord);
+    QCOMPARE(get(healthy.asset.root + "/.xips.json"), metadata);
+    QCOMPARE(get(source), QByteArray("healthy source"));
+}
+
 void SnapshotTest::snapshotReadsStayFreshAcrossOperations()
 {
     QTemporaryDir tmp;

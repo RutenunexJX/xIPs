@@ -1,4 +1,5 @@
 #include "SnapshotLibrary.h"
+#include "SnapshotFilePaths.h"
 
 #include "AssetLibraryService.h"
 #include "AssetScanner.h"
@@ -129,6 +130,11 @@ void setRevisionLabel(QJsonObject &document, const Snapshot &snapshot, const QSt
     if (labels.isEmpty()) document.remove("revisionLabels");
     else document.insert("revisionLabels", labels);
 }
+void checkSnapshotPaths(const QStringList &paths)
+{
+    const auto error = detail::snapshotFilePathsError(paths);
+    require(error.isEmpty(), error);
+}
 Snapshot parseSnapshot(const QJsonObject &object)
 {
     Snapshot result{object.value("id").toString(), object.value("note").toString(),
@@ -145,15 +151,7 @@ Snapshot parseSnapshot(const QJsonObject &object)
                 result.created.isValid() && result.hash.startsWith("sha256:") &&
                 !result.files.isEmpty(),
             QStringLiteral("Invalid revision record"));
-    QSet<QString> seen;
-    for (const QString &file : result.files)
-    {
-        require(!file.isEmpty() && !QDir::isAbsolutePath(file) && QDir::cleanPath(file) == file &&
-                    !file.startsWith("../") && file != ".." && file != "." && !file.contains('\\') &&
-                    !file.contains(':') && !seen.contains(file.toCaseFolded()),
-                QStringLiteral("Invalid revision file path: %1").arg(file));
-        seen.insert(file.toCaseFolded());
-    }
+    checkSnapshotPaths(result.files);
     if (contentAddressed)
     {
         const auto objects = object.value("objects").toObject();
@@ -173,6 +171,7 @@ Snapshot parseSnapshot(const QJsonObject &object)
 }
 QJsonObject toJson(const Snapshot &snapshot)
 {
+    checkSnapshotPaths(snapshot.files);
     QJsonObject result{{"id", snapshot.id},
             {"note", snapshot.note},
             {"created", snapshot.created.toUTC().toString(Qt::ISODateWithMs)},
@@ -828,6 +827,10 @@ Snapshot storeInputs(const QString &library, const QList<InputFile> &inputs, qin
                      const QString &note, const QStringList &parents)
 {
     require(!inputs.isEmpty(), QStringLiteral("The source contains no files to save."));
+    QStringList paths;
+    paths.reserve(inputs.size());
+    for (const auto &input : inputs) paths.append(input.relative);
+    checkSnapshotPaths(paths);
     Snapshot snapshot{unique({}), note.trimmed(), QDateTime::currentDateTimeUtc(), {}, {}};
     snapshot.sequence = sequence;
     snapshot.parents = parents;
