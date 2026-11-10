@@ -97,10 +97,15 @@ get_filename_component(_archive_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
 target_compile_definitions(tst_archive PRIVATE FTB_TEST_COMPILER_BIN="${_archive_compiler_bin}" FTB_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_dependencies(tst_archive xips_fake_vivado xips_fake_7zip)
 add_test(NAME archive COMMAND tst_archive -o -,txt)
-set(XIPS_TEST_TCLSH "" CACHE FILEPATH "Tcl 8.5+ interpreter for archive script tests")
-if(NOT XIPS_TEST_TCLSH)
-    find_program(XIPS_TEST_TCLSH NAMES tclsh tclsh86 tclsh85 REQUIRED)
-endif()
+include(cmake/ArchiveTclsh.cmake)
+add_test(NAME archive_tclsh_configure COMMAND "${CMAKE_COMMAND}"
+    "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tclsh-configure"
+    "-DTCLSH_MODULE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/ArchiveTclsh.cmake"
+    "-DTEST_TCLSH=${XIPS_TEST_TCLSH}"
+    "-DTEST_GENERATOR=${CMAKE_GENERATOR}"
+    "-DTEST_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/test_archive_tclsh.cmake")
+set_tests_properties(archive_tclsh_configure PROPERTIES TIMEOUT 60)
 set_tests_properties(archive PROPERTIES TIMEOUT 120 ENVIRONMENT "FTB_TEST_TCLSH=${XIPS_TEST_TCLSH}")
 
 foreach(_archive_host IN ITEMS tst_archive_host tst_archive_standalone)
